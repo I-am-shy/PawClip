@@ -61,16 +61,31 @@ func int64Args(ids []int64) []any {
 // 的行，所以删掉一份内容之后，同样的内容可以再次被捕获进来（这是设计意图，
 // 见 §4.1 的注释）。
 func (d *DB) SoftDelete(ctx context.Context, ids []int64) (int64, error) {
-	return d.markDeleted(ctx, ids, time.Now().Unix())
+	return markDeletedOn(ctx, d.w, ids, time.Now().Unix())
 }
 
-func (d *DB) markDeleted(ctx context.Context, ids []int64, now int64) (int64, error) {
+// SoftDeleteTx 是 SoftDelete 的**事务内**版本。
+//
+// ⚠️ 导入路径必须用它，否则会**死锁**。写句柄是 SetMaxOpenConns(1) 的
+// 单连接池；导入循环已经用 db.Writer().BeginTx 占住了那唯一一条连接，
+// 此时再调 SoftDelete（走 d.w.ExecContext）就会去池里要第二条连接——
+// 池子里没有、也不会再有，于是永久阻塞。
+//
+// 这个死锁不会报错、不会超时（SQLite 层面没有超时，是 database/sql 的
+// 池在等），表现为导入"卡住不动"。第一次踩到它是在
+// TestAcceptance2_ImportTwiceIsIdempotent（测试 15s 超时并打出 goroutine
+// 栈才发现）。所有"在事务里被调用的写操作"都必须有 Tx 版本。
+func (d *DB) SoftDeleteTx(ctx context.Context, ex Execer, ids []int64) (int64, error) {
+	return markDeletedOn(ctx, ex, ids, time.Now().Unix())
+}
+
+func markDeletedOn(ctx context.Context, ex Execer, ids []int64, now int64) (int64, error) {
 	var n int64
 	for _, batch := range batchIDs(ids) {
 		q := "UPDATE items SET deleted_at = ? WHERE deleted_at IS NULL AND id IN (" +
 			placeholders(len(batch)) + ")"
 		args := append([]any{now}, int64Args(batch)...)
-		res, err := d.w.ExecContext(ctx, q, args...)
+		res, err := ex.ExecContext(ctx, q, args...)
 		if err != nil {
 			return n, fmt.Errorf("store: soft delete: %w", err)
 		}

@@ -607,15 +607,29 @@ func scanExportItem(ctx context.Context, rows *sql.Rows, tx *sql.Tx, imgDims map
 		lastUsed            sql.NullInt64
 		ttlSource           sql.NullString
 		srcAppID, srcAppNam sql.NullString
+		pinnedInt           sql.NullInt64
+		// ⚠️ first_seen_at / created_at 在库里是 **INTEGER epoch 秒**，
+		// 而清单里是带时区的 ISO-8601。所以必须先扫进 NullInt64 再转，
+		// **不能**直接扫进 Item.FirstSeenAt（那是 time.Time）——
+		// database/sql 不会把 int64 自动转成 time.Time，会直接报
+		//
+		//   unsupported Scan, storing driver.Value type int64 into type *time.Time
+		//
+		// 这类错误在"库里全空"时不会暴露（没有行进扫描路径），
+		// 所以很容易一直绿到真正跑导出那一刻。
+		firstSeen, createdAt sql.NullInt64
 	)
 	if err := rows.Scan(
 		&it.ID, &it.Kind, &text, &html, &rtfPath, &imgPath, &filePathsJSON,
 		&it.Preview, &it.Fingerprint, &it.ByteSize, &srcAppID, &srcAppNam, &srcURL,
-		&catID, &it.Pinned, &it.FirstSeenAt, &expiresAt, &ttlSource, &it.CreatedAt,
+		&catID, &pinnedInt, &firstSeen, &expiresAt, &ttlSource, &createdAt,
 		&lastUsed, &it.UseCount,
 	); err != nil {
 		return nil, fmt.Errorf("backup: 扫描条目行：%w", err)
 	}
+	it.Pinned = pinnedInt.Int64 != 0
+	it.FirstSeenAt = time.Unix(firstSeen.Int64, 0)
+	it.CreatedAt = time.Unix(createdAt.Int64, 0)
 
 	if text.Valid {
 		s := text.String

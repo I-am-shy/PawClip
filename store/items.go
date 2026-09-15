@@ -81,10 +81,23 @@ ON CONFLICT(fingerprint) WHERE deleted_at IS NULL DO UPDATE SET
 RETURNING id, use_count, first_seen_at
 `
 
-// Execer 抽象 *sql.DB 与 *sql.Tx，让写入路径既能单条提交也能进合批事务。
-type Execer interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+// RowQuerier 是"查一行"的最小接口。
+//
+// 单独提出来（而不是复用 Execer）是为了让**只读**函数的签名诚实：
+// GetByFingerprintTx 只需要 QueryRowContext，不该顺带要求写能力——
+// 一个只读的调用点拿着一个"能写"的句柄，是误写的温床。
+type RowQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// Execer 抽象 *sql.DB 与 *sql.Tx，让写入路径既能单条提交也能进合批事务。
+//
+// ⚠️ 事务内的写操作**必须**收 Execer（而不是在内部直接用 d.w）：
+// 写句柄是 SetMaxOpenConns(1) 的单连接池，事务已经占住了那唯一一条连接，
+// 内部再走 d.w 就是向池里要第二条连接 —— 永久死锁，且不报错、不超时。
+type Execer interface {
+	RowQuerier
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
 // PutResult 是 upsert 的结果。

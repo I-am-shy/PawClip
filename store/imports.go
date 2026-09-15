@@ -248,6 +248,20 @@ RETURNING id`,
 // **保留本机分类**这一点容易被写漏：那条条目已经在用户的分类体系里了，
 // 拿包里的 categoryId 去覆盖会把用户的整理结果冲掉。
 func (d *DB) MergeIntoExisting(ctx context.Context, id, addUseCount, lastUsedAt int64) error {
+	return mergeIntoExistingOn(ctx, d.w, id, addUseCount, lastUsedAt)
+}
+
+// MergeIntoExistingTx 是 MergeIntoExisting 的**事务内**版本。
+//
+// ⚠️ 导入路径必须用它。原因与 SoftDeleteTx 完全一样：写句柄是
+// SetMaxOpenConns(1) 的单连接池，导入循环已经用 db.Writer().BeginTx
+// 占住了那唯一一条连接，再走 d.w 就是自己去要第二条连接 —— **永久死锁**。
+// 实测就是这里挂住了 TestAcceptance2（第二次导入全部走 merge 路径）。
+func (d *DB) MergeIntoExistingTx(ctx context.Context, ex Execer, id, addUseCount, lastUsedAt int64) error {
+	return mergeIntoExistingOn(ctx, ex, id, addUseCount, lastUsedAt)
+}
+
+func mergeIntoExistingOn(ctx context.Context, ex Execer, id, addUseCount, lastUsedAt int64) error {
 	if addUseCount < 0 {
 		addUseCount = 0
 	}
@@ -260,10 +274,30 @@ func (d *DB) MergeIntoExisting(ctx context.Context, id, addUseCount, lastUsedAt 
 	                              ELSE last_used_at
 	                            END
 	       WHERE id = ?`
-	if _, err := d.w.ExecContext(ctx, q, addUseCount, lastUsedAt, lastUsedAt, id); err != nil {
+	if _, err := ex.ExecContext(ctx, q, addUseCount, lastUsedAt, lastUsedAt, id); err != nil {
 		return fmt.Errorf("store: merge imported item: %w", err)
 	}
 	return nil
+}
+
+// GetByFingerprintTx 是 GetByFingerprint 的**事务内**版本。
+//
+// 两个理由：
+//  1. 事务内读走 d.r（另一条连接、另一个连接池）会看到**本事务尚未提交**
+//     的旧状态。同一批里出现两条同指纹的条目时，第二次查重本应命中
+//     第一次刚插进来的那条，却会因为看不见而继续往下走、最终撞唯一索引。
+//  2. 一致性：读与写落在同一个快照上，"查到了就更新、没查到就插入"这个
+//     判断才有意义。
+//
+// 取不到时同样返回 ErrNotFound（与 GetByFingerprint 保持一致的契约）。
+func GetByFingerprintTx(ctx context.Context, ex RowQuerier, fp string) (*Item, error) {
+	row := ex.QueryRowContext(ctx,
+		"SELECT "+itemColumns+" FROM items WHERE fingerprint = ? AND deleted_at IS NULL", fp)
+	it, err := scanItem(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return it, err
 }
 
 // CategoryByName 按名字精确匹配分类（§8.2 第 2 步的映射依据）。

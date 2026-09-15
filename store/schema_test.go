@@ -474,3 +474,99 @@ func TestDSNWithKeepsExistingQueryString(t *testing.T) {
 		t.Errorf("写句柄的 DSN 不该带 query_only：%s", w)
 	}
 }
+
+// TestFTSMirrorsWholeItemsTableNotJustAlive 钉住一个反直觉的不变量。
+//
+// external content FTS 表 + 软删除的组合有个容易误解的地方：
+//
+//	软删除一条 → items 行数不变、存活数 -1、**FTS 行数不变**
+//
+// 因为软删除走的是 UPDATE，而 items_au 触发器会把那一行"先删后插"回索引。
+// 也就是说 FTS 镜像的是**整张 items 表**，不是"存活条目"。
+//
+// 为什么值得专门钉一条测试：backup 的导入收尾会拿 FTS 行数与数据库对账，
+// 第一版拿它比 CountAlive，在 overwrite 策略（先软删旧行再插新行）下
+// 必然误报——而误报会把真正的不一致淹掉。
+//
+// 顺带在这个不变量之上验一件更要紧的事：**软删除的条目查不出来**。
+// 索引里留着它是无害的，前提是查询侧带 deleted_at IS NULL ——
+// 这一条如果哪天被改坏，用户会在历史列表里看到自己删掉的东西。
+func TestFTSMirrorsWholeItemsTableNotJustAlive(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	put := func(fp, text string) int64 {
+		t.Helper()
+		res, err := db.Writer().ExecContext(ctx,
+			`INSERT INTO items (kind, text_content, preview, fingerprint, byte_size, first_seen_at, created_at)
+			 VALUES ('text', ?, ?, ?, 1, 1, 1)`, text, text, fp)
+		if err != nil {
+			t.Fatalf("插入 %s: %v", fp, err)
+		}
+		id, _ := res.LastInsertId()
+		return id
+	}
+
+	id1 := put("sha256:fts1", "一二三 甲乙丙")
+	_ = put("sha256:fts2", "四五六 丁戊己")
+
+	assertCounts := func(step string, wantItems, wantAlive, wantFTS int64) {
+		t.Helper()
+		items, err := db.CountAll(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		alive, err := db.CountAlive(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fts, err := db.FTSRowCount(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if items != wantItems || alive != wantAlive || fts != wantFTS {
+			t.Errorf("%s：items=%d alive=%d fts=%d，想要 %d/%d/%d",
+				step, items, alive, fts, wantItems, wantAlive, wantFTS)
+		}
+	}
+	assertCounts("插入两条后", 2, 2, 2)
+
+	// 软删除一条：FTS 行数**不该**跟着少。
+	if _, err := db.SoftDelete(ctx, []int64{id1}); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts("软删除一条后", 2, 1, 2)
+
+	// 真正的物理删除才该让 FTS 行数下降。
+	if _, err := db.Purge(ctx, []int64{id1}); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts("物理删除一条后", 1, 1, 1)
+
+	// 物理删除之后，索引里真的搜不到那条了。
+	pg, err := db.List(ctx, Query{Text: "一二三"})
+	if err != nil {
+		t.Fatalf("检索: %v", err)
+	}
+	if len(pg.Rows) != 0 {
+		t.Errorf("物理删除后仍能搜到 %d 条（FTS 的 delete 命令没生效）", len(pg.Rows))
+	}
+
+	// 而软删除期间也该搜不到——这条断言的实现依赖查询侧的 deleted_at 过滤。
+	_ = put("sha256:fts3", "七八九 庚辛壬")
+	id3, err := db.GetByFingerprint(ctx, "sha256:fts3")
+	if err != nil {
+		t.Fatalf("取 fts3: %v", err)
+	}
+	if _, err := db.SoftDelete(ctx, []int64{id3.ID}); err != nil {
+		t.Fatal(err)
+	}
+	pg, err = db.List(ctx, Query{Text: "七八九"})
+	if err != nil {
+		t.Fatalf("检索: %v", err)
+	}
+	if len(pg.Rows) != 0 {
+		t.Errorf("软删除的条目被搜出来了 %d 条——查询侧丢了 deleted_at IS NULL 过滤"+
+			"（FTS 索引里留着软删除的行是正常的，但查询必须挡住）", len(pg.Rows))
+	}
+}

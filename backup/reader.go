@@ -138,6 +138,19 @@ type PrecheckResult struct {
 }
 
 // ImportResult 是阶段二的产物。
+//
+// ⚠️ 字段之间的从属关系（很容易看错，这里写死）：
+//
+//	Imported    = 处理完并**存在于库中**的条数 = 新插入 + Merged + Overwritten
+//	Merged      ⊂ Imported —— 冲突策略 merge 命中已有条目的那部分
+//	Overwritten ⊂ Imported —— 冲突策略 overwrite 先软删旧行再插新的那部分
+//	Skipped     与 Imported 互斥（策略要求跳过、或条目已过期）
+//	Failed      与上面都互斥（处理这条时报错了）
+//
+// 之所以不把 Imported 定义成"纯新插入"：用户在确认页看到的主数字是
+// "这些内容现在在我库里了"，把 merge 掉的那部分排除掉会让数字对不上账
+// （包里有 1000 条、库里多了 1000 条，但 Imported 显示 400）。
+// 想知道真正新插了几行，用 Imported - Merged - Overwritten。
 type ImportResult struct {
 	ImportID       int64    `json:"importId"`
 	Imported       int      `json:"imported"`
@@ -241,8 +254,11 @@ func Precheck(ctx context.Context, db *store.DB, pkgPath string, opt ImportOptio
 			pc.SkipExpired++
 			continue
 		}
+		// ⚠️ GetByFingerprint 的契约是"取不到就返回 ErrNotFound"，
+		// **不是** (nil, nil)。当成错误往上抛的话，预检会在第一个
+		// 新指纹上直接失败——而"库里没有这条"恰恰是导入最常见的情况。
 		existing, err := db.GetByFingerprint(ctx, it.Fingerprint)
-		if err != nil {
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return nil, err
 		}
 		if existing != nil {
@@ -640,11 +656,24 @@ func Import(
 	res.RollbackPossible = res.Imported > 0
 
 	// §8.2 第 6 步：FTS 行数比对（触发器应当已经处理）。
+	//
+	// ⚠️ 对照量必须是 **items 总行数**，不是存活条目数。
+	// 这是 external content 表的一个反直觉之处：软删除走的是 UPDATE，
+	// 而 items_au 触发器会把那一行"先删后插"回索引里 —— 也就是
+	//
+	//	软删除一条 → items 行数不变、存活数 -1、**FTS 行数不变**
+	//
+	// 第一版这里比的是 CountAlive，于是在 overwrite 策略（先软删旧行再插
+	// 新行）下必然误报 "fts=14 alive=7"。误报的危害不只是噪音：
+	// 它会把真正的不一致淹掉。
+	//
+	// 检索侧不受影响：查询里 JOIN items 时会带 deleted_at IS NULL 过滤，
+	// 软删除的条目查不出来（见 store/query.go 的 buildFilters）。
 	if n, err := db.FTSRowCount(ctx); err == nil {
-		if alive, err := db.CountAlive(ctx); err == nil && n != alive {
+		if total, err := db.CountAll(ctx); err == nil && n != total {
 			res.Errors = append(res.Errors,
-				fmt.Sprintf("FTS 索引行数（%d）与存活条目数（%d）不一致", n, alive))
-			log.Warn("导入后 FTS 行数不一致", "fts", n, "alive", alive)
+				fmt.Sprintf("FTS 索引行数（%d）与 items 总行数（%d）不一致", n, total))
+			log.Warn("导入后 FTS 行数与 items 总行数不一致", "fts", n, "items", total)
 		}
 	}
 
@@ -699,8 +728,17 @@ func importOne(
 	}
 
 	// c. 查重 + 冲突策略。
-	existing, err := db.GetByFingerprint(ctx, src.Fingerprint)
-	if err != nil {
+	//
+	// ⚠️ 这三步全部走 **tx**，一次都不能落回 db.*：
+	//   - GetByFingerprintTx：走 d.r（另一个连接池）会看不见本事务刚插入的
+	//     行，于是同一批里两条同指纹的条目第一次查不到、第二次才撞唯一索引；
+	//   - SoftDeleteTx / MergeIntoExistingTx：走 d.w 会向
+	//     SetMaxOpenConns(1) 的池再要一条连接，而那条已经被本事务占住 ——
+	//     **永久死锁**（第二次导入全部走 merge，所以正好在这里挂死）。
+	//
+	// ErrNotFound 表示"本机没有这条"，是正常路径而不是错误。
+	existing, err := store.GetByFingerprintTx(ctx, tx, src.Fingerprint)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return outcomeSkipped, err
 	}
 	overwriteID := int64(0)
@@ -709,7 +747,7 @@ func importOne(
 		case ConflictSkip:
 			return outcomeSkipped, nil
 		case ConflictOverwrite:
-			if _, err := db.SoftDelete(ctx, []int64{existing.ID}); err != nil {
+			if _, err := db.SoftDeleteTx(ctx, tx, []int64{existing.ID}); err != nil {
 				return outcomeSkipped, err
 			}
 			overwriteID = existing.ID
@@ -721,7 +759,7 @@ func importOne(
 			if src.LastUsedAt != nil {
 				lu = src.LastUsedAt.Unix()
 			}
-			if err := db.MergeIntoExisting(ctx, existing.ID, src.UseCount, lu); err != nil {
+			if err := db.MergeIntoExistingTx(ctx, tx, existing.ID, src.UseCount, lu); err != nil {
 				return outcomeSkipped, err
 			}
 			return outcomeMerged, nil
