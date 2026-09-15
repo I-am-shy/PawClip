@@ -1,0 +1,42 @@
+# ── 发布产物（只进 Release，绝不进仓库）──────────────────────
+build/bin/
+*.app
+*.dmg
+*.exe
+*.msi
+*.clipbak
+
+# ── 编译中间物 ───────────────────────────────────────────────
+frontend/dist/
+*.test
+*.out
+vendor/
+
+# Node
+node_modules/
+.pnpm-store/
+
+# ── 本地数据（绝不入库）──────────────────────────────────────
+*.db
+*.db-wal
+*.db-shm
+pawclip.db*
+blobs/
+backups/
+
+# 说明：assets/icon/dist/ 是**构建输入**（Wails 的 appicon / 托盘图都从这里取），
+# 不是发布产物——它由 build-icons.cjs 从 pawclip-source.png 生成，约 3.3 MB。
+# 选择入库是为了保证 `git clone && wails build` 开箱即用、不依赖 Node 工具链。
+# 若将来嫌体积大，可改为忽略整个 assets/icon/dist/ 并在构建前跑一次
+# `node scripts/build-icons.cjs`（见 DESIGN.md §16.4）。
+
+# ── 编辑器 / 系统 ────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# 环境与密钥
+.env
+.env.local
