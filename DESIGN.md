@@ -753,7 +753,7 @@ pawclip/
     - **⚠️ ad-hoc 的副作用（开发期必踩）**：TCC 辅助功能授权绑定代码签名，ad-hoc 每次构建 cdhash 都变，macOS 视为另一个 App → **每次重新编译都要重新授权**。缓解办法是生成一张**固定的自签证书**（Keychain 自建，免费）并改用它签名，cdhash 稳定后只需授权一次。这不违反 §0"不买证书"的前提。
 19. 下载后 Gatekeeper 拦截，README 写明：`xattr -dr com.apple.quarantine /Applications/PawClip.app`。
 20. Windows SmartScreen → "更多信息" → "仍要运行"。
-21. GitHub Actions 矩阵：`macos-14`（arm64）与 `macos-13`（x86_64）分别构建，或直接 `--target universal-apple-darwin`；`windows-2022` 出 NSIS 安装包。
+21. GitHub Actions 矩阵：`macos-14`（arm64）与 `macos-13`（x86_64）分别构建，或在单个 `macos-14` runner 上直接 `wails build -platform darwin/universal` 出通用二进制；`windows-2022` 出 NSIS 安装包。
 22. `.gitignore` 排除 `build/bin/`（Wails 产物）、`frontend/dist/`、`node_modules/`、`*.dmg` / `*.exe` / `*.msi`、`*.clipbak`、本地 `pawclip.db*` 与 `blobs/`。**发布产物只进 Release，不进仓库。**
     - **例外**：`assets/icon/dist/`（约 3.3 MB）**要入库**——它是 Wails 的构建**输入**（appicon + 托盘图都从这里取），不是发布产物。入库才能保证 `git clone && wails build` 开箱即用、不依赖 Node 工具链。若将来嫌体积大，可改为忽略整个目录并在构建前跑一次 `node scripts/build-icons.cjs`（§16.4）。
 
