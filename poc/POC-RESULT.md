@@ -8,7 +8,7 @@
 
 ## 1. 验证目标
 
-`DESIGN.md §0.1` 把"热键呼出**免抢焦点**面板 + ⌘1..9 直贴"列为 P0 核心体验，但它依赖一个 Wails v2 官方不支持的能力：
+`DESIGN.md §0.2` 把"热键呼出**免抢焦点**面板 + ⌘1..9 直贴"列为 P0 核心体验，但它依赖一个 Wails v2 官方不支持的能力：
 
 - `mac.Options` 只暴露 `TitleBar` / `Appearance` / `WebviewIsTransparent` / `WindowIsTranslucent` / `ContentProtection` / `About`——**没有任何窗口类控制**。
 - macOS 上要同时满足"窗口能成为 key（否则搜不了词）"和"不激活本 App"，只有 `NSPanel` + `NSWindowStyleMaskNonactivatingPanel` 能做到。
@@ -165,13 +165,10 @@ PAWCLIP_PROBE_OUT=/tmp/probe2.json \
 
 ---
 
-## 10. 对设计文档的影响
+## 10. 结论落在哪里
 
-| 位置 | 变更 |
-|---|---|
-| `DESIGN.md §0.1` | 从"⚠️ 未验证，阻塞项"改为"✅ 实测通过"，写入采用方案与三条被否定的路 |
-| `DESIGN.md §0 技术栈` | **不变**，维持 Go + Wails v2，无需上 v3 alpha |
-| `DESIGN.md §7` #3 | 面板实现要点改为引用本报告 |
-| `DESIGN.md §17 M2` | 增加上述两个遗留问题 |
+- `DESIGN.md` **§0.2 免抢焦点面板** —— 采用方案、两条必要条件、三条被否定的路、正确判据
+- `DESIGN.md` **§7 #3**（macOS 面板实现要点）、**§16 M2**（面板阶段的实现注意点）
+- 技术栈**维持 Go + Wails v2**，不需要上 v3 alpha
 
-**M0 门禁关闭，可以开工 M1。**
+**M0 门禁关闭，可以开工 M1（捕获链路 + 落库）。**

@@ -1,4 +1,4 @@
-# PawClip · 喵喵贴 · 跨平台剪贴板历史工具 · 设计规格 v3
+# PawClip · 喵喵贴 · 跨平台剪贴板历史工具 · 设计规格（定稿）
 
 > 定位：macOS + Windows 单机剪贴板历史管理器。无账号、无同步、无云端。
 > 优先级：安装包体积最小化 > 常驻内存最小化 > 功能完整度。
@@ -6,7 +6,9 @@
 
 ---
 
-## 0. 范围界定
+## 0. 项目基调
+
+### 0.1 范围与标识
 
 | 项 | 决定 |
 |---|---|
@@ -14,17 +16,13 @@
 | 架构 | 单机本地应用，无服务端、无账号体系、无多设备同步 |
 | 数据出口 | `.clipbak` 压缩包（ZIP 容器 + JSON/YAML 清单 + 二进制 blob），见 `BACKUP-FORMAT.md` |
 | 暂不做 | Linux（预留后端骨架）、端到端同步、团队共享、App Store / Microsoft Store 上架 |
-| 中文名 | **喵喵贴** |
-| 英文名 | **PawClip**（Paw 猫爪 + Clip 剪贴） |
-| 应用标识 | macOS bundle id `com.pawclip.app`；Windows AppUserModelID `PawClip.Clipboard`；仓库名 `pawclip` |
-| 数据库加密 | **不做**，本地明文 SQLite + 明文 blob |
-| 代码签名 | **不做**，无 Apple 开发者账号、无 Windows 证书 |
-| 界面语言 | 跟随系统，简体中文 + 英文，回退 `en` |
-| 分发 | 仅 GitHub Releases（源码 + 安装包），无官网、无应用商店 |
+| 名称与标识 | 中文 **喵喵贴** · 英文 **PawClip**（Paw 猫爪 + Clip 剪贴）。bundle id / AppUserModelID / 仓库名 / 配置目录见 §15.1 |
 
-### ✅ 开工前置门禁：Wails v2 的免抢焦点面板（**2026-09-15 实测通过，不再是阻塞项**）
+### 0.2 免抢焦点面板 —— M0 实测结论 ✅
 
-**结论：Wails v2 可行**，但必须走一条特定路径。验证工程在 `poc/wails-panel/`，完整数据见 `poc/POC-RESULT.md`。
+P0 核心体验（热键呼出**免抢焦点**面板 + ⌘/Ctrl + 1..9 直贴）依赖一项 Wails v2 官方不提供的能力，已于 2026-09-15 用最小工程实测验证。
+
+**结论：可行**，但必须走一条特定路径。验证工程见 `poc/wails-panel/`，完整数据与复现步骤见 `poc/POC-RESULT.md`。
 
 Wails v2 官方 `options` 确实没有任何窗口类控制（`mac.Options` 只有 `TitleBar` / `Appearance` / `WebviewIsTransparent` / `WindowIsTranslucent` / `ContentProtection` / `About`；`windows.Options` 也没有 `WS_EX_NOACTIVATE`）。但这不构成阻塞——我们不改 Wails 的配置，而是在运行时用 cgo 改造窗口对象。
 
@@ -107,43 +105,33 @@ NSView *cv = [wailsWindow contentView];
 
 `makeKeyWindow` 在窗口**不可见**时是空操作。必须先 `orderFrontRegardless` 再 `makeKeyWindow`；反过来写会得到一个"可见但收不到键盘"的面板。
 
-#### 遗留到 M2 的两个点
+**门禁结论**：技术栈维持 **Go + Wails v2**，不需要上 Wails v3 alpha，也不需要接受"抢焦点 + 事后补偿"的降级方案。实测中暴露的两个实现注意点已写进 §16 的 M2 交付要求。
 
-1. **Wails 启动时会激活一次 App**（实测首次显示时 `frontmost` 变成自己）。需要 `StartHidden: true` + 首次呼出才显示，避免开机抢一次焦点。
-2. **Wails 仍持有原窗口引用**，它后续的 `SetSize` / `SetTitle` 等调用会作用在隐藏的空窗口上。面板尺寸必须走我们自己的 NSPanel，或确认这些操作对面板无影响。**M2 实现面板时需逐项处理。**
+### 0.3 关键决策与代价
 
-**M0 门禁状态：✅ 已通过**，无需在 B（Wails v3）/ C（接受抢焦点）之间选择。技术栈维持 Go + Wails v2。
+| # | 决策 | 已知代价（接受） |
+|---|---|---|
+| 1 | **不加密**：数据库与 blob 全明文 | 任何能读用户目录的进程都能读到剪贴板历史。省掉 SQLCipher 依赖（约 −1.5 MB）与主密码解锁流程 |
+| 2 | **不签名**：不买 Apple 开发者账号（$99/年）与 Windows 证书（$200–400/年） | 首次打开需手动绕过 Gatekeeper / SmartScreen，README 写清步骤（§14 F 组） |
+| 3 | **中英双语 + 跟随系统**：前端与后端都走 i18n | 维护两套字符串。**易漏项**见 §14 第 24 条 |
+| 4 | **仅 GitHub Releases 分发**：Actions 矩阵构建，安装包附加到 Release | 无自动更新通道；构建产物不入库 |
 
-### 已锁定决策（本轮确认，不再讨论）
-
-1. **不加密**。数据库与 blob 全明文。省掉 SQLCipher 依赖（约 −1.5 MB）与主密码解锁流程。已知代价：任何能读用户目录的进程都能读到剪贴板历史，自用场景接受。
-2. **不签名**。不清 Apple 开发者账号（$99/年）、不买 Windows 证书（$200–400/年）。代价是首次打开需手动绕过 Gatekeeper / SmartScreen，README 必须写清步骤（见 §15 F 组）。
-3. **中英双语 + 跟随系统**。前端与后端都要走 i18n。**易漏项**：托盘菜单、通知、导入导出报告、错误提示、备份包内 `README.txt`、导出文件名。
-4. **GitHub 分发**。Actions 矩阵构建，安装包自动附加到 Release；构建产物不入库。
-
-### 技术栈（已定）
+### 0.4 技术栈
 
 | 层 | 选型 | 理由 |
 |---|---|---|
-| 后端 | **Go 1.26** | 用户主语言；Windows 原生调用无需 cgo；goroutine 模型天然适配"监听 / 捕获 / GC"三条流水线 |
-| 桌面框架 | **Wails v2** | 复用系统 WebView，与 Tauri 同级；v3 仍在 alpha，不采用 |
-| 前端 | **React + Vite + TypeScript** | 用户熟悉；不用 UI 组件库 |
+| 后端 | **Go 1.26** | Windows 原生调用无需 cgo；goroutine 模型天然适配"监听 / 捕获 / GC"三条流水线 |
+| 桌面框架 | **Wails v2** | 复用系统 WebView（WKWebView / WebView2），不捆绑 Chromium；v3 仍在 alpha，不采用 |
+| 前端 | **React + Vite + TypeScript** | 不用 UI 组件库；视图数 ≤ 6，无需大型路由与状态库 |
 | 数据库 | **SQLite（`mattn/go-sqlite3`）** | cgo 方案体积代价小；**必须带 `sqlite_fts5` 构建标签**，否则 FTS5 不可用 |
 | 原生桥 | macOS：**cgo + Objective-C shim**；Windows：**`golang.org/x/sys/windows`** | 见 §2 |
-| 图标 | 成品位图稿 → sharp 抠图 / 遮罩 / 缩放 → `.icns` / `.ico` | 见 §16 |
+| 图标 | 成品位图稿 → sharp 抠图 / 遮罩 / 缩放 → `.icns` / `.ico` | 见 §15 |
 
-**已知代价**（相对 Rust + Tauri，已接受）：下载体积 +1–3 MB，安装后占用 +5–8 MB，空闲内存 +2–6 MB。
+> **已排除的路线**（不必重新提议）：**Electron**（150 MB+ 安装包、150–300 MB 空闲内存，体积与内存双输）；**纯 Go 自绘 UI**（Fyne / Gio，需内嵌 CJK 字体再涨 8–15 MB，内存 80–150 MB）；**双原生 SwiftUI + WinUI3**（体积内存都不差，但要维护两套 UI 与两套数据访问层，成本翻倍）；**Rust + Tauri v2**（体积最优——安装后占用比 Go 方案小 5–8 MB——但语言不熟会拖慢进度，本项目选择开发速度优先）。
 
-### 已淘汰的选项
+### 0.5 核心原则
 
-- **Electron**：150 MB+ 安装包、150–300 MB 空闲内存，体积与内存双输。
-- **Rust + Tauri v2**：体积最优（安装后占用比 Go 方案小 5–8 MB），但语言不熟会拖慢进度；本项目选择开发速度优先。
-- **Fyne / Gio 等纯 Go 自绘 UI**：需内嵌 CJK 字体，包再涨 8–15 MB，内存 80–150 MB。
-- **双原生 SwiftUI + WinUI3**：体积内存都不差，但要维护两套 UI 与两套数据访问层，成本翻倍。
-
-### 贯穿全案的核心原则
-
-**空闲内存的瓶颈是 WebView，不是后端语言。** Go 运行时本身约 10–18 MB，而 WebView 打开时要 60–90 MB。因此设计的核心是把 WebView 当作"用完即弃"的资源（面板闲置即销毁），而不是让它一直挂着。换语言不改变这条策略，也不会破坏它。
+**空闲内存的瓶颈是 WebView，不是后端语言。** Go 运行时本身约 10–18 MB，而 WebView 打开时要 60–90 MB。因此设计的核心是把 WebView 当作"用完即弃"的资源（面板闲置即销毁），而不是让它一直挂着。
 
 ---
 
@@ -257,9 +245,9 @@ goroutine 模型（共 4 条）：
 [Wails 主 goroutine] 绑定方法：搜索、回贴、CRUD、导入导出
 ```
 
-Go 的并发模型在这里比 Rust 省心很多：四个 `go func()` + `chan` 就够，不需要手写状态机。
+Go 的并发模型在这里很省心：四个 `go func()` + `chan` 就够，不需要手写状态机。
 
-**但有一条 Go + SQLite 的硬约束**：SQLite 的写操作必须串行化。用**单个写 goroutine 消费 channel**，或给 `*sql.DB` 设 `SetMaxOpenConns(1)`。否则并发写会撞 `SQLITE_BUSY`。推荐前者——写 goroutine 还能顺便实现 §15 的合批提交。
+**但有一条 Go + SQLite 的硬约束**：SQLite 的写操作必须串行化。用**单个写 goroutine 消费 channel**，或给 `*sql.DB` 设 `SetMaxOpenConns(1)`。否则并发写会撞 `SQLITE_BUSY`。推荐前者——写 goroutine 还能顺便实现 §14 的合批提交。
 
 ### 去抖设计
 
@@ -545,13 +533,13 @@ blobs/
 |---|---|---|
 | 1 | 无剪贴板变更通知 API | 轮询 `NSPasteboard.general.changeCount`。**自适应间隔**：用 `CGEventSource.secondsSinceLastEventType` 检测空闲，活跃 0.2s、空闲 > 60s 降到 1.0s |
 | 2 | 来源 App 判定时机 | 轮询时前台 App 可能已切换。必须在检测到变更的**同一帧**读 `NSWorkspace.shared.frontmostApplication`，否则来源永远错 |
-| 3 | 自动粘贴抢焦点 | 面板必须**真正创建** `NSPanel`（`NSWindowStyleMaskNonactivatingPanel`）并覆写 `canBecomeKeyWindow = true`；同时 App 必须跑在 Accessory 激活策略下。**两个条件缺一不可**。显示顺序必须是 `orderFrontRegardless` → `makeKeyWindow`。**⚠️ 不要用 `object_setClass` 事后换类，实测必崩**。完整方案与实测数据见 §0.1 与 `poc/POC-RESULT.md` |
-| 4 | 自动粘贴权限 | 需 `AXIsProcessTrusted()`。流程：写剪贴板 → 记录旧内容 → `CGEvent` 模拟 ⌘V → 延迟 `ui.restoreDelayMs`（默认 250ms）恢复旧剪贴板。**⚠️ TCC 授权绑定代码签名**：ad-hoc 签名每次构建 cdhash 都变，系统视为新 App，**每次重新编译都要重新授权**（见 §15 F 组） |
+| 3 | 自动粘贴抢焦点 | 面板必须**真正创建** `NSPanel`（`NSWindowStyleMaskNonactivatingPanel`）并覆写 `canBecomeKeyWindow = true`；同时 App 必须跑在 Accessory 激活策略下。**两个条件缺一不可**。显示顺序必须是 `orderFrontRegardless` → `makeKeyWindow`。**⚠️ 不要用 `object_setClass` 事后换类，实测必崩**。完整方案与实测数据见 §0.2 与 `poc/POC-RESULT.md` |
+| 4 | 自动粘贴权限 | 需 `AXIsProcessTrusted()`。流程：写剪贴板 → 记录旧内容 → `CGEvent` 模拟 ⌘V → 延迟 `ui.restoreDelayMs`（默认 250ms）恢复旧剪贴板。**⚠️ TCC 授权绑定代码签名**：ad-hoc 签名每次构建 cdhash 都变，系统视为新 App，**每次重新编译都要重新授权**（见 §14 F 组） |
 | 5 | 剪贴板恢复副作用 | 部分应用异步读剪贴板，恢复太快会拿到错误内容。提供开关 `ui.restoreClipboard`（默认 true） |
 | 6 | 分发方式 | **不做 Developer ID 签名、不做公证**（见 §0）。走 ad-hoc 签名 + README 说明 Gatekeeper 绕过；**不上架 App Store**（沙箱下无法任意落盘、全局热键受限） |
-| 7 | 隐藏 Dock 图标 | 必须把激活策略设为 Accessory。两条路径：① `build/darwin/Info.plist` 加 `LSUIElement = true`（**推荐**，进程启动前生效，避免开机抢一次焦点）；② cgo 调 `NSApp.setActivationPolicy(NSApplicationActivationPolicyAccessory)`。**注意：这不只是"隐藏 Dock 图标"的美观需求——M0 实测证明它是免抢焦点面板的必要条件**（见 §0.1） |
+| 7 | 隐藏 Dock 图标 | 必须把激活策略设为 Accessory。两条路径：① `build/darwin/Info.plist` 加 `LSUIElement = true`（**推荐**，进程启动前生效，避免开机抢一次焦点）；② cgo 调 `NSApp.setActivationPolicy(NSApplicationActivationPolicyAccessory)`。**注意：这不只是"隐藏 Dock 图标"的美观需求——M0 实测证明它是免抢焦点面板的必要条件**（见 §0.2） |
 | 8 | 通用二进制 | `wails build -platform darwin/universal`；同时设 `LSMinimumSystemVersion = 12.0` |
-| 9 | 数据库损坏 | WAL + `clean_shutdown` 标记文件（正常退出删除；启动时**发现标记存在才**跑 `PRAGMA integrity_check`，见 §15 第 6 条）+ 每日备份到 `backups/` 保留 7 份 |
+| 9 | 数据库损坏 | WAL + `clean_shutdown` 标记文件（正常退出删除；启动时**发现标记存在才**跑 `PRAGMA integrity_check`，见 §14 第 6 条）+ 每日备份到 `backups/` 保留 7 份 |
 
 ---
 
@@ -576,7 +564,7 @@ blobs/
 
 ### 9.0 设置的存储归属（唯一真源）
 
-**SQLite `settings` 表是运行时设置唯一真源**（§4.1 已建该表）。此前"config.toml 装全部设置"的写法是 Rust 时代遗留，会与 `settings` 表形成双写冲突，**已废除**。
+**SQLite `settings` 表是运行时设置的唯一真源**（§4.1 已建该表）。配置文件只承担"打开数据库之前就必须读到"的引导项，两者职责不重叠、不存在双写。
 
 只保留一个极小的 TOML 作为**引导配置**（`%APPDATA%\PawClip\config.toml` / `~/Library/Application Support/PawClip/config.toml`），并且只允许放"打开数据库之前就必须读到"的三项：
 
@@ -667,7 +655,7 @@ pawclip/
 │  └─ appicon.png                       # 由 assets/icon/dist/pawclip-1024.png 复制
 ├─ assets/icon/
 │  ├─ pawclip-source.png                # 成品图标稿（822×782，无 alpha）
-│  └─ dist/                             # 生成物，见 §16
+│  └─ dist/                             # 生成物，见 §15
 ├─ scripts/
 │  ├─ build-icons.cjs                   # 图标资源构建
 │  └─ probe-icon-source.cjs             # 源图几何探测（换图后必跑）
@@ -770,30 +758,11 @@ pawclip/
 
 ---
 
-## 14. 决策状态
-
-**全部已确认，无未决项。**（技术栈细节见 §0，图标见 §16）
-
-| # | 问题 | 结论 |
-|---|---|---|
-| 1 | 数据库加密 | **不加密**，明文存储 |
-| 2 | 代码签名 | **不签名**，自用软件 |
-| 3 | 界面语言 | **跟随系统**，中英双语，回退 `en` |
-| 4 | 前端框架 | **React** + Vite + TypeScript |
-| 5 | 后端语言 / 框架 | **Go 1.26** + **Wails v2**（取舍依据见附录 A） |
-| 6 | 应用名称 / 标识 | **喵喵贴** / **PawClip**；`com.pawclip.app`、`PawClip.Clipboard` |
-| 7 | 发布渠道 | **仅 GitHub Releases**，源码 + 安装包 |
-| 8 | 托盘图方案 | **由主图派生单色模板**，不单独设计（见 §16.5） |
-
-**下一步**：M1（捕获链路 + 落库），验收标准见 §12。
-
----
-
-## 15. 优化清单（按收益排序）
+## 14. 优化清单（按收益排序）
 
 ### A. IPC 传输 —— 最容易踩且代价最大的坑
 
-1. **列表只传元数据，图片绝不走 IPC。** 图片/缩略图通过自定义协议直接交给 WebView 加载（Tauri `asset://` / Wails 静态资源）。把 100 张缩略图 base64 塞进 IPC 会让首屏卡 1 秒以上，内存翻倍。
+1. **列表只传元数据，图片绝不走 IPC。** 图片/缩略图通过自定义协议直接交给 WebView 加载（Wails 静态资源服务）。把 100 张缩略图 base64 塞进 IPC 会让首屏卡 1 秒以上、内存翻倍。
 2. **搜索输入防抖 120 ms，并取消上一次未完成的查询**（请求序号比对或 `AbortController`）。用户快速输入时并发打 FTS 会拖垮响应。
 
 ### B. 数据库
@@ -803,7 +772,7 @@ pawclip/
 5. **WAL 治理**。每 1000 次写入或每小时 `PRAGMA wal_checkpoint(TRUNCATE)`，否则 WAL 文件会涨到几百 MB。
 6. **启动时不要每次都做 `PRAGMA integrity_check`**（万级库要几秒）。改为标记文件方案：正常退出时删除标记，启动时发现标记存在才做完整性检查。
 7. **列表查询绝不 `SELECT text_content`**，只取 `preview`（前 200 字符）。否则 2000 条全文进内存能到几十 MB。
-8. ~~为 FTS5 尝试 `detail=none` 让索引体积减半~~ → **已实测排除，不要再试。** trigram 分词器与 `detail=none` / `detail=column` **不兼容**：建表与回填都能成功，但查询会直接抛 `OperationalError`——实测 `MATCH '中文文档'`、`MATCH 'hello'` 均报错，只有 3 字符以上的纯 ASCII 查询侥幸命中。**必须保留默认 `detail=full`**。（SQLite 3.50.4 实测）
+8. **FTS5 必须保留默认 `detail=full`，不要用 `detail=none` / `detail=column`。** 这两个选项与 trigram 分词器**不兼容**：建表与回填都能成功，但查询会直接抛 `OperationalError`——实测 `MATCH '中文文档'`、`MATCH 'hello'` 均报错，只有 3 字符以上的纯 ASCII 查询侥幸命中。（SQLite 3.50.4 实测）
 
 ### C. 内存
 
@@ -819,7 +788,7 @@ pawclip/
 
 ### E. 捕获正确性
 
-15. **缩略图在捕获时同步生成**（长边 160 px，`nfnt/resize` 或 `disintegration/imaging`，10 MB 图约 20–40 ms）。异步生成会让列表出现缩略图空窗，体验明显变差。**不要用 `fast_image_resize`**——那是 Rust crate。
+15. **缩略图在捕获时同步生成**（长边 160 px，`nfnt/resize` 或 `disintegration/imaging`，10 MB 图约 20–40 ms）。异步生成会让列表出现缩略图空窗，体验明显变差。
 16. **超大文本截断存储但要保留完整指纹**：对完整内容做 sha256，只截断存进 `text_content` 的前 256K 字符。否则去重会漏。
 17. `filter.go` 的顺序应为：保密标记 → 应用黑名单 → 类型开关 → 自写入守卫 → 尺寸上限。**把最便宜的检查放最前面**，避免对大图片做无用功。
 
@@ -831,7 +800,7 @@ pawclip/
 20. Windows SmartScreen → "更多信息" → "仍要运行"。
 21. GitHub Actions 矩阵：`macos-14`（arm64）与 `macos-13`（x86_64）分别构建，或在单个 `macos-14` runner 上直接 `wails build -platform darwin/universal` 出通用二进制；`windows-2022` 出 NSIS 安装包。
 22. `.gitignore` 排除 `build/bin/`（Wails 产物）、`frontend/dist/`、`node_modules/`、`*.dmg` / `*.exe` / `*.msi`、`*.clipbak`、本地 `pawclip.db*` 与 `blobs/`。**发布产物只进 Release，不进仓库。**
-    - **例外**：`assets/icon/dist/`（约 3.3 MB）**要入库**——它是 Wails 的构建**输入**（appicon + 托盘图都从这里取），不是发布产物。入库才能保证 `git clone && wails build` 开箱即用、不依赖 Node 工具链。若将来嫌体积大，可改为忽略整个目录并在构建前跑一次 `node scripts/build-icons.cjs`（§16.4）。
+    - **例外**：`assets/icon/dist/`（约 3.3 MB）**要入库**——它是 Wails 的构建**输入**（appicon + 托盘图都从这里取），不是发布产物。入库才能保证 `git clone && wails build` 开箱即用、不依赖 Node 工具链。若将来嫌体积大，可改为忽略整个目录并在构建前跑一次 `node scripts/build-icons.cjs`（§15.4）。
 
 ### G. i18n 落地
 
@@ -840,9 +809,9 @@ pawclip/
 
 ---
 
-## 16. 品牌与图标资源
+## 15. 品牌与图标资源
 
-### 16.1 命名与标识
+### 15.1 命名与标识
 
 | 项 | 值 |
 |---|---|
@@ -855,7 +824,7 @@ pawclip/
 | 仓库名 | `pawclip` |
 | 配置 / 数据目录 | macOS `~/Library/Application Support/PawClip`；Windows `%APPDATA%\PawClip`（内含 `pawclip.db` + `blobs/` + `thumbs/`） |
 
-### 16.2 源图与几何常量
+### 15.2 源图与几何常量
 
 图标源是**成品位图** `assets/icon/pawclip-source.png`（822×782），不是矢量稿，所以构建脚本依赖从源图实测出的几何常量：
 
@@ -868,7 +837,7 @@ pawclip/
 
 **换图后必须重跑 `scripts/probe-icon-source.cjs` 并更新这些常量**，否则遮罩会切错位置。
 
-### 16.3 三个必须知道的坑
+### 15.3 三个必须知道的坑
 
 **坑一：源图没有 alpha 通道。** 四角是不透明近白（250,250,248），直接用会得到一张铺满全幅的白方块，而不是圆角图标。必须人工生成 alpha 遮罩。
 
@@ -886,7 +855,7 @@ pawclip/
 
 **验收方式**：`dist/preview-mask-check.png` 把抠好的方块叠在品红底上做四角放大——**任何品红穿透都说明遮罩没切干净**。
 
-### 16.4 构建产物
+### 15.4 构建产物
 
 | 文件 | 用途 |
 |---|---|
@@ -901,7 +870,7 @@ pawclip/
 | `preview-tray.png` | 托盘图明暗栏效果（含深色栏自动反转模拟） |
 | `preview-mask-check.png` | 遮罩穿透校验 |
 
-### 16.5 托盘图：由主图派生单色模板
+### 15.5 托盘图：由主图派生单色模板
 
 托盘图**不单独设计**，直接从主图推导：取已抠好的圆角方块，按亮度→alpha 映射成纯黑 + alpha 的模板图（`TRAY_BG_LUM=242` 把浅灰卡片视为背景→透明，只留下深灰线稿与绿色对勾，并乘 `TRAY_BOOST=1.7` 让灰度≈130 的对勾也达到全不透明）。
 
@@ -909,11 +878,11 @@ pawclip/
 
 代价是 16px 下细节会糊——但实际渲染尺寸不是 16px：macOS 菜单栏是 16pt **@2x = 32px**（Retina 起步），该档位下剪贴板轮廓与猫脸均清晰可辨；16px 档（`trayTemplate.png`）只用于非 Retina 与 Windows 小图标场景，作为兜底可接受。
 
-> 曾评估过"手绘 16px 专用单色稿"方案（爪印方块，小尺寸更锐利），因引入第二个图形语言而放弃。若未来实测发现 16px 确实不可用，正确做法是**从同一张主图简化轮廓**（加粗线稿、去掉对勾等细节），而不是另起一套图形。
+> 若未来实测发现 16px 确实不可用，正确做法是**从同一张主图简化轮廓**（加粗线稿、去掉对勾等细节），而不是另起一套图形语言。
 
 **macOS 模板图注意**：模板图只由 alpha 承载形状，颜色由系统按菜单栏明暗渲染（浅色栏黑、深色栏白）。所以源图必须是**纯黑 + alpha**；做成彩色会在深色菜单栏下完全不可见。`preview-tray.png` 的深色栏已按系统反转后的真实效果渲染。
 
-### 16.6 已知观感问题
+### 15.6 已知观感问题
 
 图标主调是浅灰卡片（填充 244–250）配深灰线稿，**在浅色背景（浅色桌面 / 浅色 Dock / 白色网页）上对比度极低**——实测 48px 以下几乎只剩线稿可见；深色背景下表现很好。
 
@@ -921,7 +890,7 @@ pawclip/
 
 ---
 
-## 17. 里程碑与起步顺序
+## 16. 里程碑与起步顺序
 
 M0 是门禁，M1–M4 每步都产出**可独立验证**的产物。不要跳步把 UI 全做完再联调。
 
@@ -930,9 +899,7 @@ M0 是门禁，M1–M4 每步都产出**可独立验证**的产物。不要跳�
 | # | 目标 | 状态 |
 |---|---|---|
 | 1 | 冻结工程骨架：`git init` + `.gitignore` + Go module + Wails 脚手架 + React/Vite | 文档、图标资源、`git` 已就绪；Go module 与 Wails 脚手架随 M1 建立 |
-| 2 | 解决免抢焦点面板（§0.1） | ✅ **已通过实测**（三次复现）。方案 = 真正创建 NSPanel 并接管 contentView + Accessory 激活策略。详见 `poc/POC-RESULT.md` |
-
-**关键结论**：**不需要**上 Wails v3 alpha，也**不需要**接受抢焦点。技术栈维持 Go + Wails v2。
+| 2 | 解决免抢焦点面板（§0.2） | ✅ **已通过实测**（三次复现）。方案 = 真正创建 NSPanel 并接管 contentView + Accessory 激活策略。详见 `poc/POC-RESULT.md` |
 
 ### M1 · 捕获链路 + 落库（纯后端，无 UI —— 先跑通正确性）
 
@@ -953,7 +920,7 @@ M0 是门禁，M1–M4 每步都产出**可独立验证**的产物。不要跳�
 **验收**：
 - 「搜索正确性」全表通过（1/2/3 字中文、英文、中英混排、大小写、特殊字符）
 - 检索延迟 < 50 ms @ 10 万条（写脚本灌数据实测）
-- 面板闲置销毁后实测 RSS 达标（macOS ≤ 30 MB / Windows ≤ 25 MB），**并且确认 WebView 子进程真的退出**（§15 第 10 条——销毁可能是假象）
+- 面板闲置销毁后实测 RSS 达标（macOS ≤ 30 MB / Windows ≤ 25 MB），**并且确认 WebView 子进程真的退出**（§14 第 10 条——销毁可能是假象）
 
 **⚠️ 面板实现必须处理的两个遗留点（源自 M0 实测）**：
 
@@ -968,19 +935,15 @@ M0 是门禁，M1–M4 每步都产出**可独立验证**的产物。不要跳�
 
 ### M4 · 打磨与发布
 
-**交付**：i18n 补全（§15 第 24 条那 6 个易漏位置）、内容转换器、连续粘贴、拼音首字母搜索、GitHub Actions 矩阵构建 + Release。
+**交付**：i18n 补全（§14 第 24 条那 6 个易漏位置）、内容转换器、连续粘贴、拼音首字母搜索、GitHub Actions 矩阵构建 + Release。
 
 **验收**：两台机器真机走一遍「下载 → 绕过 Gatekeeper / SmartScreen → 使用 → 导出 → 换机导入」。
 
 ---
 
-## 附录 A：Go 与 Rust 可行性对比
+## 附录 A：Go 平台层实现要点
 
-### 结论
-
-**Go 完全可行，不是妥协方案。** 但对"包量小"的影响需要在正确的维度上看——下载体积和安装后占用是两回事。
-
-### A.1 Go 具体怎么和系统交互
+### A.1 两个平台的接入方式
 
 **macOS：cgo + 一个极薄的 Objective-C 桥**
 
@@ -1005,70 +968,21 @@ package clipboard
 import "C"
 ```
 
-约 150 行 `.m` 文件暴露 C 接口即可。可读性其实**比 Rust 的泛型消息发送更直观**。
+约 150 行 `.m` 文件暴露 C 接口即可。
 
 免 cgo 的替代方案是 `github.com/ebitengine/purego`，它能直接调用 `objc_msgSend`，纯 Go 且可交叉编译。但每次消息发送都要手写类型编码，冗长易错，**不推荐**——既然本来就要为 Windows 写平台分支，多一个 `.m` 文件不算负担。
 
 **Windows：完全不需要 cgo**
 
-`golang.org/x/sys/windows` + `syscall.NewCallback` 就能创建 message-only 窗口、注册 `AddClipboardFormatListener`、读 `CF_DIBV5` / `CF_HDROP`。这部分 **Go 比 Rust 更省事**（`windows` crate 的类型体操有时相当啰嗦）。
+`golang.org/x/sys/windows` + `syscall.NewCallback` 就能创建 message-only 窗口、注册 `AddClipboardFormatListener`、读 `CF_DIBV5` / `CF_HDROP`，全程无需 cgo。
 
-**不要用 `golang.design/x/clipboard`**
+### A.2 不要用的库
 
-它和 Rust 的 `arboard` 犯同一个毛病：只暴露 `text` / `image`，**不暴露 `changeCount`、不暴露原始 pasteboard types**。而我们需要 `changeCount` 做变更检测、需要原始 types 判断 `org.nspasteboard.ConcealedType` 保密标记、还需要 HTML / RTF。两个语言的现成库都不够用，都必须自己写平台层。
+**不要用 `golang.design/x/clipboard`。** 它只暴露 `text` / `image`，**不暴露 `changeCount`、不暴露原始 pasteboard types**。而我们需要 `changeCount` 做变更检测、需要原始 types 判断 `org.nspasteboard.ConcealedType` 保密标记、还需要 HTML / RTF。平台层必须自己写。
 
-**数据库**
+**不要用 `modernc.org/sqlite`。** 纯 Go 免 cgo，但会给二进制**再加约 8–10 MB**。选 `mattn/go-sqlite3`（cgo，+2–3 MB）；**FTS5 必须加 `sqlite_fts5` 构建标签**才能启用，trigram 分词器随 FTS5 一起可用。
 
-- `mattn/go-sqlite3`：cgo 方案，体积代价小（+2–3 MB）。**FTS5 需加 `sqlite_fts5` 构建标签**才能启用；trigram 分词器随 FTS5 一起可用。
-- `modernc.org/sqlite`：纯 Go 免 cgo，但会给二进制**再加约 8–10 MB**。
-- 既然已经用 cgo 了，**选 `mattn/go-sqlite3`**。
+### A.3 语言无关性
 
-### A.2 代价对比
+§2 的 `Backend` 接口抽象、§3 平台能力对照、§4 数据模型、§5 生命周期、`BACKUP-FORMAT.md` 全部与语言无关——只有 `clipboard/` 与 `store/` 两个目录是语言相关的实现。这是换语言成本可控的原因。
 
-| 维度 | Rust + Tauri v2 | Go + Wails v2 | 差值 |
-|---|---|---|---|
-| macOS 可执行文件 | 4–7 MB | 11–16 MB | Go **+7–9 MB** |
-| macOS DMG（压缩后） | 4–7 MB | 6–9 MB | Go **仅 +1–3 MB** |
-| Windows 安装包（LZMA） | 3–6 MB | 4–7 MB | Go +1–2 MB |
-| 安装后磁盘占用 | 10–14 MB | 12–18 MB | Go +5–8 MB |
-| 空闲 RSS（面板销毁态） | ~10–20 MB | ~12–25 MB | Go +2–6 MB |
-| 冷启动 | 略快 | 略慢（运行时初始化） | 可忽略 |
-| 原生调用难度 | 类型安全，但 `objc_msgSend` 泛型略绕 | Windows 更简单；macOS 需 cgo shim | 各有胜负 |
-| 并发模型 | thread + mpsc，手写状态机 | goroutine + channel，天然合适 | **Go 明显更简单** |
-| 跨平台编译 | 各平台分别构建 | 有 cgo 后同样分别构建 | 平手 |
-| GUI 框架成熟度 | Tauri v2 稳定 | Wails v2 稳定（v3 仍在 alpha） | 平手 |
-| 可参考的同类实现 | 较多（如 EcoPaste） | 较少 | Rust 略优 |
-
-**关键发现：**
-
-1. 你最在意的"包量小"，在**下载体积**上两者只差 **1–3 MB**——因为 Rust/Go 的体积差会被压缩吃掉一部分。
-2. 真正的差距在**安装后磁盘占用（5–8 MB）**和**内存（2–6 MB）**。
-3. 达成 15–30 MB 空闲内存的决定性因素——"用系统 WebView + 面板窗口闲置销毁"——两者共用，**与语言无关**。换语言不会破坏这个策略。
-
-### A.3 建议
-
-本表记录当初的取舍依据，**结论已采纳第 1 行**（见 §0）。
-
-| 你的情况 | 选择 | 理由 |
-|---|---|---|
-| **Go 更熟** ← 本项目 | **Go + Wails v2** | 多花 5–8 MB 磁盘换明显更短的开发周期和更简单的心智模型。自用软件不必对体积锱铢必较 |
-| Go / Rust 都不熟，靠 AI 辅助写 | Rust + Tauri v2 | 理由不是体积，而是剪贴板类应用的参考实现与踩坑资料更多（如 Tauri 写的 EcoPaste），出问题更容易搜到答案 |
-| "包量小"有硬指标（如安装后必须 < 12 MB） | Rust + Tauri v2 | 只有 Rust 能满足 |
-
-**架构不受影响**：§2 的 `Backend` 接口抽象、§3 平台能力对照、§4 数据模型、§5 生命周期、`BACKUP-FORMAT.md` 全部与语言无关，换语言只需重写 `clipboard/` 与 `store/` 两个目录的实现，设计不用推翻。
-
----
-
-## 附录 B：由 Rust + Tauri 迁移到 Go + Wails 的对应关系
-
-完整的 `pawclip/` 目录树见 **§10**（已按 Go + Wails 写好），构建命令见 §10「构建命令」，此处不再重复。本附录只保留概念对应，便于对照 §2–§9 中仍带 Rust 语境的表述。
-
-| Rust + Tauri（原设计） | Go + Wails v2（现行） | 落点 |
-|---|---|---|
-| `ClipboardBackend` trait | `Backend` 接口 | `clipboard/backend.go` |
-| `Mutex<Option<(String, Instant)>>` | `sync.Mutex` + 指纹比对 | `clipboard/guard.go` |
-| 4 条 `std::thread` + `mpsc` | goroutine + `chan` | 见 §2 线程模型 |
-| `#[tauri::command]` | App 绑定方法（集中注册） | `app.go` |
-| `rusqlite` bundled SQLite | `mattn/go-sqlite3`，**必须带 `sqlite_fts5` 构建标签** | `store/schema.go` |
-| `fast_image_resize` | `nfnt/resize` | `store/blobs.go` |
-| `Cargo.toml` release profile | `go build -ldflags="-s -w" -trimpath` | CI |

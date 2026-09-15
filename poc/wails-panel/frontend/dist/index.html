@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>PawClip M0 Probe</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: -apple-system, "Helvetica Neue", "PingFang SC", sans-serif;
+    background: #F4F4F6; color: #2C2C2A;
+    display: flex; flex-direction: column;
+    border-radius: 12px; overflow: hidden;
+    user-select: none;
+  }
+  #hdr {
+    padding: 14px 16px 10px; border-bottom: 1px solid rgba(0,0,0,.08);
+  }
+  #title { font-size: 13px; font-weight: 500; letter-spacing: .2px; }
+  #sub { font-size: 11px; color: #6B7280; margin-top: 3px; }
+  #log {
+    flex: 1; margin: 0; padding: 12px 16px;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 10.5px; line-height: 1.65;
+    white-space: pre-wrap; word-break: break-all;
+    overflow-y: auto; color: #3C3F45;
+  }
+  .ok  { color: #2F7A3E; }
+  .bad { color: #A32D2D; }
+</style>
+</head>
+<body>
+  <div id="hdr">
+    <div id="title">PawClip · M0 门禁验证</div>
+    <div id="sub">等待后端…</div>
+  </div>
+  <pre id="log">启动中…</pre>
+
+  <script src="/wails/ipc.js"></script>
+  <script src="/wails/runtime.js"></script>
+  <script>
+  (function () {
+    var logEl = document.getElementById('log');
+    var subEl = document.getElementById('sub');
+    var ready = false;
+
+    function paint(lines) {
+      logEl.textContent = lines.join('\n');
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function markBad(text) {
+      logEl.innerHTML = text
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/^(.*✗.*)$/gm, '<span class="bad">$1</span>')
+        .replace(/^(.*✓.*)$/gm, '<span class="ok">$1</span>');
+    }
+
+    async function boot() {
+      if (!(window.go && window.go.main && window.go.main.App)) {
+        setTimeout(boot, 200);
+        return;
+      }
+      try {
+        var m = await window.go.main.App.ModeName();
+        var acc = await window.go.main.App.Accessory();
+        subEl.textContent = 'mode = ' + m + '   accessory = ' + acc;
+      } catch (e) {}
+      ready = true;
+      tick();
+    }
+
+    async function tick() {
+      if (!ready) return;
+      try {
+        var lines = await window.go.main.App.ProbeLog();
+        if (lines && lines.length) markBad(lines.join('\n'));
+      } catch (e) {}
+      setTimeout(tick, 400);
+    }
+
+    boot();
+  })();
+  </script>
+</body>
+</html>

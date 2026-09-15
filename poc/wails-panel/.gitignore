@@ -1,3 +1,9 @@
-build/bin
+# Wails 构建时自动生成的模板目录（appicon / Info.plist / windows 资源）
+# 删除后 `wails build` 会用内置模板重新生成，无需入库
+build
+
+# Wails 为前端自动生成的 JS 绑定。本 PoC 用纯静态前端（frontend/dist/index.html），
+# 只依赖 Wails 注入的 /wails/ipc.js 与 /wails/runtime.js，不需要这个目录
+frontend/wailsjs
+
 node_modules
-frontend/dist
