@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -370,4 +372,105 @@ func TestReaderIsQueryOnly(t *testing.T) {
 		t.Fatal("读句柄上的写入应当被拒绝")
 	}
 	t.Logf("读句柄写入被拒，错误信息：%v", err)
+}
+
+// TestConnectionPragmasAreActuallyApplied 是 DSN 参数方案的回归测试。
+//
+// 背景：连接级 PRAGMA 原来挂在驱动 ConnectHook 上（`c.Exec("PRAGMA …")`），
+// 而 *sqlite3.SQLiteConn 在 `CGO_ENABLED=0` 下是个没有 Exec 的空桩，
+// 于是那一行让整个 store 包无法跨平台交叉编译。改成 DSN 参数后编译问题
+// 消失了，但引出一个新的、更隐蔽的风险：**DSN 键名写错不会报错，
+// 只是不生效**。
+//
+// 所以这里直接断言"读回来是对的"，而不是断言"我们写了这个参数"。
+func TestConnectionPragmasAreActuallyApplied(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	if note := db.PragmaNote(); note != "" {
+		t.Fatalf("启动自检报告 PRAGMA 未生效：%s", note)
+	}
+
+	read := func(h *sql.DB, pragma string) string {
+		t.Helper()
+		var v string
+		if err := h.QueryRowContext(ctx, "PRAGMA "+pragma).Scan(&v); err != nil {
+			t.Fatalf("读 PRAGMA %s: %v", pragma, err)
+		}
+		return v
+	}
+
+	for _, c := range []struct{ pragma, want string }{
+		{"foreign_keys", "1"},
+		{"busy_timeout", "5000"},
+		{"synchronous", "1"}, // 1 = NORMAL
+	} {
+		if got := read(db.Writer(), c.pragma); got != c.want {
+			t.Errorf("写句柄 PRAGMA %s = %s，期望 %s", c.pragma, got, c.want)
+		}
+	}
+	// 读池里的**每一条**连接都得有 query_only，不能只有第一条。
+	// 这里串行地要 4 次连接（MaxOpenConns=4），逐个确认。
+	for i := 0; i < 4; i++ {
+		if got := read(db.Reader(), "query_only"); got != "1" {
+			t.Fatalf("读句柄第 %d 条连接的 query_only = %s，期望 1（DSN 参数没打到新连接上）", i+1, got)
+		}
+	}
+}
+
+// TestForeignKeysCascadeActuallyWorks 验证外键**真的**在级联。
+//
+// foreign_keys=OFF 是那种"任何测试都不会变红"的静默失效：删掉一个分类后
+// items.category_id 会指向一个不存在的分类，界面表现为"分类下的条目数
+// 与实际不符"。所以不能只查 PRAGMA 的值，要真的删一次看结果。
+func TestForeignKeysCascadeActuallyWorks(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	if _, err := db.Writer().ExecContext(ctx,
+		`INSERT INTO categories (id, name, sort_order, created_at) VALUES (9, '级联测试', 0, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Writer().ExecContext(ctx,
+		`INSERT INTO items (kind, fingerprint, category_id, first_seen_at, created_at)
+		 VALUES ('text','sha256:fk1',9,1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Writer().ExecContext(ctx, `DELETE FROM categories WHERE id = 9`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 条目本身不该被删（那是 ON DELETE SET NULL），但 category_id 必须归 NULL。
+	var cat sql.NullInt64
+	if err := db.Writer().QueryRowContext(ctx,
+		`SELECT category_id FROM items WHERE fingerprint = 'sha256:fk1'`).Scan(&cat); err != nil {
+		t.Fatalf("条目被一起删掉了？%v", err)
+	}
+	if cat.Valid {
+		t.Fatalf("分类已删除，条目的 category_id 仍是 %d —— 外键级联没生效（foreign_keys=OFF）", cat.Int64)
+	}
+}
+
+// TestDSNWithKeepsExistingQueryString 覆盖"路径里已经带查询串"的情况。
+//
+// 直接再拼一个 '?' 的话，SQLite 会把第一个 '?' 之后的整段当成文件名，
+// 结果是打开一个叫 "db.sqlite?_foreign_keys=on&_busy_timeout=5000" 的
+// **新文件**——看起来一切正常，其实数据写进了另一个库。
+func TestDSNWithKeepsExistingQueryString(t *testing.T) {
+	got := dsnWith("/tmp/x.db?_txlock=immediate", true)
+	if strings.Count(got, "?") != 1 {
+		t.Fatalf("DSN 里出现了 %d 个 '?'（应当只有 1 个）：%s", strings.Count(got, "?"), got)
+	}
+	if !strings.HasPrefix(got, "/tmp/x.db?_txlock=immediate&") {
+		t.Fatalf("原有查询串没被保留：%s", got)
+	}
+	for _, want := range []string{"_foreign_keys=on", "_busy_timeout=5000", "_synchronous=NORMAL", "_query_only=on"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("DSN 缺参数 %s：%s", want, got)
+		}
+	}
+	// 写句柄不该带 query_only。
+	if w := dsnWith("/tmp/x.db", false); strings.Contains(w, "query_only") {
+		t.Errorf("写句柄的 DSN 不该带 query_only：%s", w)
+	}
 }

@@ -330,6 +330,25 @@ func DecodePNGSize(pngBytes []byte) (w, h int, err error) {
 	return cfg.Width, cfg.Height, nil
 }
 
+// DecodePNGSizeFromFile 只读文件开头的 PNG 头拿像素尺寸。
+//
+// 与 DecodePNGSize 的区别：它从**文件**读，且不需要调用方先把整张图
+// 读进内存。导出时 items 表没有 image_width 列，尺寸只能这么拿；
+// 用 DecodeConfig 而不是 Decode，是因为后者要解出全部像素行
+// （10 MB 的图会真的分配几十 MB）。
+func DecodePNGSizeFromFile(path string) (w, h int, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = f.Close() }()
+	cfg, err := png.DecodeConfig(f)
+	if err != nil {
+		return 0, 0, fmt.Errorf("store: decode PNG header from %s: %w", path, err)
+	}
+	return cfg.Width, cfg.Height, nil
+}
+
 // DecodePNG 完整解码（缩略图与校验用）。
 func DecodePNG(pngBytes []byte) (image.Image, error) {
 	img, err := png.Decode(bytes.NewReader(pngBytes))

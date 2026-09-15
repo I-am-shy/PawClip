@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,13 +31,59 @@ const SchemaVersion = 1
 // cleanShutdownMarker 是"上次没有正常退出"的标记文件名（放在数据库同目录）。
 const cleanShutdownMarker = "clean_shutdown"
 
-// 驱动名。不直接用 "sqlite3"，是为了挂 ConnectHook 把 PRAGMA 打到
-// **每一条新连接**上（busy_timeout / foreign_keys / synchronous 都是
-// 连接级设置，只在池里的第一条连接上设会留坑）。
+// 驱动名。不直接用 "sqlite3"，是为了给**只读句柄**也挂上驱动级配置
+// （读句柄要开 query_only，见 dsnWith）。
 const (
 	driverRW = "pawclip_sqlite3_rw"
 	driverRO = "pawclip_sqlite3_ro"
 )
+
+// pragmas 是每个连接都要生效的连接级 PRAGMA。
+//
+// ⚠️ 这里用 DSN 参数（`_foreign_keys=on` 这类）而不是 ConnectHook，
+// 有两个理由，第二个是硬的：
+//
+//  1. busy_timeout / foreign_keys / synchronous 都是**连接级**设置。
+//     数据库连接池每新开一条连接都要重新设一遍，只在第一条上设会留坑。
+//     DSN 参数由驱动在每次 Open 时应用，天然满足这一点。
+//
+//  2. **ConnectHook 拿到的 *sqlite3.SQLiteConn 在非 cgo 构建下是个空桩**
+//     （mattn/go-sqlite3 的 static_mock.go，`//go:build !cgo`，那个
+//     SQLiteConn 只有 RegisterXxx 系列方法、没有 Exec）。原来这里写
+//     `c.Exec(pragma, nil)`，在 CGO_ENABLED=0 交叉编译时直接编译不过：
+//
+//     store/schema.go:196:18: c.Exec undefined
+//     (type *sqlite3.SQLiteConn has no field or method Exec)
+//
+//     也就是说那行代码把"能不能编译出 Windows 版"绑在了 cgo 上。
+//     改成 DSN 参数之后，本包不再触碰任何驱动内部类型，跨平台编译干净。
+var pragmas = []struct{ key, val string }{
+	{"_foreign_keys", "on"},    // 外键级联：categories/tags 删除要连带清理
+	{"_busy_timeout", "5000"},  // 锁等待 5s（DESIGN.md §4.1 的连接约定）
+	{"_synchronous", "NORMAL"}, // WAL 下的推荐值
+}
+
+// dsnWith 给数据库路径拼上 PRAGMA 参数。
+//
+// 只读句柄额外开 query_only：让"误写"立刻报错，而不是悄悄绕开单写纪律。
+// 这是设计上的一条纪律（§2 第 1 条），靠约定守不住，得靠 SQLite 自己拦。
+func dsnWith(path string, readOnly bool) string {
+	q := url.Values{}
+	for _, p := range pragmas {
+		q.Set(p.key, p.val)
+	}
+	if readOnly {
+		q.Set("_query_only", "on")
+	}
+	// 路径里可能已经有查询串（例如用户传了 file:...?_txlock=immediate），
+	// 那就用 & 续接；直接再拼一个 ? 会让 SQLite 把第一个 ? 之后的
+	// 整段当成文件名的一部分。
+	sep := "?"
+	if strings.ContainsRune(path, '?') {
+		sep = "&"
+	}
+	return path + sep + q.Encode()
+}
 
 // 错误。
 var (
@@ -67,6 +114,8 @@ type DB struct {
 	ftsAvailable bool
 	// integrityNote 记录启动自检发现的问题，供上层展示（空串表示没问题）。
 	integrityNote string
+	// pragmaNote 记录连接级 PRAGMA 自检的异常（空串表示全部生效）。
+	pragmaNote string
 	// markerEnabled 对应设置 storage.cleanShutdownMarker。
 	markerEnabled bool
 
@@ -97,7 +146,7 @@ func Open(opts Options) (*DB, error) {
 	markerPath := filepath.Join(dir, cleanShutdownMarker)
 	hadMarker := fileExists(markerPath)
 
-	w, err := sql.Open(driverRW, opts.Path)
+	w, err := sql.Open(driverRW, dsnWith(opts.Path, false))
 	if err != nil {
 		return nil, fmt.Errorf("store: open write handle: %w", err)
 	}
@@ -144,7 +193,7 @@ func Open(opts Options) (*DB, error) {
 		log.Debug("no clean_shutdown marker; skipping integrity check")
 	}
 
-	ro, err := sql.Open(driverRO, opts.Path)
+	ro, err := sql.Open(driverRO, dsnWith(opts.Path, true))
 	if err != nil {
 		w.Close()
 		return nil, fmt.Errorf("store: open read handle: %w", err)
@@ -157,6 +206,19 @@ func Open(opts Options) (*DB, error) {
 	// 必须放在读句柄打开之后——自检走的是查询路径。
 	d.ftsAvailable = d.checkFTS()
 
+	// PRAGMA 自检：确认 DSN 参数**真的**生效了。
+	//
+	// 为什么要查一遍：DSN 参数只在驱动认识这个键时才生效。如果哪天
+	// go-sqlite3 改了参数名（历史上 `_synchronous` 就同时接受 `_sync`），
+	// 我们会得到一个"静默不设 PRAGMA"的库——尤其是 foreign_keys=OFF，
+	// 它会让 ON DELETE CASCADE 全部失效，而**任何测试都不会因此变红**，
+	// 只是分类/标签删除后留下悬空引用。这种失败必须被显式看见。
+	if note := d.verifyPragmas(); note != "" {
+		d.pragmaNote = note
+		log.Error("连接级 PRAGMA 没有按预期生效，请检查 DSN 参数名是否被驱动改名",
+			"detail", note)
+	}
+
 	// 迁移完成后写入标记：进程活着就代表"可能没正常退出"。
 	if err := d.writeMarker(); err != nil {
 		log.Warn("cannot write clean_shutdown marker", "err", err)
@@ -166,39 +228,16 @@ func Open(opts Options) (*DB, error) {
 
 func registerDrivers() {
 	driverOnce.Do(func() {
-		sql.Register(driverRW, &sqlite3.SQLiteDriver{
-			ConnectHook: func(c *sqlite3.SQLiteConn) error {
-				return applyPragmas(c, false)
-			},
-		})
-		sql.Register(driverRO, &sqlite3.SQLiteDriver{
-			ConnectHook: func(c *sqlite3.SQLiteConn) error {
-				return applyPragmas(c, true)
-			},
-		})
+		// 两个驱动都**不带 ConnectHook**：PRAGMA 全走 DSN 参数（见 pragmas）。
+		// 之所以还要注册两个名字而不是直接用 "sqlite3"：读句柄需要一套
+		// 不同的 DSN（query_only），而 sql.Register 是按名字全局注册的，
+		// 分开注册能让"哪个句柄该是什么配置"在 Open 处一眼可见。
+		sql.Register(driverRW, &sqlite3.SQLiteDriver{})
+		sql.Register(driverRO, &sqlite3.SQLiteDriver{})
 	})
 }
 
 var driverOnce sync.Once
-
-// applyPragmas 在每条新连接上设置连接级 PRAGMA。
-func applyPragmas(c *sqlite3.SQLiteConn, readOnly bool) error {
-	pragmas := []string{
-		"PRAGMA foreign_keys = ON",
-		"PRAGMA busy_timeout = 5000",
-		"PRAGMA synchronous = NORMAL",
-	}
-	if readOnly {
-		// 读句柄只跑 SELECT；打开 query_only 让误写立即报错而不是悄悄绕开单写纪律。
-		pragmas = append(pragmas, "PRAGMA query_only = ON")
-	}
-	for _, p := range pragmas {
-		if _, err := c.Exec(p, nil); err != nil {
-			return fmt.Errorf("store: %s: %w", p, err)
-		}
-	}
-	return nil
-}
 
 // ── 迁移 ────────────────────────────────────────────────────────
 
@@ -430,6 +469,49 @@ func (d *DB) runIntegrityCheck() string {
 
 // IntegrityNote 返回启动自检发现的问题（空串表示通过或未做检查）。
 func (d *DB) IntegrityNote() string { return d.integrityNote }
+
+// PragmaNote 返回连接级 PRAGMA 自检的异常（空串表示全部按预期生效）。
+func (d *DB) PragmaNote() string { return d.pragmaNote }
+
+// verifyPragmas 逐项读回连接级 PRAGMA，确认 DSN 参数真的被驱动接受了。
+//
+// 为什么值得专门查一遍：DSN 参数若写错名字，**不报错、只是不生效**。
+// 最要命的是 foreign_keys —— 它是 OFF 时 ON DELETE CASCADE 全部失效，
+// 表现为"删掉分类后 items.category_id 指向一个不存在的分类"，
+// 而所有测试仍然全绿（因为没有任何测试会去删一个分类再看子表）。
+// 这类静默失效必须显式暴露。
+//
+// 返回空串表示全部正常。
+func (d *DB) verifyPragmas() string {
+	type check struct {
+		pragma string
+		want   string
+		handle *sql.DB
+	}
+	checks := []check{
+		{"foreign_keys", "1", d.w},
+		{"busy_timeout", "5000", d.w},
+		{"synchronous", "1", d.w}, // 1 = NORMAL
+		{"query_only", "0", d.w},  // 写句柄必须能写
+	}
+	if d.r != nil {
+		checks = append(checks, check{"query_only", "1", d.r})
+	}
+
+	var bad []string
+	for _, c := range checks {
+		var got string
+		// PRAGMA 不支持参数绑定，这里的 sql 文本全部是包内常量，无注入面。
+		if err := c.handle.QueryRow("PRAGMA " + c.pragma).Scan(&got); err != nil {
+			bad = append(bad, fmt.Sprintf("%s: 读回失败: %v", c.pragma, err))
+			continue
+		}
+		if got != c.want {
+			bad = append(bad, fmt.Sprintf("%s = %s，期望 %s", c.pragma, got, c.want))
+		}
+	}
+	return strings.Join(bad, "; ")
+}
 
 // ── clean_shutdown 标记 ─────────────────────────────────────────
 

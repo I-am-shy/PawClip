@@ -128,18 +128,38 @@ func (d *DB) SetItemTags(ctx context.Context, itemID int64, tagIDs []int64) erro
 	if err != nil {
 		return fmt.Errorf("store: set item tags: %w", err)
 	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "DELETE FROM item_tags WHERE item_id = ?", itemID); err != nil {
+	defer func() { _ = tx.Rollback() }()
+	if err := d.setItemTagsOn(ctx, tx, itemID, tagIDs); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SetItemTagsTx 是 SetItemTags 的**事务内**版本：所有写都走到调用方给的 ex 上。
+//
+// 导入路径必须用它。条目本身是在一个"每 500 条提交一次"的事务里插入的，
+// 标签要是另起一个事务（或走另一条连接）写，就会出现"条目已经可见、
+// 标签却还没提交"的中间态；导入中途崩溃时那批数据会留下不一致的标签。
+//
+// 第一版这里写成了"自己开事务"，那等于没解决问题——所以单独把
+// setItemTagsOn 提出来，两个入口共用同一段写逻辑，差别只在 ex 是谁。
+func (d *DB) SetItemTagsTx(ctx context.Context, ex Execer, itemID int64, tagIDs []int64) error {
+	return d.setItemTagsOn(ctx, ex, itemID, tagIDs)
+}
+
+// setItemTagsOn 是标签覆盖写的唯一实现。
+func (d *DB) setItemTagsOn(ctx context.Context, ex Execer, itemID int64, tagIDs []int64) error {
+	if _, err := ex.ExecContext(ctx, "DELETE FROM item_tags WHERE item_id = ?", itemID); err != nil {
 		return fmt.Errorf("store: clear item tags: %w", err)
 	}
 	for _, tagID := range tagIDs {
-		if _, err := tx.ExecContext(ctx,
+		if _, err := ex.ExecContext(ctx,
 			"INSERT OR IGNORE INTO item_tags (item_id, tag_id) VALUES (?, ?)",
 			itemID, tagID); err != nil {
 			return fmt.Errorf("store: add item tag: %w", err)
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // AddTagToItems 给一批条目打上同一个标签。
