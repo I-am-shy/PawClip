@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/nfnt/resize"
 )
@@ -265,6 +267,56 @@ func (b *BlobStore) Remove(rel string) error {
 		if err := os.Remove(b.Abs(thumb)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("store: remove thumb %s: %w", thumb, err)
 		}
+	}
+	return nil
+}
+
+// BlobInfo 是 Walk 回调看到的一个 blob 文件。
+type BlobInfo struct {
+	// Rel 是相对 blobs/ 的**斜杠分隔**路径，与数据库里存的形式一致。
+	// 这一点很关键：GC 拿它与 AllBlobRefs 的集合直接比对，
+	// 若这里返回 OS 原生分隔符（Windows 上是 `\`），比对会全部落空、
+	// 于是把所有 blob 都当孤儿删掉。
+	Rel string
+	// Abs 是绝对路径（删除时用）。
+	Abs string
+	// Size 是字节数。
+	Size int64
+	// ModTime 是修改时间（孤儿判定的"mtime > 1 天"用它）。
+	ModTime time.Time
+}
+
+// Walk 遍历 blobs/ 下的全部文件（不递归进隐藏目录之外的任何特殊处理）。
+//
+// 回调返回非 nil 错误会中止遍历并把它透传出去；回调可以返回 fs.SkipAll
+// 之类的哨兵，但那属于调用方的自由——本函数不解释错误语义。
+func (b *BlobStore) Walk(fn func(BlobInfo) error) error {
+	err := filepath.WalkDir(b.root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// 单个目录读不了不该让整轮 GC 失败（权限、竞态删除都可能），
+			// 跳过继续走。
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil // 刚被删掉/改名的竞态，跳过
+		}
+		rel := filepath.ToSlash(strings.TrimPrefix(path, b.root+string(filepath.Separator)))
+		if rel == path { // TrimPrefix 没生效（root 带尾分隔符等），退一步用 Rel
+			if r, err2 := filepath.Rel(b.root, path); err2 == nil {
+				rel = filepath.ToSlash(r)
+			}
+		}
+		return fn(BlobInfo{Rel: rel, Abs: path, Size: info.Size(), ModTime: info.ModTime()})
+	})
+	if err != nil {
+		return fmt.Errorf("store: walk blobs: %w", err)
 	}
 	return nil
 }
