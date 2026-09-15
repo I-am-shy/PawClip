@@ -89,6 +89,8 @@ func TestApp_InitializeShutdownRoundTrip(t *testing.T) {
 	boot.UI.Language = "zh-CN"
 
 	a := NewApp(boot, filepath.Join(dir, "config.toml"), discardLogger())
+	// 测试进程里永远等不到 Wails 的窗口，Attach 会白等 15s（见 noPlatformUI）。
+	a.noPlatformUI = true
 	if err := a.initialize(context.Background()); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
@@ -162,6 +164,7 @@ func TestApp_InitializeTwiceIsSafe(t *testing.T) {
 	boot.Database.Path = filepath.Join(dir, "paw.db")
 
 	a := NewApp(boot, "", discardLogger())
+	a.noPlatformUI = true
 	if err := a.initialize(context.Background()); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
@@ -170,6 +173,7 @@ func TestApp_InitializeTwiceIsSafe(t *testing.T) {
 	// 第二次 initialize 会再开一次库并再起一套 writer/capture。
 	// 这里只要求它不 panic；真正的幂等由 startup 只在启动时被调用一次保证。
 	second := NewApp(boot, "", discardLogger())
+	second.noPlatformUI = true
 	if err := second.initialize(context.Background()); err != nil {
 		t.Fatalf("第二个 App 打开同一个库失败：%v", err)
 	}

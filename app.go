@@ -8,11 +8,15 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zego/pawclip/capture"
 	"github.com/zego/pawclip/clipboard"
+	"github.com/zego/pawclip/panel"
+	"github.com/zego/pawclip/retention"
 	"github.com/zego/pawclip/store"
 )
 
@@ -59,6 +63,28 @@ type App struct {
 	writer   *store.Writer
 	cap      *capture.Capture
 	settings *store.Settings
+
+	// 平台与回写。backend 由回写器共用（同一个剪贴板后端实例，
+	// 不新开一个——Windows 上每个后端都要建自己的消息窗口）。
+	backend clipboard.Backend
+	ctrl    panel.Controller
+	wb      *Writeback
+	gc      *retention.GC
+
+	// lastActivity 是最后一次用户交互的 Unix 秒。空闲 watcher 读它。
+	lastActivity atomic.Int64
+
+	// noPlatformUI 为真时跳过面板接管与托盘安装。
+	//
+	// 存在的唯一理由是**测试**：Controller.Attach 会等 Wails 的窗口出现，
+	// 最长 15 秒（生产环境里这是对的，冷启动建窗口确实可能慢）。而在
+	// `go test` 的进程里那个窗口永远不会出现 —— 不跳过的话，每个调用
+	// initialize 的用例都要白等 15 秒。真机上跑过一次全量测试时，
+	// 三个用例就让它挂到了外层超时（SIGTERM/137）。
+	//
+	// 面板接管这条链路没有单元测试可写（它全是 AppKit/Win32 的副作用），
+	// 靠的是 PanelDiag() 在真机上的取证，见收尾报告。
+	noPlatformUI bool
 
 	settingsMu sync.RWMutex
 	stopOnce   sync.Once
@@ -176,12 +202,47 @@ func (a *App) initialize(ctx context.Context) error {
 		return err
 	}
 
+	// 面板控制器。Linux 上 panel.New 返回一个降级实现（ErrUnsupported），
+	// 所以这里不需要按 GOOS 分叉——平台差异在 panel 包里收敛掉了。
+	//
+	// ⚠️ noPlatformUI 时**连构造都不做**（而不是构造完不用）：darwin 的
+	// 实现里每个方法最后都会走 PawClip_OnMain，也就是
+	// `dispatch_sync(main_queue, ...)`。在 `go test` 的进程里主线程没有跑
+	// 事件循环，没人 drain 那个队列 —— 于是调用会**永久阻塞**（不是超时，
+	// 是死等）。第一次遇到的表现是整个测试进程被外层 SIGTERM 杀掉（exit 137）。
+	// 所以这里传下去的是一个**真正的 nil 接口**，而不是一个"功能关掉的实例"，
+	// 这样 Writeback 里的 `w.panel != nil` 会走降级分支。
+	var ctrl panel.Controller
+	if !a.noPlatformUI {
+		ctrl = panel.New(&panelHandler{app: a})
+	}
+
+	// 回写器。⚠️ guard 必须来自 pipeline.Guard()——**同一个实例**。
+	// 新建一个的话两边各记各的期望指纹，谁也拦不住谁，
+	// 直接导致"用一次历史就多一条一模一样的记录"（验收判据 1 会失败）。
+	wb, err := NewWriteback(backend, pipeline.Guard(), blobs, db, ctrl, a.uiSettings, a.log)
+	if err != nil {
+		return err
+	}
+
+	// GC。配置用函数传进去（每轮重新读设置），这样设置界面改完立刻生效。
+	gc, err := retention.New(db, blobs, a.gcConfig, a.log)
+	if err != nil {
+		return err
+	}
+
 	a.initMu.Lock()
 	a.blobs = blobs
 	a.writer = writer
 	a.cap = pipeline
 	a.settings = settings
+	a.backend = backend
+	a.ctrl = ctrl
+	a.wb = wb
+	a.gc = gc
 	a.initMu.Unlock()
+
+	a.touchActivity()
 
 	// 写入器先起：捕获一旦开始就会立刻往队列里塞东西。
 	writer.Start(ctx)
@@ -190,8 +251,70 @@ func (a *App) initialize(ctx context.Context) error {
 		// 捕获起不来不算致命：历史库还在，用户至少能看到诊断信息。
 		a.log.Error("剪贴板捕获启动失败", "err", err)
 	}
+
+	// GC 起在自己的 goroutine 里，按 retention.gcIntervalSec 走。
+	gc.Start()
+
+	if a.noPlatformUI {
+		// 测试路径：不接管面板、不装托盘（见 noPlatformUI 的字段注释）。
+		return nil
+	}
+
+	// 面板接管与托盘放在**独立的 goroutine** 里：Wails 是在 OnStartup 回调
+	// **返回之后**才创建窗口的，所以这里必须让 startup 先返回。
+	// Controller.Attach 内部自己轮询等窗口出现。
+	go a.attachPanel(ctrl, settings)
+
+	// 空闲 watcher 同理（它只读原子变量，开销可以忽略）。
+	go a.startIdleWatcher(ctx)
+
 	return nil
 }
+
+// attachPanel 等 Wails 窗口出现，把 WebView 接管进免抢焦点面板，并装托盘。
+//
+// 全部失败路径都只记日志：面板/托盘/热键都是"增强"，任何一项起不来
+// 都不该让捕获链路停摆——用户的剪贴板历史照记不误。
+func (a *App) attachPanel(ctrl panel.Controller, s *store.Settings) {
+	cfg := panel.Config{
+		Hotkey:  s.UI.Hotkey,
+		Width:   panelDefaultWidth,
+		Height:  panelDefaultHeight,
+		Tooltip: a.T(msgTrayTooltip),
+	}
+	if err := ctrl.Attach(cfg); err != nil {
+		switch {
+		case errors.Is(err, panel.ErrHotkeyTaken):
+			// 这不是致命错误，但**必须让用户知道**——否则他会反复按一个
+			// 永远没反应的键。通过事件推给前端，由前端显式提示。
+			a.log.Warn("全局热键被别的应用占用", "hotkey", s.UI.Hotkey, "err", err)
+			pushEvent(EventShow, a.T(msgNotifyHotkeyTaken))
+			a.notify(a.T(msgTrayTooltip), a.T(msgNotifyHotkeyTaken))
+		case errors.Is(err, panel.ErrUnsupported):
+			a.log.Info("当前平台没有面板实现（Linux 只留骨架）")
+			return
+		default:
+			a.log.Warn("面板接管失败", "err", err)
+			return
+		}
+	}
+
+	// Accessory 激活策略：不占 Dock、不抢前台。它是免抢焦点的**必要条件**
+	// （DESIGN §0.2 实测），首选做法是 plist 里的 LSUIElement，
+	// 这里是窗口已建出来之后的兜底。
+	if err := ctrl.SetActivationPolicyAccessory(); err != nil {
+		a.log.Warn("切换到 Accessory 激活策略失败", "err", err)
+	}
+
+	a.installTray()
+	a.log.Info("面板与托盘就绪", "hotkey", s.UI.Hotkey, "diag", ctrl.Diag())
+}
+
+// 面板默认尺寸（逻辑点）。DESIGN §11 P0 的面板尺寸。
+const (
+	panelDefaultWidth  = 420
+	panelDefaultHeight = 520
+)
 
 // filterConfigFrom 把 settings 视图翻译成过滤器的输入。
 //
@@ -216,23 +339,34 @@ func (a *App) Shutdown() {
 	a.stopOnce.Do(func() {
 		a.initMu.Lock()
 		db, writer, pipeline := a.db, a.writer, a.cap
+		gc, ctrl := a.gc, a.ctrl
 		a.initMu.Unlock()
 
-		// ① 先取消后台 ctx：捕获循环会停掉后端监听，写入器会把手头的批次刷完。
+		// ⓪ 先把面板/托盘收掉。放在最前面是因为它们会引用 DB 与 blobs：
+		//    托盘菜单项里要读设置（"暂停记录"的勾选态），
+		//    留到库关掉之后再响应点击就会撞上已关闭的 db。
+		if ctrl != nil {
+			ctrl.Close()
+		}
+		// ① 停 GC：它会在库里做删除与 VACUUM，必须早于写入器关闭。
+		if gc != nil {
+			gc.Stop()
+		}
+		// ② 取消后台 ctx：捕获循环会停掉后端监听，写入器会把手头的批次刷完。
 		if a.cancel != nil {
 			a.cancel()
 		}
-		// ② 再显式等捕获退出，确保没有新的 Enqueue 进来。
+		// ③ 再显式等捕获退出，确保没有新的 Enqueue 进来。
 		if pipeline != nil {
 			pipeline.Stop()
 		}
-		// ③ 关写入器：排空队列 + 最后一次 checkpoint。
+		// ④ 关写入器：排空队列 + 最后一次 checkpoint。
 		if writer != nil {
 			if err := writer.Close(); err != nil {
 				a.log.Error("关闭写入器失败", "err", err)
 			}
 		}
-		// ④ 关库。这一步会删掉 clean_shutdown 标记——标记还在就代表
+		// ⑤ 关库。这一步会删掉 clean_shutdown 标记——标记还在就代表
 		//    上次是异常退出，下次启动要跑 integrity_check。
 		if db != nil {
 			if err := db.Close(); err != nil {
@@ -400,9 +534,12 @@ func (a *App) Settings() *store.Settings {
 // SetSetting 写一个设置项，value 是它的 JSON 字面量
 // （字符串要带引号：`"zh-CN"`；数组：`["text","image"]`）。
 //
-// ⚠️ M1 限制：改 `capture.*` / `exclude.*` 只写进库，**不会热生效**——
-// 过滤器的配置是构造时固化的（捕获 goroutine 不想每读一条都加锁）。
-// 热重载（重建 Filter + 重置去抖）属于 M2，与设置界面一起做。
+// 改完**立刻生效**（M2 的热重载）。三条各不相同的作用路径，别搞混：
+//
+//	capture.* / exclude.*  → 重建过滤器推给捕获链路（Capture.ApplyFilter）
+//	ui.hotkey              → 注销旧热键、注册新的（可能失败：被占用）
+//	其它 ui.* / retention.* → 天然生效，因为它们本来就是"每次读一次"的
+//	                        （回写器走 uiSettings()，GC 走 gcConfig()）
 func (a *App) SetSetting(key, value string) error {
 	if !slices.Contains(store.SettingKeys(), key) {
 		return fmt.Errorf("pawclip: 未知设置键 %q", key)
@@ -417,14 +554,58 @@ func (a *App) SetSetting(key, value string) error {
 	}
 
 	a.settingsMu.Lock()
-	defer a.settingsMu.Unlock()
 	a.initMu.Lock()
 	s := a.settings
 	a.initMu.Unlock()
-	if s == nil {
-		return nil
+	var reloadErr error
+	if s != nil {
+		reloadErr = store.LoadSettingsInto(ctx, db, s)
 	}
-	return store.LoadSettingsInto(ctx, db, s)
+	a.settingsMu.Unlock()
+	if reloadErr != nil {
+		// 设置已经写进库了（那一行是真的），只是内存里的视图没更新。
+		// 如实报错，而不是"看起来成功但内存里还是旧值"。
+		return fmt.Errorf("pawclip: 设置已写入但重新载入失败：%w", reloadErr)
+	}
+
+	a.applySettingChange(key)
+	return nil
+}
+
+// applySettingChange 把"设置变了"这件事推到真正受影响的组件上。
+//
+// 为什么按 key 分派而不是"每次全推一遍"：重建过滤器是有代价的
+// （会重置去抖计时器），热键换绑会短暂注销——只改一个主题色不该引起这些。
+func (a *App) applySettingChange(key string) {
+	switch {
+	case strings.HasPrefix(key, "capture."), strings.HasPrefix(key, "exclude."):
+		if cap := a.capturePipeline(); cap != nil {
+			if err := cap.ApplyFilter(filterConfigFrom(a.Settings())); err != nil {
+				a.log.Warn("把新的过滤设置推给捕获链路失败", "key", key, "err", err)
+			}
+		}
+		// 暂停/恢复会改变托盘的勾选态。
+		a.refreshTray()
+	case key == "ui.hotkey":
+		ctrl := a.panelController()
+		if ctrl == nil {
+			return
+		}
+		s := a.Settings()
+		if s == nil {
+			return
+		}
+		if err := ctrl.RegisterHotkey(s.UI.Hotkey); err != nil {
+			// 换绑失败时**旧热键已经注销了**（RegisterHotkey 的契约是"先卸后装"），
+			// 所以这是一个用户可感知的失败：必须显式提示，不能只记日志。
+			a.log.Error("换绑全局热键失败", "hotkey", s.UI.Hotkey, "err", err)
+			a.notify(a.T(msgTrayTooltip), a.T(msgNotifyHotkeyTaken))
+			pushEvent(EventSettings, a.T(msgNotifyHotkeyTaken))
+		}
+	case key == "ui.language":
+		// 语言变了要重刷托盘文案（它是唯一"后端自己渲染的文字"）。
+		a.refreshTray()
+	}
 }
 
 // Flush 强制把写入队列排空并提交。拍验收证据、或用户手动导出前用得上。

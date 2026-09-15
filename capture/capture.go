@@ -164,6 +164,29 @@ func (c *Capture) Guard() *clipboard.SelfWriteGuard { return c.guard }
 // Filter 返回当前过滤器（只读用途，例如取 Stats）。
 func (c *Capture) Filter() *clipboard.Filter { return c.filter }
 
+// ApplyFilter 热替换过滤配置（设置界面改完立刻生效）。
+//
+// 为什么不需要停捕获循环：Filter 内部把配置装在一个不可变状态里、
+// 用 atomic.Pointer 整体替换（见 clipboard/filter.go 的 filterState 注释），
+// 所以捕获 goroutine 下一次 Decide 就会用上新规则，不会有半更新状态。
+//
+// ⚠️ 一个真实存在的时序缺口（不是 bug，是设计取舍）：macOS 是 0.2s 轮询，
+// 所以"用户在设置里关掉记录"到"真的不再记"之间最多有 200ms 的窗口。
+// 要消掉它就得让捕获循环每轮读一次配置，代价是每条热路径都多一次同步；
+// 200ms 的记录延迟对剪贴板工具无所谓，所以选择保留。
+func (c *Capture) ApplyFilter(cfg clipboard.FilterConfig) error {
+	if c.filter == nil {
+		return errors.New("capture: filter not initialized")
+	}
+	c.filter.Apply(cfg)
+	c.log.Info("过滤配置已热更新",
+		"enabled", cfg.Enabled,
+		"types", cfg.Types,
+		"excludeApps", len(cfg.ExcludeApps),
+	)
+	return nil
+}
+
 // Backend 返回底层平台后端，供回写路径调用 Write。
 func (c *Capture) Backend() clipboard.Backend { return c.backend }
 

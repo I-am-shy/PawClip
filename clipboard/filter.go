@@ -88,36 +88,82 @@ func DefaultFilterConfig() FilterConfig {
 	}
 }
 
+// filterState 是过滤器的**可替换配置**。
+//
+// 为什么把配置装进一个不可变结构体、用 atomic.Pointer 换掉整只，
+// 而不是给每个字段加锁：
+//
+//   - ①`Decide` 在**轮询热路径**上（macOS 每 0.2s 一次，DESIGN §14 第 9 条
+//     要求"绝不分配"）。atomic.Pointer.Load 是一条无锁读，不加锁、不分配。
+//   - ② 热重载是低频动作。整体替换的语义也比逐字段改更清楚：
+//     "某一刻起，判定规则换成了另一套"，不会出现"types 已经是新的、
+//     apps 还是旧的"这种半更新状态。
+type filterState struct {
+	types map[string]bool
+	apps  []string // 已统一小写的通配模式
+	cfg   FilterConfig
+}
+
 // Filter 把"这条剪贴板快照该不该记录"收敛成一个纯函数式判定。
 type Filter struct {
-	types     map[string]bool
-	apps      []string // 已统一小写的通配模式
-	cfg       FilterConfig
-	guard     *SelfWriteGuard
+	state *atomic.Pointer[filterState]
+	// debouncer 是**有状态**的，所以不能跟着 state 一起换
+	// （换掉会让"刚去抖过的内容"重新变成可记录）。重配时只 Reset 它。
 	debouncer *Debouncer
+	guard     *SelfWriteGuard
 
 	// 计数，仅供诊断与验收取证。
 	counts [10]int64
 }
 
-// NewFilter 构造过滤器。guard 为 nil 时跳过自写入守卫。
-func NewFilter(cfg FilterConfig, guard *SelfWriteGuard) *Filter {
-	f := &Filter{
+// newFilterState 把配置编译成可用的判定状态。
+func newFilterState(cfg FilterConfig) *filterState {
+	st := &filterState{
 		types: make(map[string]bool, len(cfg.Types)),
 		cfg:   cfg,
-		guard: guard,
 	}
 	for _, t := range cfg.Types {
-		f.types[strings.ToLower(strings.TrimSpace(t))] = true
+		st.types[strings.ToLower(strings.TrimSpace(t))] = true
 	}
 	for _, a := range cfg.ExcludeApps {
 		a = strings.TrimSpace(a)
 		if a != "" {
-			f.apps = append(f.apps, strings.ToLower(a))
+			st.apps = append(st.apps, strings.ToLower(a))
 		}
 	}
-	f.debouncer = NewDebouncer(time.Duration(cfg.DebounceMs) * time.Millisecond)
+	return st
+}
+
+// NewFilter 构造过滤器。guard 为 nil 时跳过自写入守卫。
+func NewFilter(cfg FilterConfig, guard *SelfWriteGuard) *Filter {
+	f := &Filter{
+		state:     &atomic.Pointer[filterState]{},
+		guard:     guard,
+		debouncer: NewDebouncer(time.Duration(cfg.DebounceMs) * time.Millisecond),
+	}
+	f.state.Store(newFilterState(cfg))
 	return f
+}
+
+// Apply 热替换判定配置（设置界面改完立刻生效）。
+//
+// 去抖器会被 Reset：换了规则之后，"这个指纹刚刚去过抖"这个记忆不该继续
+// 约束新规则。反过来保留它会造成一种很难查的现象——用户改了配置、
+// 又立刻复制同一份内容，结果什么都不发生（因为旧规则刚把它去抖掉了）。
+//
+// 计数器**不重置**：它们是累计证据。重置会让验收里"累计丢弃 = N"这类
+// 断言在改一次设置后莫名其妙地倒退。
+func (f *Filter) Apply(cfg FilterConfig) {
+	f.state.Store(newFilterState(cfg))
+	f.debouncer.Reset()
+}
+
+// Config 返回当前生效的配置副本（诊断用）。
+func (f *Filter) Config() FilterConfig {
+	if st := f.state.Load(); st != nil {
+		return st.cfg
+	}
+	return FilterConfig{}
 }
 
 // Decide 给出结论。fp 是调用方预先算好的内容指纹（*Raw).Fingerprint()）。
@@ -138,23 +184,31 @@ func (f *Filter) decide(r *Raw, fp string, now time.Time) Decision {
 		return DropEmpty
 	}
 
+	// 热路径上只读一次原子指针。之后所有判定都用这一份快照——
+	// 读到一半被别人换掉的话，就会出现"用新规则判类型、用旧规则判尺寸"
+	// 这种自相矛盾的结论。
+	st := f.state.Load()
+	if st == nil {
+		return DropEmpty
+	}
+
 	// ① 总开关
-	if !f.cfg.Enabled {
+	if !st.cfg.Enabled {
 		return DropCaptureDisabled
 	}
 
 	// ② 保密标记：纯类型名查表，零分配
-	if f.cfg.ExcludePrivateTypes && IsPrivateTypeNames(r.RawTypes) {
+	if st.cfg.ExcludePrivateTypes && IsPrivateTypeNames(r.RawTypes) {
 		return DropPrivate
 	}
 
 	// ③ 应用黑名单：只在配置非空时才做字符串匹配
-	if len(f.apps) > 0 && f.appExcluded(r.SourceAppID, r.SourceAppName) {
+	if len(st.apps) > 0 && appExcludedIn(st.apps, r.SourceAppID, r.SourceAppName) {
 		return DropAppExcluded
 	}
 
 	// ④ 类型开关
-	if !f.anyTypeEnabled(c) {
+	if !anyTypeEnabledIn(st.types, c) {
 		return DropTypeDisabled
 	}
 
@@ -169,33 +223,33 @@ func (f *Filter) decide(r *Raw, fp string, now time.Time) Decision {
 	}
 
 	// ⑦ 尺寸上限
-	if r.Image != nil && f.cfg.ImageMaxBytes > 0 && int64(len(r.Image.PNG)) > f.cfg.ImageMaxBytes {
+	if r.Image != nil && st.cfg.ImageMaxBytes > 0 && int64(len(r.Image.PNG)) > st.cfg.ImageMaxBytes {
 		return DropTooLarge
 	}
 
 	return Accept
 }
 
-// anyTypeEnabled 判断内容里有没有任何一组被 capture.types 允许。
+// anyTypeEnabledIn 判断内容里有没有任何一组被 capture.types 允许。
 //
 // 判定用"表示组"而不是 items.kind：浏览器复制一份内容会同时带
 // text + html 两个 flavor，若按 kind 判定，"html" 不在默认列表里就会
 // 把绝大多数网页复制全部丢掉。
-func (f *Filter) anyTypeEnabled(c Content) bool {
+func anyTypeEnabledIn(types map[string]bool, c Content) bool {
 	groups := c.Groups()
 	if len(groups) == 0 {
 		return false
 	}
 	for _, g := range groups {
-		if f.types[g] {
+		if types[g] {
 			return true
 		}
 	}
 	return false
 }
 
-// appExcluded 同时拿 bundle id / exe 路径与显示名去比。
-func (f *Filter) appExcluded(id, name string) bool {
+// appExcludedIn 同时拿 bundle id / exe 路径与显示名去比。
+func appExcludedIn(apps []string, id, name string) bool {
 	candidates := make([]string, 0, 3)
 	if id != "" {
 		candidates = append(candidates, id)
@@ -205,7 +259,7 @@ func (f *Filter) appExcluded(id, name string) bool {
 	}
 	for _, cand := range candidates {
 		lower := strings.ToLower(cand)
-		for _, pat := range f.apps {
+		for _, pat := range apps {
 			if globMatch(pat, lower) {
 				return true
 			}
