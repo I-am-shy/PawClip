@@ -20,6 +20,12 @@ type SelfWriteGuard struct {
 	dropped int64
 }
 
+// NewSelfWriteGuard 构造守卫。
+//
+// 零值本身就可直接用（DESIGN.md §2 的实现没有需要初始化的字段），
+// 提供构造函数只是为了让上层不必依赖"零值可用"这个隐含契约。
+func NewSelfWriteGuard() *SelfWriteGuard { return &SelfWriteGuard{} }
+
 // Arm 在写剪贴板之前调用。
 func (g *SelfWriteGuard) Arm(fingerprint string) {
 	g.mu.Lock()

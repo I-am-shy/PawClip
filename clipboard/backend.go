@@ -103,3 +103,31 @@ func (privateChecker) IsPrivate(r *Raw) bool {
 
 // tickClock 给各平台后端复用：把当前时间转成 Tick.AtMs。
 func tickClock(t time.Time) int64 { return t.UnixMilli() }
+
+// BackendConfig 是构造平台后端时的调参，取自 settings 表（DESIGN.md §9）。
+type BackendConfig struct {
+	// PollIntervalActiveMs ← capture.pollIntervalActiveMs（macOS 专用）
+	PollIntervalActiveMs int
+	// PollIntervalIdleMs ← capture.pollIntervalIdleMs（macOS 专用）
+	PollIntervalIdleMs int
+	// IdleThresholdSec ← capture.idleThresholdSec（macOS 专用）
+	IdleThresholdSec int
+}
+
+// withDefaults 补齐 §9 的默认值：200ms 活跃 / 1000ms 空闲 / 60s 判定阈值。
+//
+// Windows 完全用不到这三项（事件驱动，无轮询），保留在同一个结构体里只是
+// 为了让上层的构造代码不必按平台分叉。
+func (c BackendConfig) withDefaults() BackendConfig {
+	out := c
+	if out.PollIntervalActiveMs <= 0 {
+		out.PollIntervalActiveMs = 200
+	}
+	if out.PollIntervalIdleMs <= 0 {
+		out.PollIntervalIdleMs = 1000
+	}
+	if out.IdleThresholdSec <= 0 {
+		out.IdleThresholdSec = 60
+	}
+	return out
+}
