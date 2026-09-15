@@ -1,5 +1,10 @@
 # ── 发布产物（只进 Release，绝不进仓库）──────────────────────
+# Wails 把最终产物放在 build/bin/，同时在 build/ 下生成平台模板目录
+# （Info.plist / windows 资源）。appicon.png 是**输入**，必须入库，所以
+# 这里只忽略生成出来的子目录，不能整个忽略 build/。
 build/bin/
+build/darwin/
+build/windows/
 *.app
 *.dmg
 *.exe
@@ -7,7 +12,20 @@ build/bin/
 *.clipbak
 
 # ── 编译中间物 ───────────────────────────────────────────────
-frontend/dist/
+# frontend/dist 是 Vite 产物，但其中 gitkeep 必须入库：
+# main.go 用 `//go:embed all:frontend/dist` 打前端资源，embed 一个不存在的
+# 目录会直接编译失败——留一个占位文件，`go build ./...` 才能在没有跑过
+# npm 的机器上通过（wails build 会先跑 npm run build 把真产物生成进来）。
+frontend/dist/*
+!frontend/dist/gitkeep
+
+# Wails 自动生成的前端 JS 绑定（每次构建都会重新生成）
+frontend/wailsjs/
+
+# Wails 用来判断"package.json 变了没、要不要重跑 npm install"的哈希缓存。
+# 纯派生态：删掉只会导致下次构建多跑一次 npm install，没有副作用。
+frontend/package.json.md5
+
 *.test
 *.out
 vendor/

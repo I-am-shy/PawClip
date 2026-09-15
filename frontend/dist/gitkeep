@@ -1,0 +1,7 @@
+# 占位文件，不要删除。
+#
+# main.go 里有 `//go:embed all:frontend/dist`，embed 一个"不存在的目录"会直接
+# 编译失败。本仓库把 Vite 产物全部 gitignore（见根目录 .gitignore），只保留这个
+# 文件，保证：
+#   1. 全新 clone（没跑过 npm）也能 `go build ./...` / `go test ./...` 通过；
+#   2. `wails build` 会先执行 npm run build，把真实产物写进本目录后再编译。

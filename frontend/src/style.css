@@ -1,0 +1,101 @@
+:root {
+  color-scheme: light;
+  --bg: #f4f4f6;
+  --card: #ffffff;
+  --line: rgba(0, 0, 0, 0.08);
+  --fg: #2c2c2a;
+  --muted: #6b7280;
+  --accent: #2f7a3e;
+  --danger: #a32d2d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  font-size: 13px;
+  line-height: 1.55;
+  user-select: none;
+}
+
+.shell {
+  padding: 16px 16px 24px;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.hdr h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.hdr .sub {
+  margin: 2px 0 14px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.card h2 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.3px;
+}
+
+dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  row-gap: 4px;
+  column-gap: 10px;
+}
+
+dt {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+dd {
+  margin: 0;
+  font-size: 12px;
+}
+
+.mono {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.break {
+  word-break: break-all;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.err {
+  color: var(--danger);
+}
