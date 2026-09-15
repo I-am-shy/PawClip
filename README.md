@@ -7,11 +7,14 @@
 
 ---
 
-## 当前状态：设计定稿，可以开工
+## 当前状态：M1 已完成（捕获链路 + 落库）
 
-技术选型、数据模型、过期策略、备份格式、图标资源、技术门禁**全部已验证并落盘**。仓库里没有待决事项，代码尚未开始。
+**M1 已交付**：工程骨架、`store/` 持久化层、`clipboard/` 双平台后端、`capture/` 捕获流水线，
+`main` 10 / `store` 50 / `clipboard` 59 / `capture` 22 = **141 条测试全绿**，
+`scripts/build.sh` 可产出可运行的 `.app`。M1 是**纯后端**，没有历史列表 UI —— 想"看效果"请用
+下面「怎么构建与验收」。
 
-**第一步**：把 `HANDOFF-PROMPT.md` 整份内容作为新会话的第一条消息发出去，按它的指引从 **M1（捕获链路 + 落库）** 开工。
+**下一步**：M2（搜索面板、回贴/自动粘贴、回收站与保留策略、设置 UI、免抢焦点面板）。
 
 ---
 
@@ -92,6 +95,31 @@ FTS5 的 `trigram` 分词器要求查询词 **≥ 3 字符**，1–2 字（含�
 | Node | 20+（仅前端构建与图标重建；`poc/` 不需要） |
 
 构建命令见 §10。
+
+---
+
+## 怎么构建与验收
+
+```bash
+# 跑测试（-tags sqlite_fts5 必须带，否则 store 包会因为缺 fts5 模块而失败）
+go test ./... -tags sqlite_fts5
+
+# 构建 .app —— 一定用这个包装脚本，别直接 wails build
+scripts/build.sh                          # 默认 darwin/arm64
+scripts/build.sh -platform windows/amd64  # 透传任意 wails build 参数
+
+# 看懂 M1 到底干了什么（启动真实 App → 模拟复制 → 查库）
+scripts/demo-m1.sh
+
+# 真机验收（会覆盖你当前的系统剪贴板）
+PAWCLIP_REAL_CLIPBOARD=1 go test ./capture/ -tags sqlite_fts5 -run TestAcceptance4 -v
+```
+
+**为什么构建必须走 `scripts/build.sh`：**
+FTS5 全文索引依赖 `sqlite_fts5` 构建标签，而 `wails.json` 的 schema **没有**任何能持久化
+Go 构建标签的字段（只有 CLI 的 `-tags`）。直接 `wails build` 出来的产物缺 fts5 模块，
+`store.Open` 会按设计**优雅降级**——打一行 WARN 然后退回 LIKE 检索，进程照常启动。
+也就是说全文检索会**静默失效**，不查日志根本发现不了。包装脚本把标签钉死，避免这个坑。
 
 ---
 

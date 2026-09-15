@@ -367,7 +367,11 @@ END;
 // 老库换到带 sqlite_fts5 的构建上时，这里会把索引补起来并回填。
 func (d *DB) ensureFTS() error {
 	if _, err := d.w.Exec(ftsDDL); err != nil {
-		d.log.Warn("FTS5 unavailable, search will fall back to LIKE", "err", err)
+		// 这里降级是**故意**的：开发时不该因为缺标签就开不起库。
+		// 但它同时也是"正式产物静默丢掉全文检索"的唯一信号，所以文案必须
+		// 直接给出补救动作——实测中这行 WARN 很容易被忽略（见 scripts/build.sh）。
+		d.log.Warn("FTS5 不可用，检索将退化为 LIKE；请用 scripts/build.sh 构建（等价于 wails build -tags sqlite_fts5）",
+			"err", err)
 		return nil
 	}
 	if _, err := d.w.Exec(ftsTriggersDDL); err != nil {
@@ -385,7 +389,8 @@ func (d *DB) ensureFTS() error {
 func (d *DB) checkFTS() bool {
 	rows, err := d.r.Query("SELECT * FROM items_fts LIMIT 1")
 	if err != nil {
-		d.log.Warn("FTS self-check failed, degrading to LIKE search", "err", err)
+		d.log.Warn("FTS 自检失败，检索退化为 LIKE；若为正式产物请确认构建带了 -tags sqlite_fts5",
+			"err", err)
 		return false
 	}
 	rows.Close()

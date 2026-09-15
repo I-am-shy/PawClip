@@ -58,3 +58,6 @@ backups/
 # 环境与密钥
 .env
 .env.local
+
+# 工作区临时目录（演示脚本的隔离数据、临时产物），不入库
+.workbuddy/tmp/
