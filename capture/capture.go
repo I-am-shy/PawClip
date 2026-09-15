@@ -67,9 +67,22 @@ func (c Config) withDefaults() Config {
 }
 
 // Stats 是流水线的累计计数，仅供诊断与验收取证。
+//
+// 关于 Reads 与 Processed 的区别（测试里当屏障用，别搞混）：
+//
+//	Reads     在读成功后**立即**自增——此刻 filter/buildRequest/Enqueue 都还没跑。
+//	Processed 在一次快照**完全处理完**之后自增——要么已经 Enqueue 进写入队列，
+//	          要么已经被过滤器丢弃、要么入队失败。它才是"这一跳已经了结"的信号。
+//
+// 拿 Reads 当屏障、紧接着再 Flush 是不安全的：捕获 goroutine 可能正好被抢占在
+// "读完"和"入队"之间，Flush 的哨兵就会排在那条还没入队的内容**前面**被写入器
+// 处理掉，Flush 提前返回，断言于是看到少一条。这不是假绿而是假红：它偶发、与
+// 流水线正确性无关，却会掩盖真正的回归。所以 testutil_test.go 里刻意**不提供**
+// 基于 Reads 的等待辅助函数——凡是"等这一跳的落库结果"，一律用 Processed。
 type Stats struct {
 	Ticks      int64            // 收到的变更信号数
-	Reads      int64            // 成功的 Read 次数
+	Reads      int64            // 成功的 Read 次数（不含后续过滤/入队）
+	Processed  int64            // 读取成功后完整走完 accept 的快照数
 	Accepted   int64            // 通过过滤、已交给写入器的条目数
 	EnqueueErr int64            // 写入队列满/已关闭导致的丢弃
 	ReadErrs   int64            // Read 的真实错误（不含 Empty/Busy/Flapping）
@@ -102,6 +115,7 @@ type Capture struct {
 
 	ticksCtr  atomic.Int64
 	readsCtr  atomic.Int64
+	procCtr   atomic.Int64
 	acceptCtr atomic.Int64
 	enqErrCtr atomic.Int64
 	readErr   atomic.Int64
@@ -245,6 +259,10 @@ func (c *Capture) handle(tk clipboard.Tick) {
 	c.readsCtr.Add(1)
 
 	c.accept(raw)
+
+	// 放在 accept 之后：这一刻起，本次快照要么已在写入队列里、要么已被丢弃。
+	// 测试靠它当屏障（见 Stats 的注释）。
+	c.procCtr.Add(1)
 }
 
 // accept 执行 过滤 → 归一化 → 指纹 → 入队。
@@ -336,6 +354,7 @@ func (c *Capture) Stats() Stats {
 	return Stats{
 		Ticks:      c.ticksCtr.Load(),
 		Reads:      c.readsCtr.Load(),
+		Processed:  c.procCtr.Load(),
 		Accepted:   c.acceptCtr.Load(),
 		EnqueueErr: c.enqErrCtr.Load(),
 		ReadErrs:   c.readErr.Load(),

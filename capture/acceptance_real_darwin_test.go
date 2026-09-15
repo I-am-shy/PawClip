@@ -142,7 +142,7 @@ func TestAcceptance4_RealClipboardRoundTrip(t *testing.T) {
 func (p *pipeline) writeThenCapture(t *testing.T, be clipboard.Backend, payload *clipboard.Payload) {
 	t.Helper()
 
-	before := p.cap.Stats().Reads
+	before := p.cap.Stats().Processed
 	p.cap.Guard().Arm(payload.Fingerprint())
 	if err := be.Write(payload); err != nil {
 		t.Fatalf("写回剪贴板失败: %v", err)
@@ -172,7 +172,9 @@ func (p *pipeline) writeThenCapture(t *testing.T, be clipboard.Backend, payload 
 	case <-time.After(2 * time.Second):
 		t.Fatal("无法推送变更信号")
 	}
-	p.waitStats(t, "真机读取 +1", func(s Stats) bool { return s.Reads >= before+1 })
+	// 等"这一跳完整处理完"（Processed），不是"读到了"（Reads）——用 Reads 的话
+	// 可能在 filter/Enqueue 之前就返回，调用方随后的 flush 会把这条漏掉。
+	p.waitProcessed(t, before+1)
 }
 
 func containsAll(haystack []string, needles ...string) bool {

@@ -97,7 +97,7 @@ func TestCapture_TextPersisted(t *testing.T) {
 	text := "PawClip 文本捕获 🙂"
 	b.setRaw(&clipboard.Raw{Text: &text, RawTypes: []string{"public.utf8-plain-text"}})
 	b.push()
-	p.waitReads(t, 1)
+	p.waitProcessed(t, 1)
 	p.flush(t)
 
 	if n := p.countAlive(t); n != 1 {
@@ -137,7 +137,7 @@ func TestCapture_BrowserCopyTextPlusHTML_AcceptedUnderDefaultTypes(t *testing.T)
 		RawTypes: []string{"public.utf8-plain-text", "public.html"},
 	})
 	b.push()
-	p.waitReads(t, 1)
+	p.waitProcessed(t, 1)
 	p.flush(t)
 
 	if n := p.countAlive(t); n != 1 {
@@ -163,7 +163,7 @@ func TestCapture_ImageBlobAndThumbnail(t *testing.T) {
 		RawTypes: []string{"public.png"},
 	})
 	b.push()
-	p.waitReads(t, 1)
+	p.waitProcessed(t, 1)
 	p.flush(t)
 
 	items := allItems(t, p.db)
@@ -219,7 +219,7 @@ func TestCapture_RTFBlob(t *testing.T) {
 	rtf := []byte(`{\rtf1\ansi\deff0 Hello \b bold\b0}`)
 	b.setRaw(&clipboard.Raw{RTF: rtf, RawTypes: []string{"public.rtf"}})
 	b.push()
-	p.waitReads(t, 1)
+	p.waitProcessed(t, 1)
 	p.flush(t)
 
 	items := allItems(t, p.db)
@@ -265,7 +265,7 @@ func TestCapture_FilesPersisted(t *testing.T) {
 		RawTypes: []string{"NSFilenamesPboardType"},
 	})
 	b.push()
-	p.waitReads(t, 1)
+	p.waitProcessed(t, 1)
 	p.flush(t)
 
 	items := allItems(t, p.db)
@@ -302,7 +302,7 @@ func TestCapture_MixedTextAndImage(t *testing.T) {
 		RawTypes: []string{"public.utf8-plain-text", "public.png"},
 	})
 	b.push()
-	p.waitReads(t, 1)
+	p.waitProcessed(t, 1)
 	p.flush(t)
 
 	items := allItems(t, p.db)
@@ -368,7 +368,7 @@ func TestCapture_ReadErrorBuckets(t *testing.T) {
 			text := "after failure"
 			b.setRaw(&clipboard.Raw{Text: &text, RawTypes: []string{"public.utf8-plain-text"}})
 			b.push()
-			p.waitReads(t, 1)
+			p.waitProcessed(t, 1)
 			p.flush(t)
 			if n := p.countAlive(t); n != 1 {
 				t.Fatalf("恢复后 CountAlive = %d，想要 1", n)
@@ -387,7 +387,7 @@ func TestCapture_TypeDisabledDropped(t *testing.T) {
 	text := "should be dropped"
 	b.setRaw(&clipboard.Raw{Text: &text, RawTypes: []string{"public.utf8-plain-text"}})
 	b.push()
-	p.waitReads(t, 1)
+	p.waitProcessed(t, 1)
 	p.flush(t)
 
 	if n := p.countAlive(t); n != 0 {
@@ -409,7 +409,7 @@ func TestCapture_PrivateTypeDropped(t *testing.T) {
 		RawTypes: []string{"public.utf8-plain-text", "org.nspasteboard.ConcealedType"},
 	})
 	b.push()
-	p.waitReads(t, 1)
+	p.waitProcessed(t, 1)
 	p.flush(t)
 
 	if n := p.countAlive(t); n != 0 {
@@ -432,7 +432,7 @@ func TestCapture_AppExcluded(t *testing.T) {
 		SourceAppID: "com.1password.Pro",
 	})
 	b.push()
-	p.waitReads(t, 1)
+	p.waitProcessed(t, 1)
 	p.flush(t)
 
 	if n := p.countAlive(t); n != 0 {
@@ -456,7 +456,7 @@ func TestCapture_ExcludedAppAppliesToDisplayNameToo(t *testing.T) {
 		SourceAppName: "1Password",
 	})
 	b.push()
-	p.waitReads(t, 1)
+	p.waitProcessed(t, 1)
 	p.flush(t)
 
 	// 默认黑名单是 com.1password.*，显示名 "1Password" 不匹配 → 应放行。
@@ -476,7 +476,7 @@ func TestCapture_CaptureDisabledDrops(t *testing.T) {
 	text := "paused"
 	b.setRaw(&clipboard.Raw{Text: &text, RawTypes: []string{"public.utf8-plain-text"}})
 	b.push()
-	p.waitReads(t, 1)
+	p.waitProcessed(t, 1)
 	p.flush(t)
 
 	if n := p.countAlive(t); n != 0 {
@@ -499,7 +499,7 @@ func TestCapture_TruncatesStoredButFingerprintsFull(t *testing.T) {
 	full := strings.Repeat("喵", 100) // 100 个字符
 	b.setRaw(&clipboard.Raw{Text: &full, RawTypes: []string{"public.utf8-plain-text"}})
 	b.push()
-	p.waitReads(t, 1)
+	p.waitProcessed(t, 1)
 	p.flush(t)
 
 	// 指纹必须是对**完整内容**算的，否则再去查库就查不到

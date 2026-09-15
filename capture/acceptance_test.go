@@ -40,7 +40,7 @@ func TestAcceptance1_NoSelfCapture(t *testing.T) {
 	baseline := "baseline：这条应当被记下来"
 	b.setRaw(&clipboard.Raw{Text: &baseline, RawTypes: []string{"public.utf8-plain-text"}})
 	b.push()
-	p.waitReads(t, 1)
+	p.waitProcessed(t, 1)
 	p.flush(t)
 
 	if n := p.countAlive(t); n != 1 {
@@ -58,7 +58,7 @@ func TestAcceptance1_NoSelfCapture(t *testing.T) {
 			t.Fatalf("第 %d 次回贴失败：%v", i, err)
 		}
 		b.push()
-		p.waitReads(t, int64(i+2)) // 基线那次 +1
+		p.waitProcessed(t, int64(i+2)) // 基线那次 +1
 	}
 	p.flush(t)
 
@@ -105,7 +105,7 @@ func TestAcceptance2_DedupeUseCount(t *testing.T) {
 		step.Store(int64(i * 200)) // 每次推过 120ms 去抖窗口
 		b.setRaw(payloadToRaw(payload))
 		b.push()
-		p.waitReads(t, int64(i+1))
+		p.waitProcessed(t, int64(i+1))
 	}
 	p.flush(t)
 

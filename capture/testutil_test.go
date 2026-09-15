@@ -240,10 +240,20 @@ func (p *pipeline) waitTicks(t *testing.T, n int64) {
 	p.waitStats(t, "ticks", func(s Stats) bool { return s.Ticks >= n })
 }
 
-// waitReads 等到累计成功读取次数达到 n。
-func (p *pipeline) waitReads(t *testing.T, n int64) {
+// waitProcessed 等到累计 n 次快照**完整处理完**（已入队或已丢弃）。
+//
+// 这是"可以安全断言下游结果"的屏障，也是本包里**唯一**该用来同步的等待：
+// 返回时，第 n 跳要么已经在写入队列里、要么已经走完过滤被丢弃，之后调
+// p.flush(t) 一定能把它的落库结果冲下去。
+//
+// 不要改用 Stats.Reads 来等：那个计数在"读到内容"之后就加了，filter /
+// buildRequest / Enqueue 全都没跑；捕获 goroutine 恰好被抢占在那里时，
+// Flush 的哨兵会插队到还没入队的内容前面，断言就会看到少一条（偶发假红，
+// 见 capture.Stats 的注释）。本包已不提供基于 Reads 的等待辅助函数，
+// 就是为了不给人留下这个坑。
+func (p *pipeline) waitProcessed(t *testing.T, n int64) {
 	t.Helper()
-	p.waitStats(t, "reads", func(s Stats) bool { return s.Reads >= n })
+	p.waitStats(t, "processed", func(s Stats) bool { return s.Processed >= n })
 }
 
 // waitEmpty 等到累计 n 次"剪贴板里没有我们认识的表示"。
