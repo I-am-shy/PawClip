@@ -22,21 +22,97 @@
 | 界面语言 | 跟随系统，简体中文 + 英文，回退 `en` |
 | 分发 | 仅 GitHub Releases（源码 + 安装包），无官网、无应用商店 |
 
-### ⚠️ 开工前置门禁：Wails v2 的免抢焦点面板（**未验证，阻塞项**）
+### ✅ 开工前置门禁：Wails v2 的免抢焦点面板（**2026-09-15 实测通过，不再是阻塞项**）
 
-**这是全案唯一会卡住开工的问题，必须在写业务代码之前解决。**
+**结论：Wails v2 可行**，但必须走一条特定路径。验证工程在 `poc/wails-panel/`，完整数据见 `poc/POC-RESULT.md`。
 
-设计把"热键呼出**免抢焦点**面板 + ⌘/Ctrl+1..9 直贴"列为 P0 核心体验（§7 #3、§8 #5）。但**已核对 Wails v2 官方 `options` 文档**：`mac.Options` 只暴露 `TitleBar` / `Appearance` / `WebviewIsTransparent` / `WindowIsTranslucent` / `ContentProtection` / `About`——**没有任何窗口类控制**；`windows.Options` 也**没有 `WS_EX_NOACTIVATE`**。
+Wails v2 官方 `options` 确实没有任何窗口类控制（`mac.Options` 只有 `TitleBar` / `Appearance` / `WebviewIsTransparent` / `WindowIsTranslucent` / `ContentProtection` / `About`；`windows.Options` 也没有 `WS_EX_NOACTIVATE`）。但这不构成阻塞——我们不改 Wails 的配置，而是在运行时用 cgo 改造窗口对象。
 
-问题在于 macOS 要同时满足两件事："窗口能成为 key（否则没法输入搜索词）"和"不激活本 App"。只有 `NSPanel` + `NSWindowStyleMaskNonactivatingPanel` 能做到；普通 `NSWindow` 设这个 mask 在 AppKit 层通常无效（该 mask 语义上要求实例是 NSPanel）。
+#### 实测矩阵（三次独立复现，结果一致）
 
-| 路线 | 做法 | 代价 |
+| 方案 | 窗口类 | 键盘焦点 | 抢走前台 | 结论 |
+|---|---|---|---|---|
+| 原样 Wails 窗口 | `WailsWindow` | 拿不到 | 否 | 不可用 |
+| 只给 NSWindow 加 `nonactivatingPanel` 样式位 | `WailsWindow` | 拿不到 | 否 | **AppKit 明确拒绝** |
+| `object_setClass` 换成 NSPanel 子类 | `PawClipPanel` | — | — | **崩溃 SIGTRAP** |
+| **新建真 NSPanel + 接管 contentView + Accessory** | `PawClipPanel` | **稳定持有** | **从未** | ✅ **采用** |
+
+#### 采用方案的两个必要条件
+
+1. **必须"真正创建" NSPanel**，不能用 `object_setClass` 事后改类。
+2. **必须运行在 Accessory 激活策略**下（`NSApplicationActivationPolicyAccessory`，等价 `Info.plist` 的 `LSUIElement = true`）。
+
+**两个条件缺一不可**——实测中单独去掉任一条件都会立刻失败（去掉 Accessory 后，键盘焦点 0/6 次拿到）。
+
+实现骨架（完整代码见 `poc/wails-panel/panel_darwin.m`）：
+
+```objc
+// ① 窗口类：borderless 面板默认 canBecomeKeyWindow = NO，必须覆写
+@interface PawClipPanel : NSPanel @end
+@implementation PawClipPanel
+- (BOOL)canBecomeKeyWindow  { return YES; }
+- (BOOL)canBecomeMainWindow { return YES; }
+@end
+
+// ② 激活策略（越早越好，最好在窗口创建之前）
+[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+
+// ③ 创建真 NSPanel
+NSPanel *panel = [[PawClipPanel alloc]
+    initWithContentRect:frame
+              styleMask:(NSWindowStyleMaskNonactivatingPanel | NSWindowStyleMaskBorderless)
+                backing:NSBackingStoreBuffered
+                  defer:NO];
+
+// ④ 把 Wails 的 contentView（含 WKWebView）搬过来
+NSView *cv = [wailsWindow contentView];
+[wailsWindow setContentView:[[[NSView alloc] initWithFrame:frame] autorelease]];
+[panel setContentView:cv];
+
+// ⑤ 面板配置
+[panel setBecomesKeyOnlyIfNeeded:NO];   // 一显示就收键盘，不等点击
+[panel setLevel:NSFloatingWindowLevel];
+[panel setHidesOnDeactivate:NO];        // 失活时保持可见
+[panel setCollectionBehavior:(NSWindowCollectionBehaviorCanJoinAllSpaces |
+                              NSWindowCollectionBehaviorFullScreenAuxiliary)];
+
+// ⑥ 显示并取焦点 —— 顺序不能反
+[panel orderFrontRegardless];           // 窗口不可见时 makeKeyWindow 是空操作
+[panel makeKeyWindow];
+```
+
+#### 判断"有没有抢焦点"的正确判据
+
+**不能看 `NSApp.isActive`。** Accessory 策略下面板持有键盘焦点时 `isActive` 是 **`true`**，但 `NSWorkspace.frontmostApplication` 仍是原来那个 App——**菜单栏没有被抢走**。
+
+正确判据是：**`frontmostApplication` 有没有被换成本 App**。
+
+实测数据（`adopt` + Accessory，连续 6 次采样）：
+
+| 指标 | 结果 |
+|---|---|
+| 面板持有键盘焦点（`isKeyWindow`） | 6/6 |
+| 系统前台被抢走 | **0/6** |
+| 面板保持可见 | 6/6 |
+
+#### 三条被实测否定的路（不要重试）
+
+| 路 | 现象 | 根因 |
 |---|---|---|
-| **A. Wails v2 + cgo 换类**（推荐先试） | 启动后 cgo 取 `NSApp.windows` → `object_setClass(win, [NSPanel class])` → styleMask 加 `NSWindowStyleMaskNonactivatingPanel`；Windows 侧不受影响（`WindowClassName` → `FindWindow` → `SetWindowLongPtr`） | ~30 行平台代码；属未公开手法，跨 macOS 版本有脆弱性 |
-| **B. 上 Wails v3** | v3 原生提供 `MacWindowClassPanel` + `PanelPreferences{NonActivating: true}`，正是在找的东西 | v3 仍是 alpha（§0 当前不采用），后续 API 可能变动 |
-| **C. 接受抢焦点 + 事后补偿** | 面板正常激活；粘贴前先 `NSRunningApplication.activate` 把前台 App 抢回来，再发 ⌘V | 多 100–150ms、菜单栏闪动，核心体验降级。Windows 侧不需要走这条 |
+| 给普通 `NSWindow` 加 `nonactivatingPanel` 位 | AppKit 打印 `NSWindow does not support nonactivating panel styleMask 0x80`，且 `styleMask` **实际未被修改**（32780 → 32780，bit 7 仍为 0） | 该 mask 的语义要求实例本身是 NSPanel |
+| `object_setClass(win, NSPanel子类)` | 换类"成功"（类名变了），随后任何 `orderOut` 触发 **SIGTRAP** | Wails 窗口的真实类是 **`NSKVONotifying_WailsWindow`**（KVO 动态子类，488 字节），带 `userMinSize` / `userMaxSize` 两个 `NSSize` ivar；NSPanel 的 ivar 布局与之重叠，调用 `setFloatingPanel:` 等 NSPanel 专有方法会**写坏 Wails 的尺寸约束内存** |
+| 用 `makeKeyAndOrderFront:` 兜底 | 会**真的激活 App**，随后被系统纠正、键盘焦点一并丢失 | 它改变了激活状态，违反 nonactivating 语义 |
 
-**M0 门禁验收标准**：macOS 上跑一个最小 Wails v2 demo——热键呼出面板、面板能打字、且**目标 App 始终保持前台、菜单栏不切换**。通过 → 继续 v2；不通过 → 在 B / C 中选一条，回来改本节与 §0 技术栈。
+#### 顺带验出的一条实现顺序
+
+`makeKeyWindow` 在窗口**不可见**时是空操作。必须先 `orderFrontRegardless` 再 `makeKeyWindow`；反过来写会得到一个"可见但收不到键盘"的面板。
+
+#### 遗留到 M2 的两个点
+
+1. **Wails 启动时会激活一次 App**（实测首次显示时 `frontmost` 变成自己）。需要 `StartHidden: true` + 首次呼出才显示，避免开机抢一次焦点。
+2. **Wails 仍持有原窗口引用**，它后续的 `SetSize` / `SetTitle` 等调用会作用在隐藏的空窗口上。面板尺寸必须走我们自己的 NSPanel，或确认这些操作对面板无影响。**M2 实现面板时需逐项处理。**
+
+**M0 门禁状态：✅ 已通过**，无需在 B（Wails v3）/ C（接受抢焦点）之间选择。技术栈维持 Go + Wails v2。
 
 ### 已锁定决策（本轮确认，不再讨论）
 
@@ -469,11 +545,11 @@ blobs/
 |---|---|---|
 | 1 | 无剪贴板变更通知 API | 轮询 `NSPasteboard.general.changeCount`。**自适应间隔**：用 `CGEventSource.secondsSinceLastEventType` 检测空闲，活跃 0.2s、空闲 > 60s 降到 1.0s |
 | 2 | 来源 App 判定时机 | 轮询时前台 App 可能已切换。必须在检测到变更的**同一帧**读 `NSWorkspace.shared.frontmostApplication`，否则来源永远错 |
-| 3 | 自动粘贴抢焦点 | 面板必须是 `NSPanel` + `.nonactivatingPanel`，并覆写 `canBecomeKey = true`。否则面板激活后 ⌘V 会贴进自己的搜索框。**⚠️ Wails v2 不暴露窗口类，需 cgo 换类（`object_setClass` → `NSPanel`），这是 §0.1 的 M0 门禁项** |
+| 3 | 自动粘贴抢焦点 | 面板必须**真正创建** `NSPanel`（`NSWindowStyleMaskNonactivatingPanel`）并覆写 `canBecomeKeyWindow = true`；同时 App 必须跑在 Accessory 激活策略下。**两个条件缺一不可**。显示顺序必须是 `orderFrontRegardless` → `makeKeyWindow`。**⚠️ 不要用 `object_setClass` 事后换类，实测必崩**。完整方案与实测数据见 §0.1 与 `poc/POC-RESULT.md` |
 | 4 | 自动粘贴权限 | 需 `AXIsProcessTrusted()`。流程：写剪贴板 → 记录旧内容 → `CGEvent` 模拟 ⌘V → 延迟 `ui.restoreDelayMs`（默认 250ms）恢复旧剪贴板。**⚠️ TCC 授权绑定代码签名**：ad-hoc 签名每次构建 cdhash 都变，系统视为新 App，**每次重新编译都要重新授权**（见 §15 F 组） |
 | 5 | 剪贴板恢复副作用 | 部分应用异步读剪贴板，恢复太快会拿到错误内容。提供开关 `ui.restoreClipboard`（默认 true） |
 | 6 | 分发方式 | **不做 Developer ID 签名、不做公证**（见 §0）。走 ad-hoc 签名 + README 说明 Gatekeeper 绕过；**不上架 App Store**（沙箱下无法任意落盘、全局热键受限） |
-| 7 | 隐藏 Dock 图标 | 用 cgo 调 `NSApp.setActivationPolicy(NSApplicationActivationPolicyAccessory)`。**Wails v2 不暴露这个能力**，`Info.plist` 的 `LSUIElement` 对 Wails 进程无效，必须自己桥接 |
+| 7 | 隐藏 Dock 图标 | 必须把激活策略设为 Accessory。两条路径：① `build/darwin/Info.plist` 加 `LSUIElement = true`（**推荐**，进程启动前生效，避免开机抢一次焦点）；② cgo 调 `NSApp.setActivationPolicy(NSApplicationActivationPolicyAccessory)`。**注意：这不只是"隐藏 Dock 图标"的美观需求——M0 实测证明它是免抢焦点面板的必要条件**（见 §0.1） |
 | 8 | 通用二进制 | `wails build -platform darwin/universal`；同时设 `LSMinimumSystemVersion = 12.0` |
 | 9 | 数据库损坏 | WAL + `clean_shutdown` 标记文件（正常退出删除；启动时**发现标记存在才**跑 `PRAGMA integrity_check`，见 §15 第 6 条）+ 每日备份到 `backups/` 保留 7 份 |
 
@@ -849,12 +925,14 @@ pawclip/
 
 M0 是门禁，M1–M4 每步都产出**可独立验证**的产物。不要跳步把 UI 全做完再联调。
 
-### M0 · 技术门禁（先做，不通过不开工）
+### M0 · 技术门禁 —— ✅ **已完成（2026-09-15）**
 
-| # | 目标 | 验收 |
+| # | 目标 | 状态 |
 |---|---|---|
-| 1 | 冻结工程骨架：`git init` + `.gitignore` + Go module + Wails 脚手架 + React/Vite | `wails dev` 能打开一个空窗口 |
-| 2 | 解决免抢焦点面板（§0.1） | 见 §0.1 的 M0 验收标准 |
+| 1 | 冻结工程骨架：`git init` + `.gitignore` + Go module + Wails 脚手架 + React/Vite | 文档、图标资源、`git` 已就绪；Go module 与 Wails 脚手架随 M1 建立 |
+| 2 | 解决免抢焦点面板（§0.1） | ✅ **已通过实测**（三次复现）。方案 = 真正创建 NSPanel 并接管 contentView + Accessory 激活策略。详见 `poc/POC-RESULT.md` |
+
+**关键结论**：**不需要**上 Wails v3 alpha，也**不需要**接受抢焦点。技术栈维持 Go + Wails v2。
 
 ### M1 · 捕获链路 + 落库（纯后端，无 UI —— 先跑通正确性）
 
@@ -876,6 +954,11 @@ M0 是门禁，M1–M4 每步都产出**可独立验证**的产物。不要跳�
 - 「搜索正确性」全表通过（1/2/3 字中文、英文、中英混排、大小写、特殊字符）
 - 检索延迟 < 50 ms @ 10 万条（写脚本灌数据实测）
 - 面板闲置销毁后实测 RSS 达标（macOS ≤ 30 MB / Windows ≤ 25 MB），**并且确认 WebView 子进程真的退出**（§15 第 10 条——销毁可能是假象）
+
+**⚠️ 面板实现必须处理的两个遗留点（源自 M0 实测）**：
+
+1. **Wails 启动时会激活一次 App** —— 实测首次显示窗口时 `frontmost` 变成自己。用 `StartHidden: true` + 首次呼出才显示，避免开机抢一次焦点。
+2. **Wails 仍持有原窗口引用** —— 它后续的 `SetSize` / `SetTitle` 等调用会作用在已被掏空、隐藏的原窗口上。面板尺寸必须走我们自己的 NSPanel，M2 需逐项确认这些调用对面板无影响。
 
 ### M3 · 生命周期与数据出口
 
