@@ -1,213 +1,263 @@
 # PawClip · 喵喵贴
 
-跨平台（macOS + Windows）剪贴板历史管理器。**单机、无账号、无同步、无云端。**
+跨平台（macOS + Windows）**单机**剪贴板历史管理器。**无账号、无同步、无云端。**
 
-> **优先级**：安装包体积 > 常驻内存 > 功能完整度
-> **数据主权**：全部数据落在本地 SQLite + blob，可导出为第三方工具也能读的 `.clipbak` 包
+复制过的东西不用再翻窗口找第二遍：一个热键呼出面板，搜一下，回车就贴回去。
+所有数据落在你自己的磁盘上（SQLite + blob 文件），可一键导出成第三方工具也能读的 `.clipbak` 包。
 
----
-
-## 当前状态：M1–M4 已完成（可日用）
-
-**已交付**：捕获链路（文本 / 图片 / 文件）、SQLite + FTS5 中文检索（trigram 两段式 + 1–2 字 LIKE 兜底）、
-免抢焦点面板（⌘⇧V）、回贴与 ⌘1..9 直贴、分类与标签、三级 TTL 与回收站、`.clipbak` 导出导入、
-统计面板、开机自启、中英双语、内容转换器、连续粘贴、拼音首字母检索。
-
-```bash
-go test -tags sqlite_fts5 -p 1 -count=1 ./...   # 257 条用例 / 10 个包 → 全绿
-scripts/build.sh                                 # → build/bin/pawclip.app（universal，ad-hoc 签名）
-scripts/accept.sh                                # 对打包产物做真机验收
+```
+⌘⇧V 呼出 · 输入即搜 · ⏎ 回贴
 ```
 
-**`scripts/accept.sh` 20/21 通过**，唯一未达标的是 §12 的「空闲常驻内存 ≤ 30 MB」：
-实测稳态 **54 MB**，其中 **41 MB 是 Wails 建的窗口 + WebView**（同一进程在 `wails.Run` 之前只有 13 MB）。
-判据里的「面板销毁态」需要面板闲置销毁才能成立，而它在 Wails v2.16 的单窗口模型下做不了
-（见 §13 与下面「已知遗留」）。其余 9 项指标全部实测达标，见文末「验收结果」。
+---
 
-**下一步**：把常驻内存收进 30 MB（唯一实质缺口），以及 Windows 侧的真机验证（本期只在 macOS 上实测）。
+## 功能
+
+### 记录
+
+- **文本 / 图片 / 文件**三类统一进历史：纯文本、HTML、RTF、PNG、以及在访达/资源管理器里复制的多个文件。
+- **去重置顶**：同一内容复制 100 次，库里始终 **1 行**、使用次数 **100**。
+- **默认不记敏感内容**：跳过带「请勿记录」标记的剪贴板内容（密码管理器的通行做法），
+  并默认排除 1Password / 钥匙串这类应用（名单可在设置里改）。
+- **超长 / 超大兜底**：图片超过 10 MB 不记录；文本超过 262144 字符只截断存储，
+  但**指纹按完整内容计算**，所以截断不会造成误合并。
+
+### 查找
+
+- **中文能搜**：FTS5 trigram 全文检索；1–2 字（`文档`、`AI`、`5G`）自动走 `LIKE` 兜底，
+  不会出现"两字词永远搜不到"。
+- **拼音首字母**：输入 `wdgl` 能搜到「文档管理」，中英混排（`zimwd` → 「ZIM 文档」）也行。
+- **筛选**：类型（文本 / 图片 / 文件）、只看置顶、回收站。
+- **搜不到时能问为什么**：搜索框旁的面板会告诉你这次走的是全文检索还是降级匹配。
+
+### 取用
+
+- **免抢焦点（macOS）**：`⌘⇧V` 呼出的面板**不会**夺走你正在打字的窗口焦点，贴回去不打断手头的事。
+  > Windows 上 Win32 没有等价能力（`WS_EX_NOACTIVATE` 的窗口收不到键盘输入），
+  > 所以那边会取一次前台，粘贴完成后把前台还给原窗口——这是平台的差异，不是取舍。
+- **回贴**：`⏎` 回贴当前行，`⌘/Ctrl + 1..9` 直贴第 N 行（条数可配），双击条目也行。
+- **两种粘贴模式**：默认「只复制到剪贴板」，可改成「直接粘贴到前台应用」。
+  粘贴后默认**恢复你原来的剪贴板**（延迟可调）。
+- **连续粘贴**：多选若干条排成队列，切到目标应用后每次 `⌘/Ctrl + ⏎` 取一条，按顺序贴完。
+- **内容转换器**：JSON 美化/压缩、去空行、URL 去跟踪参数、Base64 编解码、大小写转换，
+  外加「粘贴纯文本」（剥掉网页带进来的 HTML / RTF 格式）。
+
+### 整理
+
+- **分类与标签**、置顶、批量多选（`⌘/Ctrl + 点击`）：删除 / 恢复 / 打标签 / 设分类 / 设过期时间。
+- **三级保留策略**：默认条目留 30 天 → 到期移入**回收站** → 回收站再留 7 天；
+  另有「最多 2000 条 / 最多 500 MB」的容量上限与后台回收。到期行为可配为
+  移入回收站 / 直接删除 / 保留内容但不再自动过期。
+- **统计面板**：条目数、实际磁盘占用、来源应用 Top、回收轮次，以及本进程的常驻内存实测。
+
+### 数据与系统
+
+- **导出 / 导入 `.clipbak`**：ZIP 容器 + 纯文本清单，第三方工具也能读。可整库导出、可只导出收藏、
+  可嵌入图片文件。导入前有**预检**（重复 / 已过期 / 格式非法都会先列出来），
+  冲突策略（合并 / 跳过 / 覆盖）与过期策略（保留 / 重算 / 清除）可选，导入后还能**回滚**。
+- **断电安全**：捕获途中强杀进程，重启会走「标记 → 完整性检查 → 无悬空文件」。
+- **中英双语**；外观跟随系统 / 浅色 / 深色。
+- **菜单栏图标 + 开机自启**（macOS 走 LaunchAgent，Windows 写 HKCU 的 Run 键，都不需要提权）。
+
+尚未实现的（隐私暂停、敏感内容识别、数据库加密、OCR、片段库、Linux 后端）见
+[`docs/README.md`](docs/README.md) 的功能分期。
 
 ---
 
-## 文档地图
+## 安装
 
-| 文件 | 内容 | 什么时候读 |
-|---|---|---|
-| **`HANDOFF-PROMPT.md`** | **新会话开工提示词**（整份文件即提示词正文，复制粘贴即可） | **开工第一条消息** |
-| **`DESIGN.md`** | 唯一权威设计规格（16 节 + 附录 A） | 全程 |
-| `BACKUP-FORMAT.md` | `.clipbak` 备份包格式规范 | M3 做导出导入时 |
-| **`poc/`** | M0 技术门禁验证：报告 + 可运行工程 | **M2 做面板时**（含可直接复用的 cgo 代码） |
-| `assets/` + `scripts/` | 图标源图与构建脚本 | 需要重建图标时 |
-| `.workbuddy/memory/` | 决策与踩坑的工作日志 | 想追溯"为什么这么定"时 |
+分发方式是 **Releases 里的压缩包 / 安装程序**（仓库里的流水线在打 tag 时自动产出）；
+也可以自己构建，见下一节。
 
-**建议阅读顺序**：`DESIGN.md` **§0 项目基调** → **§16 里程碑** → §2 跨平台架构 → §4 数据模型（含 DDL）→ §5 过期与生命周期 → §7/§8 平台实现要点 → **§14 优化清单（动手前必扫，能省大量返工）**。
+### macOS
+
+1. 解压 `PawClip-<版本>-macos-universal.zip`，把 `PawClip.app` 拖进「应用程序」。
+2. **首次打开会被 Gatekeeper 拦下**——产物是 ad-hoc 签名、未做公证（本项目的既定取舍：
+   不买 Apple 证书）。两种绕法任选：
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/PawClip.app
+   ```
+
+   或者在访达里**右键 → 打开**，再点一次「打开」。
+3. 想让 `⏎` 直接贴进前台应用，需要授权：
+   **系统设置 → 隐私与安全性 → 辅助功能** 里勾选 PawClip。
+   不授权也能用，只是降级成「只复制到剪贴板」（面板里会如实说明）。
+
+### Windows
+
+1. 运行 NSIS 安装程序。
+2. SmartScreen 提示时点「更多信息」→「仍要运行」（同样未做代码签名）。
+3. 自动粘贴**不需要**额外授权。
 
 ---
 
-## 技术栈
+## 怎么用
 
-| 层 | 选型 |
+### 呼出面板
+
+- 默认全局热键 **`⌘⇧V`**（Windows 上是 `Ctrl+Shift+V`），可在设置里改。
+- 或点菜单栏 / 通知区域的 PawClip 图标 → **显示 PawClip**。
+
+> ⚠️ 全局热键会吞掉所有应用里的这个组合——`⌘⇧V` 在很多编辑器里是「粘贴并匹配样式」。
+> 冲突的话在设置里换一个。
+
+### 面板键位
+
+下表里的 `⌘` 在 Windows 上是 `Ctrl`。
+
+| 键 | 行为 |
 |---|---|
-| 后端 | Go 1.26 |
-| 桌面框架 | Wails v2 |
-| 前端 | React + Vite + TypeScript |
-| 数据库 | SQLite（`mattn/go-sqlite3`，**必须带 `sqlite_fts5` 构建标签**） |
-| 原生桥 | macOS：cgo + Objective-C shim；Windows：`golang.org/x/sys/windows`（无需 cgo） |
+| `↑` `↓` | 上下移动光标行 |
+| `⏎` | **回贴**当前行（按上面选的粘贴模式） |
+| `⌘ + 1..9` | 直贴第 N 行（条数在设置里配，默认 9） |
+| `⌘ + ⏎` | 连续粘贴队列：取下一项 |
+| `空格` | 预览当前行（焦点不在输入框时才生效） |
+| `⌫` / `Delete` | 删除当前行；在回收站视图里是**彻底删除** |
+| `Esc` | 逐级退出：关预览 → 清搜索与选择 → 收起面板 |
+| `⌘ + 点击` | 多选 |
+| `⌘ + ,` | 打开设置 |
 
-选型理由与已排除的路线见 §0.4。
+### 菜单栏 / 托盘菜单
 
----
-
-## 关键决策（已定，不再变更）
-
-| # | 决策 | 已知代价 |
-|---|---|---|
-| 1 | **不加密** —— 明文 SQLite + blob | 本地任何进程都能读到剪贴板历史 |
-| 2 | **不签名** —— 不买 Apple / Windows 证书 | 首次打开需手动绕过 Gatekeeper / SmartScreen |
-| 3 | **中英双语**，跟随系统 | 前后端都要走 i18n（易漏位置见 §14 第 24 条） |
-| 4 | **仅 GitHub Releases 分发** | 无自动更新通道 |
-
----
-
-## 功能分期速览
-
-| 期 | 内容 |
+| 项 | 行为 |
 |---|---|
-| **P0** | 监听文本/图片/文件、落库去重置顶、免抢焦点面板 + 热键、中文搜索、回贴与 ⌘1..9 直贴、应用黑名单与保密类型跳过、托盘与开机自启 |
-| **P1** | 三级 TTL + 回收站、分类与标签、缩略图预览、批量操作、`.clipbak` 导出导入、统计面板 |
-| **P2** | 连续粘贴、拼音首字母搜索、搜索语法、内容转换器、正则提取、OCR、片段库 |
-| **P3** | 隐私暂停、敏感内容识别、数据库加密、Linux 后端 |
+| 显示 PawClip | 呼出面板 |
+| 暂停记录 / 继续记录 | 勾选态表示**当前已暂停**；暂停时剪贴板不再进历史 |
+| 设置… / 统计… | 打开对应视图 |
+| 导出 / 导入… | `.clipbak` 的导出导入 |
+| 关于 PawClip | 版本号 |
+| 退出 | 正常退出（会清掉 `clean_shutdown` 标记） |
 
-完整清单与交付边界见 §11；里程碑拆解见 §16。
+### 数据与配置放在哪
+
+| 平台 | 目录 |
+|---|---|
+| macOS | `~/Library/Application Support/PawClip/` |
+| Windows | `%AppData%\PawClip\` |
+
+目录里就四样东西：
+
+| 文件 | 内容 |
+|---|---|
+| `pawclip.db` | SQLite 库（历史条目、分类、标签、设置） |
+| `blobs/` | 图片与 RTF 的原始文件，按 sha256 前两位分片存放 |
+| `config.toml` | **引导配置**，只有三项：库路径、界面语言、日志级别 |
+| `clean_shutdown` | 正常退出时删除的标记；残留即代表上次异常退出 |
+
+> 除这三项以外的所有设置（捕获类型、排除应用、保留策略、热键、主题……）都保存在数据库里、
+> 由界面修改，**不会**回写到 `config.toml`。设置页底部有「在访达 / 资源管理器中打开」的入口。
 
 ---
 
-## 开工前必须知道的三个坑
+## 隐私
 
-**1. 免抢焦点面板——已实测通过，但实现路径是唯一解。**
-必须"**真正创建** `NSPanel`（不能 `object_setClass` 事后换类，会 SIGTRAP）+ App 跑在 **Accessory 激活策略**下，**两个条件缺一不可**；显示顺序必须 `orderFrontRegardless` → `makeKeyWindow`。判据是 `frontmostApplication` 而非 `NSApp.isActive`（后者会把正确答案误判成失败）。
-完整方案见 §0.2，可运行代码见 `poc/wails-panel/panel_darwin.m`。
-
-**2. 中文搜索必须两段式。**
-FTS5 的 `trigram` 分词器要求查询词 **≥ 3 字符**，1–2 字（含英文的 `AI`、`js`、`5G`）必须走 `LIKE` 兜底，否则搜"文档"永远为空。单测要覆盖 1/2/3 字与中英混排。
-
-**3. 图片绝不走 IPC。**
-缩略图通过 Wails 静态资源服务交给 WebView 直载。把 100 张缩略图 base64 塞进 IPC 会让首屏卡 1 秒以上、内存翻倍。
+- **不加密**：历史以明文 SQLite + blob 存放，本机任何进程都能读到。这是刻意的取舍
+  （见 [`docs/DESIGN.md`](docs/DESIGN.md) §0 的已锁定决策）；要挡的话请用磁盘加密（FileVault / BitLocker）。
+- **不联网**：无账号、无同步、无遥测、无自动更新。唯一的网络活动是你自己去下载新版本。
+- **不记来源不明的内容**：带「请勿记录」标记的剪贴板内容（密码管理器的标准做法）直接跳过。
+- **不自我循环**：从面板回贴的内容不会被再记一次——连续回贴 100 次，历史条目数不变。
 
 ---
 
-## 环境要求
+## 从源码构建
+
+### 环境要求
 
 | 项 | 要求 |
 |---|---|
 | Go | 1.26+ |
 | Wails CLI | v2.16+（`go install github.com/wailsapp/wails/v2/cmd/wails@latest`） |
 | Xcode CLT | 必需（macOS 侧 cgo 编译） |
-| Node | 20+（仅前端构建与图标重建；`poc/` 不需要） |
+| Node | 20+（仅前端构建需要；图标产物已入库，纯 Go 侧构建不需要） |
 
-构建命令见 §10。
-
----
-
-## 怎么构建与验收
+### 命令
 
 ```bash
-# 后端全量测试。两个开关都不能省，理由见下面。
-go test -tags sqlite_fts5 -p 1 -count=1 ./...
-
 # 构建 .app —— 一定用这个包装脚本，别直接 wails build
-scripts/build.sh                          # 默认 darwin/arm64
-scripts/build.sh -platform darwin/universal
-scripts/build.sh -platform windows/amd64  # 透传任意 wails build 参数
+scripts/build.sh                                     # 默认 darwin/arm64
+scripts/build.sh -platform darwin/universal           # 通用二进制（Intel + Apple Silicon）
+scripts/build.sh -platform windows/amd64 -nsis        # Windows + 安装程序
+scripts/build.sh -platform darwin/universal -clean    # 清干净重来
 
-# 成品验收：对打包好的 .app 做真机实跑（真剪贴板、真磁盘、真 SIGKILL）
+# 跑测试（两个开关都不能省，理由见下）
+go test -tags sqlite_fts5 -p 1 -count=1 ./...         # 257 条用例 / 9 个包
+
+# 对打包好的 .app 做真机验收（真剪贴板、真磁盘、真 SIGKILL；会覆盖你当前的剪贴板）
 scripts/accept.sh
 
-# 看懂 M1 那条捕获链路（启动真实 App → 模拟复制 → 查库）
+# 看一遍捕获链路（启动真实 App → 模拟复制 → 查库）
 scripts/demo-m1.sh
 
-# 真机验收（会覆盖你当前的系统剪贴板）
-PAWCLIP_REAL_CLIPBOARD=1 go test ./capture/ -tags sqlite_fts5 -run TestAcceptance4 -v
+# 打包成可分发压缩包
+ditto -c -k --sequesterRsrc --keepParent build/bin/pawclip.app build/dist/PawClip-macos-universal.zip
 ```
 
 **为什么构建必须走 `scripts/build.sh`：**
-FTS5 全文索引依赖 `sqlite_fts5` 构建标签，而 `wails.json` 的 schema **没有**任何能持久化
-Go 构建标签的字段（只有 CLI 的 `-tags`）。直接 `wails build` 出来的产物缺 fts5 模块，
-`store.Open` 会按设计**优雅降级**——打一行 WARN 然后退回 LIKE 检索，进程照常启动。
-也就是说全文检索会**静默失效**，不查日志根本发现不了。包装脚本把标签钉死，避免这个坑。
-同一纪律在 `.github/workflows/release.yml` 里也复用（那个 job 走的就是这个脚本）。
+FTS5 全文索引依赖 `sqlite_fts5` 构建标签，而 `wails.json` 的 schema **没有**任何字段能持久化
+Go 构建标签（只有 CLI 的 `-tags`）。直接 `wails build` 出来的产物缺 fts5 模块，程序会按设计
+**优雅降级**——打一行 WARN、退回逐行匹配，界面照常打开。也就是说**全文检索会静默失效**，
+不查日志根本发现不了。包装脚本把标签钉死，`.github/workflows/` 里的两个流水线同理。
 
-**为什么测试要带 `-p 1`：**
-本仓库有两类**按墙上时间取证**的规模测试（store 的 10 万条检索延迟、capture 的 5MB 图片捕获
-延迟）。`go test` 默认并行跑包，CPU 被 10 个包抢满时这些数字会飙到 2–3 倍——那是机器被占满，
-不是产品退化。串行跑让度量条件稳定，总耗时基本不变。
+**为什么测试要带 `-p 1`：** 仓库里有两类按墙上时间取证的规模测试（10 万条检索延迟、
+5MB 图片捕获延迟）。`go test` 默认并行跑包，CPU 被抢满时这些数字会飙到 2–3 倍——那是机器被占满，
+不是产品退化。串行让度量条件稳定，总耗时基本不变。
 
-**为什么测试要带 `-tags sqlite_fts5`：**
-缺了这个标签，`store` 会因为 fts5 模块不存在而**跳过**一批全文检索用例（而不是变红）——
-静默降级的另一种形态。
-
-**`scripts/accept.sh` 与 `go test` 的分工**（两者缺一不可）：
-单测证明"逻辑正确"（注入假后端、可重复）；accept.sh 证明"这个产物真能跑"——
-签名坏了、`Info.plist` 丢了 LSUIElement、构建漏了标签，这些**一条单测都不会红**，
-但用户一定打不开或功能少一半。
+**`accept.sh` 与 `go test` 是两件事，缺一不可：**
+单测证明「逻辑正确」（注入假后端、可重复）；`accept.sh` 证明「这个产物真能跑」——
+签名坏了、`Info.plist` 丢了 `LSUIElement`、构建漏了标签，这些**一条单测都不会红**，
+但用户一定打不开或功能少一半。实测结果见 [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)。
 
 ---
 
-## 图标资源
+## 目录结构
 
-```bash
-# 换源图后先探测新的几何常量（裁剪框 + 圆角半径），再重建
-node scripts/probe-icon-source.cjs assets/icon/pawclip-source.png
-
-# 生成全套：.icns / .ico / 9 档 PNG / 托盘模板图 / 4 张预览校验图
-NODE_PATH=<node_modules> node scripts/build-icons.cjs
+```
+pawclip/
+├─ main.go / app.go / bindings.go      # Wails 入口、生命周期、前端可调方法
+├─ capture/                            # 捕获流水线（去抖 → 归一 → 去重 → 落库）
+├─ clipboard/                          # 平台原生剪贴板层（cgo shim / Win32 消息）
+├─ store/                              # SQLite：schema、迁移、items、FTS5、blob、设置
+├─ retention/  backup/  transform/  pinyin/   # 过期回收、.clipbak 导出导入、转换器、拼音
+├─ writer.go / tray.go / autostart.go / i18n.go   # 回贴、托盘、开机自启、后端文案
+├─ panel/                              # 免抢焦点面板与全局热键的平台实现
+├─ frontend/                           # React + Vite + TypeScript（无 UI 组件库）
+├─ assets/icon/  scripts/              # 图标源图与生成物、构建与验收脚本
+├─ poc/                                # M0 技术门禁验证（含可直接复用的面板 cgo 代码）
+├─ docs/                               # 开发文档：设计规格 / 格式规范 / 验收报告
+└─ README.md                           # 本文件：功能 · 安装 · 使用 · 构建
 ```
 
-- 源图 `assets/icon/pawclip-source.png` 是**不带 alpha** 的位图稿，四角为不透明近白、外围还有一圈环境阴影 —— 所有灰度阈值/洪泛填充方案都必然失败，只能靠**几何圆角遮罩**抠轮廓。原因与实测量见 §15.3。
-- 依赖 `sharp`。产物已入库（约 3.3 MB），所以**纯 Go 侧构建不需要 Node**。换图流程见 §15.2。
-
 ---
 
-## 验收结果（DESIGN §12 全项）
-
-实测环境：macOS / Apple Silicon，2026-09-16。单测口径为 `go test -tags sqlite_fts5 -p 1`；
-真机口径为 `scripts/accept.sh`（对 `build/bin/pawclip.app` 实跑）。
-
-| 项 | §12 指标 | 实测 | 取证方式 | 结论 |
-|---|---|---|---|---|
-| 捕获延迟（文本） | < 30 ms | 流水线 p95 **1.2 ms**（端到端含 50ms 合批窗口约 48 ms） | `capture` `TestCaptureLatencyText` | ✅ |
-| 捕获延迟（5 MB 图片） | < 200 ms | 1600×1200 噪声 PNG（5.8 MB）端到端中位数 **108 ms** | `capture` `TestCaptureLatencyImageAt5MB` | ✅ |
-| 检索延迟（≥3 字） | < 50 ms @ 10 万条 | 3 字中文 p95 **2.5 ms**；4 字 **4.9 ms**；英文 **4.5 ms**；中英混排 **4.4 ms** | `store` `TestSearchLatencyAt100k` | ✅ |
-| 检索延迟（2 字 LIKE） | < 300 ms | p95 **0.67 ms**（中/英） | 同上 | ✅ |
-| 空闲内存 | macOS ≤ 30 MB（面板销毁态） | 稳态 **54 MB**；`wails.Run` 之前基线 13 MB → **窗口+WebView 约 41 MB** | `scripts/accept.sh` ③（进程自报快照） | ❌ 见下 |
-| 空闲 CPU | macOS < 1% | **0.33–0.42%**（20 秒窗口，已排除启动开销） | 同上 | ✅ |
-| 无自捕获 | 连续 100 次回贴 → 新增 0 | 100 次回贴后 `CountAlive` 仍为 1，守卫拦下 100 次 | `capture` `TestAcceptance1_NoSelfCapture` | ✅ |
-| 去重正确性 | 复制 100 次 → 1 行、`use_count=100` | 真机 `pbcopy` 100 次 → 1 行、`use_count=100` | `capture` `TestAcceptance2` + `accept.sh` ⑥ | ✅ |
-| 搜索正确性 | 1/2/3 字、英文、混排、大小写、特殊字符 | 全部命中符合预期（含 2 字走 LIKE 的分支） | `store` `TestSearch_CorrectnessTable` / `TestSearchCorrectnessAtTwoChars` | ✅ |
-| 导出完整性 | 导出→清库→导入，全字段一致 | 条目/内容/分类/标签/置顶/过期时间逐项比对一致 | `backup` `TestAcceptance1_ExportThenImportPreservesEverything` | ✅ |
-| 导入幂等 | 同包导入两次，第二次全跳过 | 第二次全部走跳过，库中无重复 | `backup` `TestAcceptance2_ImportTwiceIsIdempotent` | ✅ |
-| 断电安全 | 捕获中强杀，重启后可开库且无半截记录 | 真机 SIGKILL → 重启走「标记 → integrity_check=ok」→ 无悬空 blob | `capture` `TestAcceptance3_Kill9Recovery` + `accept.sh` ⑦ | ✅ |
-| （附）前端体积 | §14 第 14 条：gzip 后 < 150 KB | gzip **69.3 KB**（JS 65.4 + CSS 3.7） | `npm run build` 产物实测 | ✅ |
-
-**关于唯一未达标的「空闲内存」**：数字本身是真的，归因也是确定的——
-`wails.Run` 之前进程只有 13 MB，把窗口与 WebView 建出来之后就是 53–55 MB。
-也就是说超出的 41 MB 全在 Wails/WebKit 侧，Go + SQLite + 捕获链路那部分只占十几 MB。
-而 §12 的判据写的是「**面板销毁态**」：它默认面板闲置时会被销毁、把 WebView 一起还回去。
-本实现做不到这件事，因为 Wails v2.16 的单窗口模型只导出 `Show/Hide/Quit`，
-**没有窗口销毁与重建 API**（销毁了就没法再显示，那比内存超标更糟）。
-所以当前实现改成"按空闲阈值收起面板"，并把这个事实与实测数字摆在 `PanelLifecycle()` 里
-（见 §13 已列风险、§14 第 10 条）。
-
-要真正收进 30 MB，需要换掉 Wails 的单窗口模型（改成启动时不建窗口、首次呼出时才创建，
-或改用能销毁/重建窗口的方案）。那是一次架构改动，不属于本期打磨范围。
-
----
-
-## 已知遗留
+## 已知限制
 
 | 项 | 现状 | 影响 |
 |---|---|---|
-| 空闲常驻内存 54 MB | 面板闲置销毁做不了（Wails v2.16 单窗口无重建 API） | §12 唯一未达标项；面板收起后内存仍在 |
-| Windows 真机未验证 | 只有 `CGO_ENABLED=0` 交叉编译烟测 + `windows-2022` 上的正式构建 | 只能证明"能编过"；剪贴板/热键/托盘的实际行为未在真机测过 |
-| 辅助功能授权未授予 | 真机验收里 `axTrusted: 0` | 自动粘贴不可用，降级为"只复制"（§13 已列，行为正确） |
-| Linux | 只有接口骨架 | 按 §11 的边界，本期不投入 |
+| 空闲内存 54 MB（目标 30 MB） | 面板"闲置销毁"在 Wails v2.16 的单窗口模型下做不了（只导出 `Show/Hide/Quit`，无窗口重建 API），当前实现是**闲置收起**而不是销毁 | 面板收起后 WebView 内存仍在。这是 §12 里唯一未达标的指标，归因见 [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) |
+| Windows 只在 CI 构建，未在真机验证 | 有 `CGO_ENABLED=0` 交叉编译烟测与 `windows-2022` 上的正式构建 | 能证明"编得出来"；剪贴板 / 热键 / 托盘的真机行为未实测 |
+| 未做代码签名与公证 | 既定取舍（不买证书） | 首次打开要手动绕过 Gatekeeper / SmartScreen |
+| Linux | 只有接口骨架，不参与编译 | 按设计边界，本期不做 |
+| 无自动更新 | 只从 Releases 手动下载 | 靠用户自己留意新版本 |
 
+---
+
+## 开发文档
+
+| 文件 | 内容 |
+|---|---|
+| [`docs/DESIGN.md`](docs/DESIGN.md) | **唯一权威设计规格**（16 节 + 附录 A）：架构、数据模型与 DDL、过期策略、双平台踩坑、里程碑、优化清单 |
+| [`docs/README.md`](docs/README.md) | 开发文档索引：技术栈、已锁定决策、功能分期、开工三坑、构建与验收口径 |
+| [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) | §12 全项验收的实测结果、归因与已知遗留 |
+| [`docs/BACKUP-FORMAT.md`](docs/BACKUP-FORMAT.md) | `.clipbak` 备份包格式规范（含第三方消费指南） |
+| [`docs/HANDOFF-PROMPT.md`](docs/HANDOFF-PROMPT.md) | M1 开工时的提示词存档（历史文件） |
+| `poc/` | M0 技术门禁验证：报告 + 可运行工程 |
+| `.workbuddy/memory/` | 决策与踩坑的工作日志 |
+
+---
+
+## 技术栈
+
+Go 1.26 · Wails v2 · React + Vite + TypeScript · SQLite（`mattn/go-sqlite3` + FTS5 trigram）；
+macOS 走 cgo + Objective-C shim，Windows 走 `golang.org/x/sys/windows`（无需 cgo）。
+选型理由与被排除的路线见 [`docs/DESIGN.md`](docs/DESIGN.md) §0.4。
