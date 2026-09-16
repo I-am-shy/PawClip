@@ -6,7 +6,7 @@
 #
 # 用法：
 #   scripts/build.sh        # 先构建（注意必须走这个脚本，否则 FTS5 会静默失效）
-#   scripts/demo-m1.sh      # 再跑本演示
+#   test/demo-m1.sh         # 再跑本演示
 #
 # 依赖：sqlite3、pbcopy（macOS 自带）。
 #

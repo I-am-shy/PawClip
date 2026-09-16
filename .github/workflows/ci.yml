@@ -54,8 +54,11 @@ jobs:
       - name: go test
         run: go test -tags sqlite_fts5 -p 1 -count=1 ./...
 
+      # 带上 sqlite_fts5：不带的话，只有该标签下才编译的那些文件
+      # （FTS5 相关的迁移与自检）根本进不了 vet 的视野——一次静默的范围缩水。
+      # 这条与 test/run.sh 里的第 ② 层完全一致。
       - name: go vet
-        run: go vet ./...
+        run: go vet -tags sqlite_fts5 ./...
 
   # ── 后端：跨平台编译烟测 ──────────────────────────────────────
   #
@@ -116,7 +119,7 @@ jobs:
       # 于是"CI 过了"可能只是因为 CI 自己升级了一个依赖。
       - run: npm ci
 
-      # npm run build 的第一段就是 scripts/check-i18n.mjs：
+      # npm run build 的第一段就是 npm run check:i18n（test/check-i18n.mjs）：
       # 中途某次改动漏了一个键、或者两份字典对不上，这里会直接失败。
       # 放在构建最前面是为了让错误信息指向真正的问题（少了一个文案），
       # 而不是被 TS 的连锁报错淹没。

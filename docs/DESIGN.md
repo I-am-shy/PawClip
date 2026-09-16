@@ -658,13 +658,19 @@ pawclip/
 │  └─ dist/                             # 生成物，见 §15
 ├─ scripts/
 │  ├─ build.sh                          # 唯一构建入口（钉死 -tags sqlite_fts5）
-│  ├─ accept.sh                         # 成品真机验收
-│  ├─ demo-m1.sh                        # 捕获链路演示
+│  ├─ dev.sh                            # 本地开发入口（wails dev + 隔离数据目录）
 │  ├─ build-icons.cjs                   # 图标资源构建
 │  └─ probe-icon-source.cjs             # 源图几何探测（换图后必跑）
+├─ test/                                # 测试与验收
+│  ├─ README.md                         # 分层说明 + Go 单测为何留在各包目录
+│  ├─ run.sh                            # 测试总入口（与 CI 同口径）
+│  ├─ accept.sh                         # 产物真机验收（对打包好的 .app）
+│  ├─ demo-m1.sh                        # 捕获链路演示
+│  └─ check-i18n.mjs                    # 前端 i18n 一致性（也是 npm run build 的第一段）
 ├─ .github/workflows/                   # ci.yml + release.yml
 ├─ docs/                                # 开发文档（与产品源码分离）
 │  ├─ DESIGN.md                         # 本文件
+│  ├─ ACCEPTANCE.md                     # §12 验收结果与已知遗留
 │  ├─ BACKUP-FORMAT.md                  # .clipbak 格式规范
 │  └─ HANDOFF-PROMPT.md                 # 新会话开工提示词
 └─ README.md                            # 面向使用者：功能 / 构建 / 使用
@@ -672,6 +678,10 @@ pawclip/
 
 > 开发文档统一放 `docs/`，仓库根只留 `README.md`。源码注释里引用设计条款一律写成
 > `docs/DESIGN.md §N`，保证从任意目录都能直接定位到文件。
+>
+> `*_test.go` **仍与被测包同目录**，不集中到 `test/`：Go 工具链要求如此，且本仓库
+> 的测试要访问包内未导出符号。`test/` 收的是"独立可执行的测试资产"（入口脚本、
+> 验收脚本、前端检查），理由与分层见 `test/README.md`。
 
 ### 构建命令
 

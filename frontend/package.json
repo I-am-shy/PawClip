@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/check-i18n.mjs && tsc --noEmit && vite build && node scripts/ensure-dist-placeholder.mjs",
+    "check:i18n": "node ../test/check-i18n.mjs",
+    "check:types": "tsc --noEmit",
+    "build": "npm run check:i18n && npm run check:types && vite build && node scripts/ensure-dist-placeholder.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

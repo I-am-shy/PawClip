@@ -11,15 +11,19 @@
 //   2. 每个键都至少被 `t('key')` / `t("key")` 引用过一次。
 //      留着不用的键会让人以为那个位置已经做了 i18n。
 //
-// 用 Node 直接跑（不引测试框架）：它是构建链上的一步，不是测试套件的一部分，
-// 失败信息要能直接指出"哪个键"。
+// 用 Node 直接跑（不引测试框架）：它既是 `npm run build` 的第一道闸
+// （键不一致就别出包），也是 test/run.sh 的一层，失败信息要能直接指出"哪个键"。
+//
+// 位置说明：本文件住在 test/，但它读的是 `../frontend/src`——因为检查对象是
+// 前端源码。所以改目录结构时这两处要一起动：这里的 srcDir，以及
+// frontend/package.json 的 `build` 脚本里对 ../test/check-i18n.mjs 的调用。
 
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const srcDir = join(here, '..', 'src')
+const srcDir = join(here, '..', 'frontend', 'src')
 
 /** walk 收集 src 下全部 .ts/.tsx 文件。 */
 function walk(dir) {
