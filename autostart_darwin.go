@@ -32,7 +32,7 @@ const launchAgentLabel = "com.zego.pawclip"
 func launchAgentPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("pawclip: 找不到用户主目录：%w", err)
+		return "", msgf(msgErrNoHomeDir, err, err)
 	}
 	return filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist"), nil
 }
@@ -55,7 +55,7 @@ func autoStartEnabled() (bool, error) {
 		return false, nil
 	}
 	// 其它错误（权限、launchctl 不存在）如实报出来，不猜。
-	return false, autoStartErr("读取自启状态", strings.TrimSpace(string(out)), err)
+	return false, autoStartErr(msgActReadAutoStart, strings.TrimSpace(string(out)), err)
 }
 
 func setAutoStart(enabled bool) error {
@@ -72,14 +72,14 @@ func setAutoStart(enabled bool) error {
 		_, _ = exec.CommandContext(ctx, "launchctl", "bootout",
 			launchAgentDomain()+"/"+launchAgentLabel).CombinedOutput()
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return autoStartErr("删除自启项", err.Error(), err)
+			return autoStartErr(msgActDeleteStart, err.Error(), err)
 		}
 		return nil
 	}
 
 	exe, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("pawclip: 无法确定可执行文件路径：%w", err)
+		return msgf(msgErrNoExePath, err, err)
 	}
 	// 解析符号链接：.app 的 MacOS/ 下那个文件通常是个指向真实二进制的链接，
 	// 直接把链接路径写进 plist 也能跑，但一旦 build 目录被清理就断了。
@@ -89,11 +89,11 @@ func setAutoStart(enabled bool) error {
 
 	plist := buildLaunchAgentPlist(exe)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return autoStartErr("创建 LaunchAgents 目录", err.Error(), err)
+		return autoStartErr(msgActLaunchDir, err.Error(), err)
 	}
 	// 0644：launchd 以当前用户身份读它，不需要更宽。
 	if err := os.WriteFile(path, []byte(plist), 0o644); err != nil {
-		return autoStartErr("写自启项", err.Error(), err)
+		return autoStartErr(msgActWriteAutoStart, err.Error(), err)
 	}
 
 	if out, err := exec.CommandContext(ctx, "launchctl", "bootstrap",
@@ -101,7 +101,7 @@ func setAutoStart(enabled bool) error {
 		// bootstrap 失败时把刚写的文件删掉：留下来会变成一个"看起来开了、
 		// 其实没生效"的僵尸状态，下次用户开开关会撞 "already bootstrapped"。
 		_ = os.Remove(path)
-		return autoStartErr("注册自启项", strings.TrimSpace(string(out)), err)
+		return autoStartErr(msgActWriteAutoStart, strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }

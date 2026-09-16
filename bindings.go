@@ -12,6 +12,7 @@ import (
 	"github.com/zego/pawclip/backup"
 	"github.com/zego/pawclip/panel"
 	"github.com/zego/pawclip/store"
+	"github.com/zego/pawclip/transform"
 )
 
 // 本文件是**前端能调用的一切**（DESIGN §10 里 app.go 的职责）。
@@ -104,6 +105,56 @@ type ListRow struct {
 	// 库里没有 html_path 列，所以 M1/M2 一律内联进 html_content，
 	// 这个字段留空，前端用 Get(id) 拿全文。
 	HasHTML bool `json:"hasHtml"`
+}
+
+// rowFromItem 把单条 store.Item 投影成前端契约。
+//
+// ⚠️ 存在的理由是**避免 List 与 Get 的字段集漂移**。两者本来各写一份
+// 字段列表，后果已经实际发生过：Get 那份漏了 TTLSource 与 ThumbURL，
+// 于是预览面板对"永不主动过期"的条目显示不出徽标、也拿不到缩略图——
+// 而列表里同一条是对的。用户看到的是"同一条内容，列表和预览不一样"。
+//
+// 字段一多，手写两份必然漏。所以共用这一个函数，新增字段只改一处。
+func (a *App) rowFromItem(it *store.Item) ListRow {
+	r := ListRow{
+		ID:            it.ID,
+		Kind:          it.Kind,
+		Preview:       it.Preview,
+		Fingerprint:   it.Fingerprint,
+		ByteSize:      it.ByteSize,
+		SourceAppID:   it.SourceAppID,
+		SourceAppName: it.SourceAppName,
+		CategoryID:    it.CategoryID,
+		Pinned:        it.Pinned,
+		FirstSeenAt:   it.FirstSeenAt,
+		ExpiresAt:     it.ExpiresAt,
+		CreatedAt:     it.CreatedAt,
+		LastUsedAt:    it.LastUsedAt,
+		UseCount:      it.UseCount,
+		DeletedAt:     it.DeletedAt,
+		FileCount:     len(it.FilePaths),
+		// TagIDs 不在 store.Item 上：标签是另一张表，Get 里用一次
+		// ItemTags 单独查（列表侧由 attachTags 批量补齐）。
+	}
+	if it.SourceURL != nil {
+		r.SourceURL = *it.SourceURL
+	}
+	if it.TTLSource != nil {
+		r.TTLSource = *it.TTLSource
+	}
+	if it.TextContent != nil {
+		r.TextLen = int64(len([]rune(*it.TextContent)))
+	}
+	if it.HTMLContent != nil {
+		r.HasHTML = true
+	}
+	if it.ImagePath != nil {
+		r.ImageURL = blobURL(*it.ImagePath)
+	}
+	if it.ThumbPath != nil {
+		r.ThumbURL = blobURL(*it.ThumbPath)
+	}
+	return r
 }
 
 func toListRow(r store.ListRow) ListRow {
@@ -202,51 +253,27 @@ func (a *App) Get(id int64) (*ItemDetail, error) {
 	}
 
 	d := &ItemDetail{
-		ListRow: ListRow{
-			ID:            it.ID,
-			Kind:          it.Kind,
-			Preview:       it.Preview,
-			Fingerprint:   it.Fingerprint,
-			ByteSize:      it.ByteSize,
-			SourceAppID:   it.SourceAppID,
-			SourceAppName: it.SourceAppName,
-			CategoryID:    it.CategoryID,
-			Pinned:        it.Pinned,
-			FirstSeenAt:   it.FirstSeenAt,
-			ExpiresAt:     it.ExpiresAt,
-			CreatedAt:     it.CreatedAt,
-			LastUsedAt:    it.LastUsedAt,
-			UseCount:      it.UseCount,
-			DeletedAt:     it.DeletedAt,
-			FileCount:     len(it.FilePaths),
-		},
+		ListRow:   a.rowFromItem(it),
 		FilePaths: it.FilePaths,
 	}
+	// 全文按需取：列表走的是 preview，这里才是唯一会拉 text_content 的地方
+	// （§14 第 7 条：列表查询不取正文）。
 	if it.TextContent != nil {
 		d.Text = *it.TextContent
-		d.TextLen = int64(len([]rune(*it.TextContent)))
 	}
 	if it.HTMLContent != nil {
 		d.HTML = *it.HTMLContent
-		d.HasHTML = true
 	}
-	if it.SourceURL != nil {
-		d.SourceURL = *it.SourceURL
+	if it.RTFPath != nil {
+		d.RTF = *it.RTFPath
 	}
 	if it.ImagePath != nil {
-		d.ImageURL = blobURL(*it.ImagePath)
 		// 尺寸只对图片有意义；取不到就算了（前端按加载后的实际尺寸布局）。
 		if a.blobsReady() {
 			if w, h, err := store.DecodePNGSizeFromFile(a.blobAbs(*it.ImagePath)); err == nil {
 				d.ImageWidth, d.ImageHeight = w, h
 			}
 		}
-	}
-	if it.ThumbPath != nil {
-		d.ThumbURL = blobURL(*it.ThumbPath)
-	}
-	if it.RTFPath != nil {
-		d.RTF = *it.RTFPath
 	}
 	if ids, err := db.ItemTags(ctx, id); err == nil {
 		d.TagIDs = ids
@@ -265,17 +292,43 @@ func (a *App) Delete(ids []int64) (int64, error) {
 	return db.SoftDelete(a.baseCtx(), ids)
 }
 
-// Restore 从回收站恢复。返回恢复成功的条数与"因指纹冲突没能恢复"的条数。
+// RestoreResult 是"从回收站恢复"的结果。
 //
-// conflict 必须返回给用户：恢复失败不是错误，但用户需要知道为什么
-// 那几条没回来（回收站里那条的指纹已经被"删掉后又重新复制进来的"占住了）。
-func (a *App) Restore(ids []int64) (restored int64, conflict int, err error) {
+// ⚠️ 为什么不是 `(restored int64, conflict int, err error)` 这样的多返回值：
+// Wails 把 Go 的多返回值映射成 JS 的数组，而"最后一个 error + 前面两个值"
+// 这种签名在生成侧的具体映射规则（数组包几个元素、error 算不算进去）
+// 并不直观，前端很容易解错位。包成一个结构体之后 TS 侧就是普通的对象字段，
+// 没有歧义。
+type RestoreResult struct {
+	Restored int64 `json:"restored"`
+	// Conflict 是"因指纹冲突没能恢复"的条数。
+	//
+	// 必须返回给用户：恢复失败不是错误，但用户需要知道为什么那几条没回来
+	// ——回收站里那条的指纹已经被"删掉后又重新复制进来的"占住了。
+	// 静默把数字吃掉会让用户以为"点一下就能全恢复"，然后发现少了几条。
+	Conflict int `json:"conflict"`
+}
+
+// Restore 从回收站恢复。
+func (a *App) Restore(ids []int64) (*RestoreResult, error) {
 	db, _, _, err := a.ready()
 	if err != nil {
-		return 0, 0, err
+		return nil, err
 	}
-	return db.Restore(a.baseCtx(), ids)
+	restored, conflict, err := db.Restore(a.baseCtx(), ids)
+	if err != nil {
+		return nil, err
+	}
+	return &RestoreResult{Restored: restored, Conflict: conflict}, nil
 }
+
+// SettingKeys 返回全部设置键。
+//
+// 给设置界面做**自检**用：前端有一张自己维护的"键 → 控件"表，而键是
+// 跨进程契约。如果哪天后端加了键、前端没加控件，用户会看到"这个设置项
+// 在库里存在但界面上没有"。前端拿这份清单比对，把没覆盖到的键显式渲染
+// 成只读项并提示，而不是让它悄悄消失。
+func (a *App) SettingKeys() []string { return store.SettingKeys() }
 
 // Purge 物理删除（不可恢复）。blob 文件交给 GC 的孤儿扫描回收。
 func (a *App) Purge(ids []int64) (int64, error) {
@@ -351,9 +404,10 @@ func (a *App) SaveCategory(c store.Category) (int64, error) {
 	}
 	ctx := a.baseCtx()
 	if c.ID == 0 {
-		return db.CreateCategory(ctx, &c)
+		id, err := db.CreateCategory(ctx, &c)
+		return id, a.localizeErr(err)
 	}
-	return c.ID, db.UpdateCategory(ctx, &c)
+	return c.ID, a.localizeErr(db.UpdateCategory(ctx, &c))
 }
 
 // DeleteCategory 删除分类。条目不会被删，它们的 category_id 归 NULL
@@ -439,13 +493,110 @@ func (a *App) PasteText(text string) error {
 	return wb.PasteText(text)
 }
 
+// ── 内容转换器（DESIGN §11 P2）──────────────────────────────────
+
+// TransformOpList 返回后端支持的转换 ID（顺序即菜单顺序）。
+//
+// 前端拿它渲染"转换"菜单、配上自己的文案；不认识的 ID 说明是更新的后端
+// 加了一个前端还没做文案的功能，此时前端会显示原始 ID 而不是把这一项藏起来
+// ——"后端有、界面上没有"是最难排查的一类问题。
+func (a *App) TransformOpList() []string { return transform.OpIDs() }
+
+// TransformResult 是一次转换的结果。
+//
+// 为什么失败也走"正常返回"而不是 error：转换失败（"这不是 JSON"）是
+// **用户会遇到的正常情况**，需要一句能看懂的解释，而不是一个异常。
+// ErrorKind 是给界面做本地化的键，ErrorText 是兜底原文。
+type TransformResult struct {
+	Op        string `json:"op"`
+	Text      string `json:"text"`
+	Changed   bool   `json:"changed"`
+	ErrorKind string `json:"errorKind,omitempty"`
+	ErrorText string `json:"errorText,omitempty"`
+}
+
+// TransformItem 对某条历史的**纯文本**做一次转换。
+//
+// 传 id 而不是把正文从前端传回来：正文最大 256K 字符，来回一趟 IPC 是
+// 白白搬两遍（§14 第 1 条的同一条理由）。
+func (a *App) TransformItem(id int64, op string) (*TransformResult, error) {
+	db, _, _, err := a.ready()
+	if err != nil {
+		return nil, err
+	}
+	it, err := db.GetByID(a.baseCtx(), id)
+	if err != nil {
+		return nil, a.localizeErr(err)
+	}
+	if it.TextContent == nil || *it.TextContent == "" {
+		// 图片 / 文件类条目没有文本可转，如实说。
+		return &TransformResult{Op: op, ErrorKind: transform.KindEmpty}, nil
+	}
+	out, err := transform.Apply(op, *it.TextContent)
+	if err != nil {
+		return &TransformResult{
+			Op:        op,
+			ErrorKind: transform.KindOf(err),
+			ErrorText: err.Error(),
+		}, nil
+	}
+	return &TransformResult{Op: op, Text: out, Changed: out != *it.TextContent}, nil
+}
+
+// TransformText 直接对一段文本做转换（前端在"转换结果"上再试一次用的）。
+func (a *App) TransformText(text, op string) (*TransformResult, error) {
+	out, err := transform.Apply(op, text)
+	if err != nil {
+		return &TransformResult{Op: op, ErrorKind: transform.KindOf(err), ErrorText: err.Error()}, nil
+	}
+	return &TransformResult{Op: op, Text: out, Changed: out != text}, nil
+}
+
+// PasteTransformed 把转换结果直接贴出去（走完整回写流程，不写库）。
+func (a *App) PasteTransformed(id int64, op string, autoPaste bool) (*PasteResult, error) {
+	res, err := a.TransformItem(id, op)
+	if err != nil {
+		return nil, err
+	}
+	if res.ErrorKind != "" {
+		return nil, errors.New(a.T(transformErrKey(res.ErrorKind)))
+	}
+	wb, err := a.writeback()
+	if err != nil {
+		return nil, err
+	}
+	out, err := wb.PasteCustomText(a.baseCtx(), res.Text, autoPaste)
+	return out, a.localizeErr(err)
+}
+
+// PastePlain 去格式贴纯文本（DESIGN §11 P2 的第一条转换器）。
+//
+// 它不是"对文本做变换"，而是**选择条目的哪一种表示**：丢掉 HTML / RTF，
+// 只把纯文本写进剪贴板。落到支持富文本的 App 里不会再带字体和超链接。
+func (a *App) PastePlain(id int64, autoPaste bool) (*PasteResult, error) {
+	wb, err := a.writeback()
+	if err != nil {
+		return nil, err
+	}
+	res, err := wb.PastePlain(a.baseCtx(), id, autoPaste)
+	return res, a.localizeErr(err)
+}
+
 // StartSequence 进入"连续粘贴"模式（§11 P2）。
 func (a *App) StartSequence(ids []int64) (int, error) {
 	wb, err := a.writeback()
 	if err != nil {
 		return 0, err
 	}
-	return wb.StartSequence(a.baseCtx(), ids)
+	left, err := wb.StartSequence(a.baseCtx(), ids)
+	if err != nil {
+		return 0, a.localizeErr(err)
+	}
+	// 第一条已经贴出去了，推一句进度：此刻面板是收起的（Paste 会收起它），
+	// 用户只能靠这条提示知道队列还有几条。开场用"已开始"的话术，
+	// 而不是"还剩 N 条"——用户需要先知道这件事真的启动了。
+	pushEvent(EventNotice, a.Tf(msgNotifySeqStarted, left))
+	return left, nil
 }
 
 // NextInSequence 连续粘贴的下一项。
@@ -454,7 +605,40 @@ func (a *App) NextInSequence() (*PasteResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	return wb.NextInSequence(a.baseCtx())
+	res, err := wb.NextInSequence(a.baseCtx())
+	if err != nil {
+		// 队列贴空了是**正常结束**，不是失败：说一句"已贴完"，
+		// 而不是让前端弹红条说"队列已空"。
+		if wb.SequenceRemaining() == 0 {
+			a.seqProgress(0, true)
+		}
+		return nil, a.localizeErr(err)
+	}
+	a.seqProgress(wb.SequenceRemaining(), false)
+	return res, nil
+}
+
+// ClearSequence 退出连续粘贴模式（用户点"结束队列"）。
+func (a *App) ClearSequence() {
+	a.clearSequence()
+	a.seqProgress(0, true)
+}
+
+// seqProgress 广播连续粘贴的进度。
+//
+// finished 为真且剩余 0 时说的是"已贴完"，否则说"还剩 N 条"。
+// 这两种话术不同，所以不能用同一个模板硬套（"还剩 0 条"读起来像出错了）。
+func (a *App) seqProgress(left int, finished bool) {
+	text := ""
+	switch {
+	case left > 0:
+		text = a.Tf(msgNotifySeqNext, left)
+	case finished:
+		text = a.T(msgNotifySeqFinished)
+	}
+	if text != "" {
+		pushEvent(EventNotice, text)
+	}
 }
 
 // SequenceState 报告连续粘贴的进度。
@@ -463,10 +647,16 @@ func (a *App) SequenceState() SequenceState {
 	if err != nil {
 		return SequenceState{}
 	}
+	remaining, total := wb.SequenceRemaining(), wb.SequenceTotal()
 	return SequenceState{
-		Remaining: wb.SequenceRemaining(),
-		Total:     wb.SequenceTotal(),
-		Active:    wb.SequenceTotal() > 0,
+		Remaining: remaining,
+		Total:     total,
+		// Active 的判据是**还剩几条**，不是"排过队没有"。
+		//
+		// 原来写的是 total > 0，于是队列贴完之后 Active 仍是 true ——
+		// 前端的队列指示条会一直挂着显示"剩余 0 / 3"，看起来像卡住了。
+		// 用 remaining 之后，"贴完"与"没开始"是同一个状态。
+		Active: remaining > 0,
 	}
 }
 
@@ -476,9 +666,6 @@ type SequenceState struct {
 	Remaining int  `json:"remaining"`
 	Total     int  `json:"total"`
 }
-
-// ClearSequence 退出连续粘贴模式。
-func (a *App) ClearSequence() { a.clearSequence() }
 
 func (a *App) clearSequence() {
 	if wb, err := a.writeback(); err == nil {
@@ -538,6 +725,10 @@ func (a *App) AutoPasteAvailable() bool {
 func (a *App) RequestAutoPaste() {
 	if ctrl := a.panelController(); ctrl != nil {
 		ctrl.RequestAutoPaste()
+		// 系统那个面板本身不解释"为什么要授权"，这里补一句。
+		// 它是**后端渲染**的（前端不知道用户什么时候点了这个按钮之后的系统行为），
+		// 所以必须走目录，而不是留给前端。
+		a.notify(a.T(msgTrayTooltip), a.T(msgPasteAccessibility))
 	}
 }
 
@@ -661,7 +852,7 @@ func (a *App) StatsOverview() (*StatsSummary, error) {
 func (a *App) RunGC() (*GCReport, error) {
 	gc := a.gcEngine()
 	if gc == nil {
-		return nil, errors.New("pawclip: GC 尚未启动")
+		return nil, errors.New(a.T(msgErrNoGC))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -728,14 +919,14 @@ func (a *App) Export(opts ExportOptions) (*ExportResult, error) {
 	}
 	bs := a.blobStore()
 	if bs == nil {
-		return nil, errors.New("pawclip: blob 存储未就绪")
+		return nil, errors.New(a.T(msgErrNoBlobs))
 	}
 
 	outDir := strings.TrimSpace(opts.OutputDir)
 	if outDir == "" {
 		outDir = filepath.Join(db.Dir(), "exports")
 		if err := os.MkdirAll(outDir, 0o700); err != nil {
-			return nil, fmt.Errorf("pawclip: 创建导出目录：%w", err)
+			return nil, msgf(msgErrCreateExpDir, err, err)
 		}
 	}
 
@@ -755,11 +946,13 @@ func (a *App) Export(opts ExportOptions) (*ExportResult, error) {
 		OutputDir:      outDir,
 		AppVersion:     Version,
 		Platform:       runtimeGOOS(),
+		// README 的首段按当前语言生成（§14 第 24 条）。
+		Preamble: a.readmePreamble(),
 	}, a.gcEngine(), a.log)
 	if err != nil {
 		return nil, err
 	}
-	return &ExportResult{
+	out := &ExportResult{
 		Path:         res.Path,
 		Bytes:        res.Bytes,
 		Items:        res.Items,
@@ -770,7 +963,16 @@ func (a *App) Export(opts ExportOptions) (*ExportResult, error) {
 		MissingBlobs: res.MissingBlobs,
 		Warnings:     res.Warnings,
 		TookMs:       res.TookMs,
-	}, nil
+	}
+	// 报告用**后端的语言**生成，并同时推给前端。
+	//
+	// 两处都需要它：系统通知的正文是后端自己渲染的（§14 第 24 条点名的
+	// "结果报告"），而面板上的 toast 来自事件队列。用同一句话可以避免
+	// "通知里说 12 条、界面上说 13 条"这种两处各写一遍的经典漂移。
+	report := a.exportReport(out)
+	a.notify(a.T(msgNotifyExportDone), report)
+	pushEvent(EventNotice, report)
+	return out, nil
 }
 
 // ImportOptions 是导入参数（§8.3）。
@@ -900,6 +1102,8 @@ func (a *App) ImportBackup(pkgPath string, opts ImportOptions, pc *PrecheckResul
 		return nil, err
 	}
 	if pc == nil {
+		// diag: 前端契约违约（没预检就直接导入）。预检的存在是为了让用户
+		// 先看到"包里有什么、会覆盖什么"再决定，绕过它属于调用方的 bug。
 		return nil, errors.New("pawclip: 请先调用 PrecheckBackup")
 	}
 	if err := a.checkImportPath(pkgPath); err != nil {
@@ -914,14 +1118,14 @@ func (a *App) ImportBackup(pkgPath string, opts ImportOptions, pc *PrecheckResul
 		return nil, err
 	}
 	if fresh.ManifestName != pc.ManifestName || fresh.Total != pc.Total {
-		return nil, errors.New("pawclip: 包在预检之后发生了变化，请重新预检")
+		return nil, msgf(msgErrBackupChanged, nil)
 	}
 
 	res, err := backup.Import(a.baseCtx(), db, a.blobStore(), pkgPath, bopt, fresh, a.log)
 	if err != nil {
 		return nil, err
 	}
-	return &ImportResult{
+	out := &ImportResult{
 		ImportID:       res.ImportID,
 		Imported:       res.Imported,
 		Skipped:        res.Skipped,
@@ -937,7 +1141,11 @@ func (a *App) ImportBackup(pkgPath string, opts ImportOptions, pc *PrecheckResul
 		Warnings:       res.Warnings,
 		TookMs:         res.TookMs,
 		Inserted:       res.Imported - res.Merged - res.Overwritten,
-	}, nil
+	}
+	report := a.importReport(out)
+	a.notify(a.T(msgNotifyImportDone), report)
+	pushEvent(EventNotice, report)
+	return out, nil
 }
 
 // LastImport 返回最近一条可回滚的导入批次。
@@ -966,17 +1174,17 @@ func (a *App) RollbackImport(importID int64) (int64, error) {
 func (a *App) checkImportPath(p string) error {
 	p = strings.TrimSpace(p)
 	if p == "" {
-		return errors.New("pawclip: 备份包路径为空")
+		return msgf(msgErrEmptyPath, nil)
 	}
 	fi, err := os.Stat(p)
 	if err != nil {
-		return fmt.Errorf("pawclip: 打不开备份包：%w", err)
+		return msgf(msgErrOpenBackup, err, err)
 	}
 	if fi.IsDir() {
-		return errors.New("pawclip: 备份包路径是目录")
+		return msgf(msgErrBackupIsDir, nil)
 	}
 	if !strings.EqualFold(filepath.Ext(p), ".clipbak") {
-		return fmt.Errorf("pawclip: 不是 .clipbak 文件：%s", filepath.Base(p))
+		return fmt.Errorf("%s：%s", a.T(msgErrNotClipbak), filepath.Base(p))
 	}
 	return nil
 }

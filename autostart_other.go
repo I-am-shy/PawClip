@@ -2,8 +2,6 @@
 
 package main
 
-import "errors"
-
 // Linux（以及其它非 macOS/Windows 平台）没有自启实现。
 //
 // ⚠️ 这里返回**错误**而不是 no-op 成功，是有意的：AutoStartSupported()
@@ -18,4 +16,4 @@ func setAutoStart(bool) error { return errAutoStartUnsupported }
 
 func autoStartDiag() string { return "unsupported" }
 
-var errAutoStartUnsupported = errors.New("pawclip: 当前平台不支持开机自启")
+var errAutoStartUnsupported = msgf(msgErrAutoStartNo, nil)

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -129,5 +131,77 @@ func TestLangReactsToSetting(t *testing.T) {
 	}
 	if s := a.Lang(); s != string(a.lang()) {
 		t.Errorf("Lang() = %q 与 lang() = %q 不一致", s, a.lang())
+	}
+}
+
+// TestEveryKeyIsActuallyUsed 是本轮补上的那条"承重"测试。
+//
+// # 它防的是什么
+//
+// 上面三条测试全部只检查**目录自己**：两张表覆盖清单、清单没有多余键、
+// 同语言内文案不重复。它们都会在"定义了 12 个键却一次都没调用"时**全绿** ——
+// 这正是本轮发现的实际情况：msgReport*（导出/导入报告）、
+// msgNotifyExportDone/ImportDone（导出/导入完成通知）、msgBackupReadme*、
+// msgPasteAccessibility 全都躺在目录里没人用，于是那六个"易漏位置"里
+// 有三个实际上根本没做，而所有测试都是绿的。
+//
+// 所以这条测试换个方向查：**每个键都必须在 i18n.go 之外的源码里被引用**。
+// 做法是静态扫源码（而不是反射），理由与 allMsgKeys 手工维护同源——
+// 它检查的是"有没有人用它"，这件事只有看代码才知道。
+func TestEveryKeyIsActuallyUsed(t *testing.T) {
+	// 键名（常量名）与键值（"err.notFound"）不是一回事：源码里引用的是
+	// **常量名**。所以要先把 i18n.go 里的 `msgXxx msgKey = "..."` 解析成
+	// 一张 键值 → 常量名 的表，再去别的文件里找那个名字。
+	//
+	// 只扫本包（msgKey 是 package main 的类型，子包引用不到）的非测试文件，
+	// 并且排除 i18n.go 自己：那里只有定义与目录，引用它自己不算"用过"。
+	decl, err := os.ReadFile("i18n.go")
+	if err != nil {
+		t.Fatalf("读 i18n.go: %v", err)
+	}
+	names := map[string]string{} // 键值 → 常量名
+	declRe := regexp.MustCompile(`(?m)^\s*(msg[A-Za-z0-9_]*)\s+msgKey\s*=\s*"([^"]+)"`)
+	for _, m := range declRe.FindAllStringSubmatch(string(decl), -1) {
+		names[m[2]] = m[1]
+	}
+	if len(names) != len(allMsgKeys) {
+		t.Fatalf("从 i18n.go 解析出 %d 个键，allMsgKeys 有 %d 个 —— 解析规则与"+
+			"声明格式不一致（有键被漏掉了，这条测试就不可信了）", len(names), len(allMsgKeys))
+	}
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("读目录: %v", err)
+	}
+	var src strings.Builder
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") ||
+			name == "i18n.go" || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("读 %s: %v", name, err)
+		}
+		src.Write(b)
+		src.WriteByte('\n')
+	}
+	code := src.String()
+	if len(code) == 0 {
+		t.Fatal("没有扫到任何源码 —— 这条测试会退化成恒真")
+	}
+
+	for _, k := range allMsgKeys {
+		constName, ok := names[string(k)]
+		if !ok {
+			t.Errorf("键 %q 在 i18n.go 里没有对应的常量声明", k)
+			continue
+		}
+		if !strings.Contains(code, constName) {
+			t.Errorf("msgKey %q（%s）在源码里没有任何调用点 —— 要么接上，"+
+				"要么删掉；留着它只会让人以为这个位置已经做了 i18n",
+				constName, k)
+		}
 	}
 }

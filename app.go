@@ -56,8 +56,12 @@ type App struct {
 	cfgPath string
 
 	// initMu 保护下面这组"startup 之后才存在"的资源。
-	initMu   sync.Mutex
-	initErr  error
+	initMu  sync.Mutex
+	initErr error
+	// bootWarn 是启动期"不足以让程序退出、但用户该知道"的一件事
+	// （目前只有一种：config.toml 读不了，已改用默认设置）。
+	// 见 main.go 里关于"为什么不再直接退出"的说明。
+	bootWarn error
 	db       *store.DB
 	blobs    *store.BlobStore
 	writer   *store.Writer
@@ -92,13 +96,27 @@ type App struct {
 
 // NewApp 只保存配置。不做任何 IO、不碰磁盘、不启 goroutine。
 func NewApp(boot BootstrapConfig, cfgPath string, log *slog.Logger) *App {
+	return newApp(boot, cfgPath, log, nil)
+}
+
+// newApp 是 NewApp 的完整版本，多一个"启动期警告"。
+//
+// 为什么不直接给 NewApp 加一个参数：NewApp 被一批测试直接调用，
+// 加参数会让它们全部要改，而它们与这件事无关。更重要的是——
+// **启动警告只该由 main 产生**（它才知道读配置那一步发生了什么），
+// 测试里构造的 App 本来就不该带一个警告。
+//
+// bootWarn 是一句**已经按当前语言渲染好**的话（同 exportReport 的做法）：
+// 前端只负责显示，不负责措辞。
+func newApp(boot BootstrapConfig, cfgPath string, log *slog.Logger, bootWarn error) *App {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &App{
-		log:     log,
-		boot:    normalizeBootstrap(boot),
-		cfgPath: cfgPath,
+		log:      log,
+		boot:     normalizeBootstrap(boot),
+		cfgPath:  cfgPath,
+		bootWarn: bootWarn,
 	}
 }
 
@@ -220,7 +238,13 @@ func (a *App) initialize(ctx context.Context) error {
 	// 回写器。⚠️ guard 必须来自 pipeline.Guard()——**同一个实例**。
 	// 新建一个的话两边各记各的期望指纹，谁也拦不住谁，
 	// 直接导致"用一次历史就多一条一模一样的记录"（验收判据 1 会失败）。
-	wb, err := NewWriteback(backend, pipeline.Guard(), blobs, db, ctrl, a.uiSettings, a.log)
+	// 末尾两个参数：ui 取设置、T 翻译。
+	//
+	// 为什么把 a.T 传进去而不是让 writer.go 自己查设置：回写器产出的
+	// Note / 错误提示是**直接显示给用户**的，必须跟着 ui.language 走
+	// （§14 第 24 条把"错误提示"列为 i18n 易漏位置）。传方法值的好处是
+	// 之后改语言立刻生效——它每次调用都重新解析语言，而不是快照。
+	wb, err := NewWriteback(backend, pipeline.Guard(), blobs, db, ctrl, a.uiSettings, a.T, a.log)
 	if err != nil {
 		return err
 	}
@@ -387,16 +411,22 @@ func (a *App) baseCtx() context.Context {
 }
 
 // ready 返回已初始化好的资源；未就绪时返回错误。
+//
+// 先把三个字段取出来再放锁，是因为"没就绪"这句话要按当前语言生成，
+// 而取语言会读设置（另一把锁）。在持有 initMu 的时候去拿 settingsMu，
+// 会让"初始化中"与"改设置"这两条路径互相等待。
 func (a *App) ready() (*store.DB, *store.Writer, *capture.Capture, error) {
 	a.initMu.Lock()
-	defer a.initMu.Unlock()
-	if a.initErr != nil {
-		return nil, nil, nil, a.initErr
+	db, w, cap, initErr := a.db, a.writer, a.cap, a.initErr
+	a.initMu.Unlock()
+
+	if initErr != nil {
+		return nil, nil, nil, initErr
 	}
-	if a.db == nil || a.writer == nil || a.cap == nil {
-		return nil, nil, nil, errors.New("pawclip: 后端尚未初始化完成")
+	if db == nil || w == nil || cap == nil {
+		return nil, nil, nil, errors.New(a.T(msgErrNotReady))
 	}
-	return a.db, a.writer, a.cap, nil
+	return db, w, cap, nil
 }
 
 // ── 前端绑定（M1 只读诊断面，无 UI 业务）─────────────────────────
@@ -411,6 +441,7 @@ type Health struct {
 	Version         string `json:"version"`
 	Platform        string `json:"platform"`
 	InitError       string `json:"initError"`
+	BootWarning     string `json:"bootWarning"`
 	DBPath          string `json:"dbPath"`
 	SchemaVersion   int    `json:"schemaVersion"`
 	FTSAvailable    bool   `json:"ftsAvailable"`
@@ -457,10 +488,17 @@ func (a *App) Health() (*Health, error) {
 	}
 
 	a.initMu.Lock()
-	initErr, db := a.initErr, a.db
+	initErr, db, bootWarn := a.initErr, a.db, a.bootWarn
 	a.initMu.Unlock()
 	if initErr != nil {
 		h.InitError = initErr.Error()
+	}
+	// 启动警告按**当前语言**在此渲染（同 exportReport 的做法）：
+	// 前端只显示，不措辞。放在 Health 里而不是 pushEvent，是因为它描述的是
+	// 一个**持续状态**（"这次运行用的是默认配置"），不是一个瞬时事件——
+	// 用事件推的话，用户错过那条 toast 就再也看不到原因了。
+	if bootWarn != nil {
+		h.BootWarning = a.render(msgBootConfigBroken, bootWarn)
 	}
 	if db == nil {
 		return h, nil
@@ -542,6 +580,8 @@ func (a *App) Settings() *store.Settings {
 //	                        （回写器走 uiSettings()，GC 走 gcConfig()）
 func (a *App) SetSetting(key, value string) error {
 	if !slices.Contains(store.SettingKeys(), key) {
+		// diag: 前端契约违约（传了一个后端不认识的设置键）。这句话是给
+		// 开发者定位问题的，不是给用户的提示——用户改不了这个。
 		return fmt.Errorf("pawclip: 未知设置键 %q", key)
 	}
 	db, _, _, err := a.ready()
@@ -565,7 +605,7 @@ func (a *App) SetSetting(key, value string) error {
 	if reloadErr != nil {
 		// 设置已经写进库了（那一行是真的），只是内存里的视图没更新。
 		// 如实报错，而不是"看起来成功但内存里还是旧值"。
-		return fmt.Errorf("pawclip: 设置已写入但重新载入失败：%w", reloadErr)
+		return msgf(msgErrSettingsLoad, reloadErr, reloadErr)
 	}
 
 	a.applySettingChange(key)

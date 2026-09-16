@@ -15,16 +15,26 @@ import (
 // Python 示例。用户拿这个包去问 AI、去写脚本、去迁移到别的工具时，
 // 全靠它。
 //
-// 所以它是 i18n 的**易漏位置**之一（DESIGN §14 第 24 条列了 6 处），
-// 这里的取舍是：README 用中英双语写死，不跟随 ui.language。
-// 理由是——这个文件是给"别人的工具"看的，不该因为本机语言而变；
-// 而且换语言会让同一个格式的说明出现多个版本，反而更难核对。
+// 所以它是 i18n 的**易漏位置**之一（DESIGN §14 第 24 条列了 6 处）。
+// 这里的处理是**分两段**：
+//
+//   - 开头那段给人看的提示（"这是什么包 / 怎么恢复 / 里面有敏感内容"）
+//     由调用方按当前语言生成，通过 opt.Preamble 传进来 —— 它就是
+//     第 24 条要的那一处 i18n；
+//   - 下面的格式规范用中英双语写死，**刻意不跟随语言**：它是给"别人的
+//     工具"看的（外部脚本按它解析本包），同一个格式的说明不该有两个版本。
+//
+// 两段分开是刻意的：跟着语言走的是"要人看的话"，不跟着走的是"格式契约"。
 func readmeText(opt ExportOptions, exportedAt time.Time) string {
 	appVer := opt.AppVersion
 	if appVer == "" {
 		appVer = "unknown"
 	}
 	var b strings.Builder
+	if p := strings.TrimSpace(opt.Preamble); p != "" {
+		b.WriteString(p)
+		b.WriteString("\n\n")
+	}
 
 	fmt.Fprintf(&b, `PawClip 剪贴板备份包 / PawClip clipboard backup
 ================================================================

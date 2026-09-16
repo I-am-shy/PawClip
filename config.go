@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -73,7 +72,7 @@ func DefaultBootstrap() BootstrapConfig {
 func DefaultDir() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
-		return "", fmt.Errorf("pawclip: 无法确定用户配置目录: %w", err)
+		return "", msgf(msgErrConfigDir, err, err)
 	}
 	return filepath.Join(base, appDirName), nil
 }
@@ -119,12 +118,12 @@ func LoadBootstrap(path string) (BootstrapConfig, string, error) {
 		}
 		return cfg, path, nil
 	case err != nil:
-		return BootstrapConfig{}, path, fmt.Errorf("pawclip: 读取配置 %s: %w", path, err)
+		return BootstrapConfig{}, path, msgf(msgErrConfigRead, err, path, err)
 	}
 
 	cfg := DefaultBootstrap()
 	if _, err := toml.Decode(string(data), &cfg); err != nil {
-		return BootstrapConfig{}, path, fmt.Errorf("pawclip: 解析配置 %s: %w", path, err)
+		return BootstrapConfig{}, path, msgf(msgErrConfigParse, err, path, err)
 	}
 	return normalizeBootstrap(cfg), path, nil
 }

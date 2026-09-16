@@ -209,26 +209,149 @@ func (d *DB) List(ctx context.Context, q Query) (*Page, error) {
 	return pg, nil
 }
 
-// runQuery 是列表查询的唯一实现，mode 决定用 FTS 还是 LIKE。
-func (d *DB) runQuery(ctx context.Context, q Query, mode SearchMode) (*Page, error) {
-	start := time.Now()
-	where, args := d.buildFilters(q)
+// ftsPlan 是 FTS 检索可选的两种执行计划。
+type ftsPlan int
 
-	join := ""
+const (
+	// ftsPlanMaterialize：让 SQLite 把命中集物化出来、回表、再按时间排序。
+	//
+	// 快在**命中少**的时候（几十~几千条）：回表次数正比于命中数，排一下就完了。
+	// 慢在命中多的时候：命中 1 万条就要回表 1 万次再排序，实测能到几百毫秒，
+	// 而且没有上界——命中越多越慢。
+	ftsPlanMaterialize ftsPlan = iota
+
+	// ftsPlanTimeIndex：按 created_at 倒序扫 idx_items_alive，逐条判定是否命中，
+	// 攒够一页就停（提前终止）。
+	//
+	// 快在**命中多**的时候（扫几十~几百行索引就凑够一页，与命中总数无关）。
+	// 慢在命中少的时候：为了凑够一页得走完整张索引（10 万条 → 实测 27~66 ms）。
+	ftsPlanTimeIndex
+)
+
+// ftsScanThreshold 是"命中数超过多少就该改用时间序扫描"的分界。
+//
+// 两条路的代价在这一点附近交叉：
+//
+//	物化排序：正比于**命中数**（阈值以内 ≈ 几千次回表 + 一次排序，几毫秒）
+//	时间序扫描：正比于**索引长度**（与命中数无关，10 万条实测 27~66 ms）
+//
+// 取 2048：往下的物化排序稳在几毫秒，往上的时间序扫描稳在几毫秒。
+// 这个数不需要精确——两条路在交叉点附近都远低于 §12 的 50 ms 预算，
+// 它只需要把两端分对，而不是找最优解。
+const ftsScanThreshold = 2048
+
+// chooseFTSPlan 按实际命中密度选执行计划。
+//
+// # 为什么不能只留一条路
+//
+// 这是实测逼出来的（10 万条，取 51 条）：
+//
+//	                    稠密（命中 ~1 万）   稀疏（命中 1 条）
+//	物化排序            ~50 ms 起，无上界     ~1 ms
+//	时间序扫描          ~1 ms                 27~66 ms
+//
+// 两条路的优劣完全相反，没有任何**固定**选择能同时满足 §12 的 50 ms 预算
+// ——只挑一条的话，另一端的余量小到在全量测试并行加载时就会翻红（实测撞到过
+// 66 ms）。所以只能按密度自适应。
+//
+// # 密度怎么问
+//
+// 用一条**带上限的计数**：命中少时它给出精确值（稀疏场景几乎免费），
+// 命中多时最多数到阈值就停（不为"数一下"付全量代价）。稠密场景下这一问
+// 大约零点几毫秒，相对于省下的几十毫秒可以忽略。
+func (d *DB) chooseFTSPlan(ctx context.Context, q Query, mode SearchMode) ftsPlan {
+	if mode != SearchModeFTS {
+		return ftsPlanMaterialize
+	}
+	// 回收站里不能用 idx_items_alive —— 那是部分索引，前提是
+	// `deleted_at IS NULL`，而回收站查的是 IS NOT NULL，指定它会直接报
+	// "no query solution"。回收站的量级本来就小，物化排序足够。
+	if q.Trashed {
+		return ftsPlanMaterialize
+	}
+	if d.ftsHitsAreMany(ctx, q.Text) {
+		return ftsPlanTimeIndex
+	}
+	return ftsPlanMaterialize
+}
+
+// ftsHitsAreMany 判断命中有没有多到"必须按时间序扫描"。
+func (d *DB) ftsHitsAreMany(ctx context.Context, text string) bool {
+	var n int
+	err := d.r.QueryRowContext(ctx,
+		`SELECT count(*) FROM (SELECT rowid FROM items_fts WHERE items_fts MATCH ? LIMIT ?)`,
+		FTSPhrase(text), ftsScanThreshold).Scan(&n)
+	if err != nil {
+		// 数不出来时选**最坏情况有上界**的那条：
+		// 时间序扫描最坏是"扫完整张索引"（有上界，几十毫秒），
+		// 物化排序最坏是"命中多少就回表多少次"（命中多时没有上界，实测逼近秒级）。
+		// 在信息不足时，选坏情况更可控的那条，而不是"通常更快"的那条。
+		d.log.Warn("FTS 命中数探测失败，按稠密处理", "query", text, "err", err)
+		return true
+	}
+	return n >= ftsScanThreshold
+}
+
+// listSQL 组装列表查询的 SQL 与参数。
+//
+// 从 runQuery 里抽出来，是为了让"执行计划"测试能拿到**真正跑的那条语句**
+// （见 store/plan_test.go）。在测试里另写一份等价 SQL 的话，两者一旦漂移，
+// 测试就变成了在验证一份没人执行的语句 —— 那种测试比没有更糟，
+// 因为它会给出"计划正确"的假保证。
+func (d *DB) listSQL(ctx context.Context, q Query, mode SearchMode) (string, []any) {
+	where, args := d.buildFilters(q)
+	plan := d.chooseFTSPlan(ctx, q, mode)
+
+	from := "items i"
 	if mode != SearchModeNone {
 		var matchSQL string
 		if mode == SearchModeFTS {
 			// ⚠️ 这里**必须**写真实表名 items_fts，不能给它起别名。
 			// FTS5 的 MATCH 运算符要求左操作数是 FTS 表本身，
-			// `JOIN items_fts f ... WHERE f MATCH ?` 会直接报
-			// "no such column: f"（SQLite 3.50.4 实测）。
-			join = " JOIN items_fts ON items_fts.rowid = i.id"
-			matchSQL = "items_fts MATCH ?"
+			// `WHERE f MATCH ?` 会直接报 "no such column: f"（SQLite 3.50.4 实测）。
+			//
+			// # 为什么是 IN(子查询) 而不是 JOIN —— 这一处决定了检索能不能达标
+			//
+			// 原来的写法是 `JOIN items_fts ON items_fts.rowid = i.id`。
+			// 它把 SQLite 逼进了一条**无法提前终止**的执行路径：由 FTS 驱动，
+			// 把全部命中行的 rowid 一个个取出来回表，攒齐之后**再排序**，
+			// 最后才 LIMIT。命中越多越慢，且慢得没有上限。
+			//
+			// 实测（10 万条，命中 ~1 万条，取 51 条）：
+			//
+			//	JOIN  ：187 ms ~ 924 ms   ← §12 的预算是 50 ms
+			//	IN(.) ：0.9 ms ~ 2.4 ms
+			//
+			// 换成 IN 子查询之后，SQLite 会把命中集物化成一张临时表并建
+			// **bloom filter**（EXPLAIN QUERY PLAN 里能看到 CREATE BLOOM FILTER），
+			// 于是它可以选择"按时间倒序扫、逐条做一次廉价成员判定"这条路，
+			// 扫够 LIMIT 就停 —— 稠密查询因此从几百毫秒降到 1 毫秒级。
+			//
+			// 代价是**另一个方向**的：命中稀疏时按时间序扫要走过整张索引才凑够
+			// 一页。同一组实测里，只有 1 条命中的查询从 0.4 ms 变成 25~35 ms。
+			// 这个取舍是划算的，因为：
+			//
+			//   - 两边都还在 §12 的预算内（后者 35 ms < 50 ms）；
+			//   - 命中多才是用户等得难受的场景（搜索结果一屏接一屏）；
+			//     命中少时用户本来就要等一个"没找到"的结论，30 ms 无所谓。
+			//
+			// 换写法时**必须**跑 store/latency_test.go：它同时钉住了两条路径，
+			// 只测其中一边的话，把 A 方案换成 B 方案或反过来都能"通过"。
+			matchSQL = "i.id IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)"
+			// 用 INDEXED BY 指名走那条时间倒序的部分索引。
+			//
+			// 为什么需要显式指定：不加的话 SQLite 在"命中集不大"时会认为
+			// 先物化再排序更便宜，又退回老路（实测 30 万级时重新变成几百毫秒）。
+			//
+			// 走哪条路由 chooseFTSPlan 按**实际命中密度**决定，理由见那个函数。
+			if plan == ftsPlanTimeIndex {
+				from = "items i INDEXED BY idx_items_alive"
+			}
 			args = append(args, FTSPhrase(q.Text))
 		} else {
 			pat := "%" + EscapeLike(q.Text) + "%"
-			matchSQL = `(i.text_content LIKE ? ESCAPE '\' OR i.preview LIKE ? ESCAPE '\')`
-			args = append(args, pat, pat)
+			matchSQL = `(i.text_content LIKE ? ESCAPE '\' OR i.preview LIKE ? ESCAPE '\' OR i.pinyin LIKE ? ESCAPE '\')`
+			args = append(args, pat, pat, pat)
 		}
 		where = append(where, matchSQL)
 	}
@@ -240,11 +363,20 @@ func (d *DB) runQuery(ctx context.Context, q Query, mode SearchMode) (*Page, err
 		args = append(args, q.Cursor.CreatedAt, q.Cursor.CreatedAt, q.Cursor.ID)
 	}
 
-	sqlText := "SELECT " + listColumns + " FROM items i" + join +
+	sqlText := "SELECT " + listColumns + " FROM " + from +
 		" WHERE " + strings.Join(where, " AND ") +
 		" ORDER BY i.created_at DESC, i.id DESC LIMIT ?"
 	// 多取一条用来判断"还有下一页"，返回前丢掉。
 	args = append(args, q.Limit+1)
+
+	return sqlText, args
+}
+
+// runQuery 是列表查询的唯一实现，mode 决定用 FTS 还是 LIKE。
+func (d *DB) runQuery(ctx context.Context, q Query, mode SearchMode) (*Page, error) {
+	start := time.Now()
+
+	sqlText, args := d.listSQL(ctx, q, mode)
 
 	rows, err := d.r.QueryContext(ctx, sqlText, args...)
 	if err != nil {
@@ -312,8 +444,8 @@ func (d *DB) CountQuery(ctx context.Context, q Query) (int64, error) {
 	} else if mode == SearchModeLike {
 		pat := "%" + EscapeLike(q.Text) + "%"
 		where = append(where,
-			`(i.text_content LIKE ? ESCAPE '\' OR i.preview LIKE ? ESCAPE '\')`)
-		args = append(args, pat, pat)
+			`(i.text_content LIKE ? ESCAPE '\' OR i.preview LIKE ? ESCAPE '\' OR i.pinyin LIKE ? ESCAPE '\')`)
+		args = append(args, pat, pat, pat)
 	}
 
 	sqlText := "SELECT count(*) FROM items i" + join + " WHERE " + strings.Join(where, " AND ")

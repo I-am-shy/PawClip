@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -52,7 +51,7 @@ func (a *App) writeback() (*Writeback, error) {
 	a.initMu.Lock()
 	defer a.initMu.Unlock()
 	if a.wb == nil {
-		return nil, errors.New("pawclip: 回写器尚未就绪")
+		return nil, msgf(msgErrNotReady, nil)
 	}
 	return a.wb, nil
 }
@@ -150,6 +149,14 @@ const (
 	EventCaptureToggled = "captureToggled"
 	// EventIdleHidden 面板因空闲被收起。
 	EventIdleHidden = "idleHidden"
+	// EventNotice 是一条"纯提示"。
+	//
+	// 与其它事件的区别：它不改变视图，只让前端把 Note 弹成一句 toast。
+	// 存在的理由是那些**后端才知道的话**——导出/导入的结果报告、
+	// 连续粘贴还剩几条。它们由后端渲染（要跟着语言走），
+	// 前端拿到的是已经翻好的一句话，所以不叫 "error"/"report"
+	// 而是一个中性的 notice。
+	EventNotice = "notice"
 )
 
 var (

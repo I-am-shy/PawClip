@@ -12,10 +12,10 @@ const (
 	modeAdopt    = 4
 )
 
-func platformHasWindow() bool                        { return true }
-func platformSetup(mode int, accessory bool) error   { return errors.New("darwin only") }
-func platformHide()                                  {}
+func platformHasWindow() bool                      { return true }
+func platformSetup(mode int, accessory bool) error { return errors.New("darwin only") }
+func platformHide()                                {}
 func platformShowNoActivate() bool                 { return false }
 func platformActivateApp()                         {}
 func platformMakeKey() bool                        { return false }
-func platformDiag() string                           { return "{}" }
+func platformDiag() string                         { return "{}" }

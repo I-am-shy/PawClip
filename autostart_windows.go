@@ -30,7 +30,7 @@ func autoStartEnabled() (bool, error) {
 		if err == registry.ErrNotExist {
 			return false, nil
 		}
-		return false, autoStartErr("打开注册表 Run 键", err.Error(), err)
+		return false, autoStartErr(msgActRegistry, err.Error(), err)
 	}
 	defer func() { _ = k.Close() }()
 
@@ -39,7 +39,7 @@ func autoStartEnabled() (bool, error) {
 		if err == registry.ErrNotExist {
 			return false, nil
 		}
-		return false, autoStartErr("读注册表自启项", err.Error(), err)
+		return false, autoStartErr(msgActReadAutoStart, err.Error(), err)
 	}
 	return strings.TrimSpace(v) != "", nil
 }
@@ -47,20 +47,20 @@ func autoStartEnabled() (bool, error) {
 func setAutoStart(enabled bool) error {
 	k, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.SET_VALUE)
 	if err != nil {
-		return autoStartErr("打开注册表 Run 键", err.Error(), err)
+		return autoStartErr(msgActRegistry, err.Error(), err)
 	}
 	defer func() { _ = k.Close() }()
 
 	if !enabled {
 		if err := k.DeleteValue(runValueNam); err != nil && err != registry.ErrNotExist {
-			return autoStartErr("删除自启项", err.Error(), err)
+			return autoStartErr(msgActDeleteStart, err.Error(), err)
 		}
 		return nil
 	}
 
 	exe, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("pawclip: 无法确定可执行文件路径：%w", err)
+		return msgf(msgErrNoExePath, err, err)
 	}
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
@@ -71,7 +71,7 @@ func setAutoStart(enabled bool) error {
 	// 这是注册表自启最经典的一个坑。
 	cmd := `"` + exe + `"`
 	if err := k.SetStringValue(runValueNam, cmd); err != nil {
-		return autoStartErr("写自启项", err.Error(), err)
+		return autoStartErr(msgActWriteAutoStart, err.Error(), err)
 	}
 	return nil
 }

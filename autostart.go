@@ -1,8 +1,6 @@
 package main
 
 import (
-	"errors"
-	"fmt"
 	"runtime"
 )
 
@@ -45,7 +43,7 @@ func (a *App) IsAutoStart() (bool, error) {
 // 开关自己跳回去，且没有任何解释。
 func (a *App) SetAutoStart(enabled bool) error {
 	if !AutoStartSupported() {
-		return errors.New("pawclip: 当前平台不支持开机自启")
+		return msgf(msgErrAutoStartNo, nil)
 	}
 	if err := setAutoStart(enabled); err != nil {
 		return err
@@ -72,13 +70,19 @@ func boolJSON(b bool) string {
 	return "false"
 }
 
-// autoStartErr 把底层命令的错误包装成一句人话。
+// op 收的是**动作名的文案键**（msgActXxx），不是字符串。
 //
-// 原始的 launchctl / reg 输出（"Bootstrap failed: 5: Input/output error"）
-// 对用户毫无意义，直接抛给 UI 只会让人以为是我们的 bug。
-func autoStartErr(op, detail string, err error) error {
+// 为什么不收已翻好的字符串：这个函数在平台层（autostart_darwin.go /
+// autostart_windows.go）被调用，那里是包级函数、拿不到 a.T()，
+// 根本翻不了。收键则两个问题一起解决——平台层只声明"是哪一步失败了"，
+// 措辞交给渲染时决定。
+//
+// detail 是底层命令的原始输出，作为**附加诊断**拼在后面。
+// 它会原样出现在界面上，这是刻意的：launchctl / reg 的报错虽然难懂，
+// 但删掉它会让"失败了"变成一句无法追查的话。
+func autoStartErr(op msgKey, detail string, err error) error {
 	if detail == "" {
-		return fmt.Errorf("pawclip: %s 失败：%w", op, err)
+		return msgf(msgErrAutoStartFail, err, op, err)
 	}
-	return fmt.Errorf("pawclip: %s 失败：%w（%s）", op, err, detail)
+	return msgf(msgErrAutoStartFail, err, op, err.Error()+"；"+detail)
 }

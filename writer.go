@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/zego/pawclip/clipboard"
@@ -24,6 +26,9 @@ import (
 //
 // 这就是 capture.Capture 把 Guard() 暴露出来的唯一原因：**必须是同一个实例**。
 // 两个实例各记各的期望指纹，谁也拦不住谁。
+//
+// 第二条纪律：**这里的每一句给用户看的话都必须走 w.t(...)**。
+// 见 DESIGN §14 第 24 条把"错误提示"列为 i18n 易漏位置的那一段。
 
 // PasteMode 是回写方式（§9 的 ui.pasteMode）。
 type PasteMode string
@@ -48,13 +53,32 @@ type Writeback struct {
 	// 立刻生效——回写是低频动作，每次读一次锁可以忽略。
 	ui func() store.UISettings
 
-	// seq 标记"连续粘贴"模式的队列（DESIGN §11 P2）。
+	// tr 把 msgKey 翻成用户当前的语言。
+	//
+	// 为什么回写器需要它：这里产出的 Note 是**直接显示给用户的**一句话
+	// （"没有辅助功能授权，已降级为只复制"），而 §14 第 24 条把"错误提示"
+	// 明确列为 i18n 的易漏位置。原来这些句子是中文字面量写在这里的，
+	// 结果是"界面选英文 → 降级提示仍然是中文"。
+	//
+	// 传函数而不是把 *App 塞进来：回写器不需要知道 App 长什么样，
+	// 也就不会被顺手用来读别的状态。
+	tr func(msgKey) string
+
+	// seqMu 保护队列。
+	//
+	// 队列会被两个来源碰：前端绑定调用（Wails 在它自己的线程里执行）
+	// 与后端的事件处理器。加锁前它们的交错是数据竞态（`go test -race`
+	// 会报，而真机上表现为"偶尔跳过一个"）。
+	seqMu sync.Mutex
+
+	// queue 标记"连续粘贴"模式的队列（DESIGN §11 P2）。
 	queue *pasteQueue
 }
 
 // NewWriteback 构造回写器。
 //
 // guard 必须是 capture.Capture.Guard() 返回的那个实例，不能新建。
+// tr 为 nil 时回退到英文目录（测试与"还没初始化完"的场景）。
 func NewWriteback(
 	backend clipboard.Backend,
 	guard *clipboard.SelfWriteGuard,
@@ -62,20 +86,33 @@ func NewWriteback(
 	db *store.DB,
 	ctrl panel.Controller,
 	ui func() store.UISettings,
+	tr func(msgKey) string,
 	log *slog.Logger,
 ) (*Writeback, error) {
 	if backend == nil {
+		// diag: 构造函数参数校验（编程错误，运行时不可能触发）。
 		return nil, errors.New("writer: 需要剪贴板后端")
 	}
 	if guard == nil {
 		// 不 panic 也不静默放行：没有守卫就等于每条回写都会重复入库。
+		// diag: 同上。这条其实是**架构纪律**的可执行文档：见本文件开头
+		// 关于"必须是同一个 Guard 实例"的那段。
 		return nil, errors.New("writer: 需要共享的 SelfWriteGuard（用 Capture.Guard() 取）")
 	}
 	if blobs == nil || db == nil {
+		// diag: 构造函数参数校验，同上。
 		return nil, errors.New("writer: 需要 BlobStore 与 DB")
 	}
 	if log == nil {
 		log = slog.Default()
+	}
+	if tr == nil {
+		tr = func(k msgKey) string {
+			if s, ok := catalog[LangEn][k]; ok {
+				return s
+			}
+			return string(k)
+		}
 	}
 	return &Writeback{
 		backend: backend,
@@ -84,9 +121,18 @@ func NewWriteback(
 		db:      db,
 		panel:   ctrl,
 		ui:      ui,
+		tr:      tr,
 		log:     log,
 		queue:   newPasteQueue(),
 	}, nil
+}
+
+// t 是回写器内部的翻译。
+func (w *Writeback) t(k msgKey) string { return w.tr(k) }
+
+// tf 是带格式化参数的翻译（文案里的 %d 由它填）。
+func (w *Writeback) tf(k msgKey, args ...any) string {
+	return fmt.Sprintf(w.tr(k), args...)
 }
 
 // PasteResult 是一次回写的结果（前端要拿它决定提示文案）。
@@ -112,7 +158,7 @@ func (w *Writeback) PayloadFor(ctx context.Context, id int64) (*clipboard.Payloa
 		return nil, nil, "", err
 	}
 	if it.DeletedAt != nil {
-		return nil, nil, "", fmt.Errorf("writer: 条目 %d 在回收站里，先恢复再使用", id)
+		return nil, nil, "", errors.New(w.tf(msgErrItemTrashed, id))
 	}
 
 	p := &clipboard.Payload{}
@@ -128,7 +174,7 @@ func (w *Writeback) PayloadFor(ctx context.Context, id int64) (*clipboard.Payloa
 		if b, err := w.blobs.Get(*it.RTFPath); err == nil {
 			p.RTF = b
 		} else {
-			note = "RTF 内容已丢失，本次只写文本"
+			note = w.t(msgNoteRTFMissing)
 			w.log.Warn("回写时读不到 RTF blob", "id", id, "path", *it.RTFPath, "err", err)
 		}
 	}
@@ -136,7 +182,7 @@ func (w *Writeback) PayloadFor(ctx context.Context, id int64) (*clipboard.Payloa
 		if b, err := w.blobs.Get(*it.ImagePath); err == nil {
 			p.PNG = b
 		} else {
-			note = "图片文件已丢失，本次不带图片"
+			note = w.t(msgNoteImageMissing)
 			w.log.Warn("回写时读不到图片 blob", "id", id, "path", *it.ImagePath, "err", err)
 		}
 	}
@@ -145,37 +191,54 @@ func (w *Writeback) PayloadFor(ctx context.Context, id int64) (*clipboard.Payloa
 	}
 
 	if p.Empty() {
-		return nil, it, "", fmt.Errorf("writer: 条目 %d 没有任何可写回的内容", id)
+		return nil, it, "", errors.New(w.tf(msgErrNoContent, id))
 	}
 	return p, it, note, nil
 }
 
 // Paste 把一条历史记录送回剪贴板；autoPaste 为真时再模拟一次粘贴键。
 //
-// 步骤顺序**不能改**（§7 第 4 条给了同样的顺序）：
+// 它由两半组成：**取载荷**（PayloadFor）与**送出去**（deliver）。
+// 拆开是为了让"内容转换器的结果"和"去格式贴纯文本"复用同一个投递流程——
+// 那两处的差别只在"写什么"，而 Arm 守卫 / 收面板 / 模拟按键 / 恢复剪贴板
+// 的顺序纪律是共用的（漏掉任何一步都是可感知的 bug）。
+func (w *Writeback) Paste(ctx context.Context, id int64, autoPaste bool) (*PasteResult, error) {
+	// PayloadFor 第二个返回值是 *store.Item，Paste 只用"写什么"，所以丢掉。
+	payload, _, note, err := w.PayloadFor(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	res, err := w.deliver(ctx, payload, autoPaste, note)
+	if err != nil {
+		return nil, err
+	}
+	// ⑥ 记一次使用（use_count / last_used_at）。
+	//    放在投递之后统一做：任何一个非错误返回都算"用户用了一次"，
+	//    分散在各分支里写很容易漏掉其中一条。
+	if err := w.markUsed(ctx, id); err != nil {
+		w.log.Warn("记录使用次数失败", "id", id, "err", err)
+	}
+	return res, nil
+}
+
+// deliver 是投递的后半段，步骤顺序**不能改**（§7 第 4 条给了同样的顺序）：
 //
 //	① 读旧剪贴板（要恢复它）
 //	② Arm 守卫（在写之前！）
 //	③ 写回
 //	④ 收起面板、模拟 ⌘V
 //	⑤ 等 restoreDelayMs，把旧内容写回去（写之前再 Arm 一次）
-//	⑥ 记一次使用（use_count / last_used_at）
-func (w *Writeback) Paste(ctx context.Context, id int64, autoPaste bool) (*PasteResult, error) {
+//
+// note 是调用方已经知道要附加的说明（例如"RTF 丢失，本次只写文本"）。
+func (w *Writeback) deliver(ctx context.Context, payload *clipboard.Payload, autoPaste bool, note string) (*PasteResult, error) {
 	ui := w.currentUI()
-
-	// PayloadFor 第二个返回值是 *store.Item，Paste 只用"写什么"，所以丢掉。
-	payload, _, note, err := w.PayloadFor(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-
 	res := &PasteResult{Mode: PasteClipboard, Note: note}
 
 	// 希望自动粘贴，但没授权 / 平台不支持 → 如实降级（§13 风险表）。
 	wantAuto := autoPaste || ui.PasteMode == string(PasteAuto)
 	autoOK := w.panel != nil && w.panel.CanAutoPaste()
 	if wantAuto && !autoOK {
-		res.Note = joinNote(res.Note, "没有「辅助功能」授权，已降级为只复制到剪贴板")
+		res.Note = joinNote(res.Note, w.t(msgPasteDegraded))
 		wantAuto = false
 	}
 
@@ -190,7 +253,7 @@ func (w *Writeback) Paste(ctx context.Context, id int64, autoPaste bool) (*Paste
 		if oldErr != nil {
 			// 恢复失败不影响主流程，只是不恢复而已。
 			w.log.Warn("读取原剪贴板失败，本次不恢复", "err", oldErr)
-			res.Note = joinNote(res.Note, "原剪贴板未能读取，粘贴后不恢复")
+			res.Note = joinNote(res.Note, w.t(msgNoteSnapshotFailed))
 		}
 	}
 
@@ -200,13 +263,10 @@ func (w *Writeback) Paste(ctx context.Context, id int64, autoPaste bool) (*Paste
 
 	// ③ 写回。
 	if err := w.backend.Write(payload); err != nil {
-		return nil, fmt.Errorf("writer: 写剪贴板失败：%w", err)
+		return nil, msgf(msgErrClipboardWr, err, err)
 	}
 
 	if !wantAuto {
-		if err := w.markUsed(ctx, id); err != nil {
-			w.log.Warn("记录使用次数失败", "id", id, "err", err)
-		}
 		res.Mode = PasteClipboard
 		return res, nil
 	}
@@ -221,11 +281,8 @@ func (w *Writeback) Paste(ctx context.Context, id int64, autoPaste bool) (*Paste
 	if err := w.panel.AutoPaste(); err != nil {
 		// 已经把内容放进剪贴板了，所以这不是失败，是降级。
 		w.log.Warn("模拟粘贴失败，内容已在剪贴板里", "err", err)
-		res.Note = joinNote(res.Note, "模拟粘贴失败，内容已复制到剪贴板，请手动粘贴")
+		res.Note = joinNote(res.Note, w.t(msgNoteAutoPasteFail))
 		res.Mode = PasteClipboard
-		if err := w.markUsed(ctx, id); err != nil {
-			w.log.Warn("记录使用次数失败", "id", id, "err", err)
-		}
 		return res, nil
 	}
 	res.Pasted = true
@@ -241,16 +298,12 @@ func (w *Writeback) Paste(ctx context.Context, id int64, autoPaste bool) (*Paste
 		w.guard.Arm(old.Fingerprint())
 		if err := w.backend.Write(old); err != nil {
 			w.log.Warn("恢复原剪贴板失败", "err", err)
-			res.Note = joinNote(res.Note, "原剪贴板恢复失败")
+			res.Note = joinNote(res.Note, w.t(msgNoteRestoreFailed))
 		} else {
 			res.Restored = true
 		}
 	}
 
-	// ⑥ 记一次使用。
-	if err := w.markUsed(ctx, id); err != nil {
-		w.log.Warn("记录使用次数失败", "id", id, "err", err)
-	}
 	return res, nil
 }
 
@@ -286,7 +339,7 @@ func (w *Writeback) CopyOnly(ctx context.Context, id int64) (*PasteResult, error
 	return w.Paste(ctx, id, false)
 }
 
-// PasteText 把一段任意文本写进剪贴板（内容转换器 / 片段库用）。
+// PasteText 把一段任意文本写进剪贴板（只复制，不模拟粘贴）。
 //
 // 同样要 Arm：转换器产出的内容也可能被用户再复制一次，
 // 但"我们刚写进去的"不该立刻入库。
@@ -294,6 +347,49 @@ func (w *Writeback) PasteText(s string) error {
 	p := &clipboard.Payload{Text: &s}
 	w.guard.Arm(p.Fingerprint())
 	return w.backend.Write(p)
+}
+
+// PasteCustomText 把一段任意文本按**完整回写流程**送出去（内容转换器的结果）。
+//
+// 与 PasteText 的区别：这里会走 §7 那套顺序（收面板 → 模拟 ⌘V → 恢复原
+// 剪贴板），所以"点一下转换结果就直接贴出来"是可行的。
+//
+// **不记使用次数**：转换结果是同一条内容的另一种形态，用户取用的仍然是
+// 那一条；把 use_count 记在它头上会让"最常用"的排序被转换动作污染。
+func (w *Writeback) PasteCustomText(ctx context.Context, text string, autoPaste bool) (*PasteResult, error) {
+	if text == "" {
+		return nil, errors.New(w.t(msgErrEmptyText))
+	}
+	p := &clipboard.Payload{Text: &text}
+	return w.deliver(ctx, p, autoPaste, "")
+}
+
+// PastePlain 只把条目的**纯文本**写回（DESIGN §11 P2 的"去格式贴纯文本"）。
+//
+// 为什么不复用 Paste：Paste 的载荷里带着 HTML / RTF，落到支持富文本的
+// App 里会把字体、颜色、超链接一起带过去——这正是用户点"去格式"要避免的。
+//
+// 图片 / 文件类条目没有纯文本兜底，直接如实报错，而不是"贴一张图给你"。
+func (w *Writeback) PastePlain(ctx context.Context, id int64, autoPaste bool) (*PasteResult, error) {
+	it, err := w.db.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if it.DeletedAt != nil {
+		return nil, errors.New(w.tf(msgErrItemTrashed, id))
+	}
+	if it.TextContent == nil || strings.TrimSpace(*it.TextContent) == "" {
+		return nil, errors.New(w.t(msgErrNoPlainText))
+	}
+	p := &clipboard.Payload{Text: it.TextContent}
+	res, err := w.deliver(ctx, p, autoPaste, "")
+	if err != nil {
+		return nil, err
+	}
+	if err := w.markUsed(ctx, id); err != nil {
+		w.log.Warn("记录使用次数失败", "id", id, "err", err)
+	}
+	return res, nil
 }
 
 // markUsed 记一次取用（use_count + last_used_at）。
@@ -366,36 +462,65 @@ func (q *pasteQueue) Clear() {
 	q.armed = false
 }
 
-// StartSequence 开始连续粘贴。
+// StartSequence 开始连续粘贴：排队并立刻投出第一条。
+//
+// 返回值是"投出第一条之后还剩几条"，前端拿它显示提示。
 func (w *Writeback) StartSequence(ctx context.Context, ids []int64) (int, error) {
 	if len(ids) == 0 {
-		return 0, errors.New("writer: 连续粘贴需要至少一条内容")
+		return 0, errors.New(w.t(msgErrSeqEmpty))
 	}
+	w.seqMu.Lock()
 	w.queue.Set(ids)
-	n, err := w.NextInSequence(ctx)
-	if err != nil {
+	w.seqMu.Unlock()
+
+	if _, err := w.nextInSequence(ctx); err != nil {
 		return 0, err
 	}
-	_ = n
+
+	w.seqMu.Lock()
+	defer w.seqMu.Unlock()
 	return w.queue.Remaining(), nil
 }
 
 // NextInSequence 把队列里的下一条送进剪贴板并自动粘贴。
 func (w *Writeback) NextInSequence(ctx context.Context) (*PasteResult, error) {
+	return w.nextInSequence(ctx)
+}
+
+// nextInSequence 是加锁版本的内部实现。
+//
+// 为什么 StartSequence 不能直接调 NextInSequence：那会在持有 seqMu 的
+// 情况下再锁一次（seqMu 是普通 Mutex，不是可重入的）→ 死锁。
+// 所以"取一个 id"与"投出去"必须分成两步，锁只护住取 id 那一下。
+func (w *Writeback) nextInSequence(ctx context.Context) (*PasteResult, error) {
+	w.seqMu.Lock()
 	id, ok := w.queue.Next()
+	w.seqMu.Unlock()
 	if !ok {
-		return nil, errors.New("writer: 连续粘贴队列已空")
+		return nil, errors.New(w.t(msgErrSeqDone))
 	}
 	return w.Paste(ctx, id, true)
 }
 
 // SequenceRemaining 返回队列剩余条数。
-func (w *Writeback) SequenceRemaining() int { return w.queue.Remaining() }
+func (w *Writeback) SequenceRemaining() int {
+	w.seqMu.Lock()
+	defer w.seqMu.Unlock()
+	return w.queue.Remaining()
+}
 
 // SequenceTotal 返回队列总条数（UI 显示 "3 / 12" 用）。
-func (w *Writeback) SequenceTotal() int { return len(w.queue.ids) }
+func (w *Writeback) SequenceTotal() int {
+	w.seqMu.Lock()
+	defer w.seqMu.Unlock()
+	return len(w.queue.ids)
+}
 
 // ClearSequence 清空队列。
-func (w *Writeback) ClearSequence() { w.queue.Clear() }
+func (w *Writeback) ClearSequence() {
+	w.seqMu.Lock()
+	defer w.seqMu.Unlock()
+	w.queue.Clear()
+}
 
 var _ = context.Background

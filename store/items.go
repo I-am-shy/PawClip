@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/zego/pawclip/pinyin"
 )
 
 // ErrNotFound 表示按条件没查到条目。
@@ -68,10 +70,10 @@ const itemColumns = `id, kind, text_content, html_content, rtf_path, image_path,
 const upsertItemSQL = `
 INSERT INTO items (
   kind, text_content, html_content, rtf_path, image_path, thumb_path, file_paths,
-  preview, fingerprint, byte_size, source_app_id, source_app_name, source_url,
+  preview, pinyin, fingerprint, byte_size, source_app_id, source_app_name, source_url,
   category_id, pinned, first_seen_at, expires_at, ttl_source, created_at,
   last_used_at, use_count
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 1)
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 1)
 ON CONFLICT(fingerprint) WHERE deleted_at IS NULL DO UPDATE SET
   created_at      = excluded.created_at,
   last_used_at    = excluded.last_used_at,
@@ -80,6 +82,15 @@ ON CONFLICT(fingerprint) WHERE deleted_at IS NULL DO UPDATE SET
   source_app_name = excluded.source_app_name
 RETURNING id, use_count, first_seen_at
 `
+
+// itemPinyin 算出该写进 items.pinyin 的首字母串。
+//
+// 只取 preview：拼音搜索是"想起来大概怎么念"的模糊入口，preview 已经足够
+// 承载它，而且 preview 有长度上界，pinyin 列不会因此无界膨胀
+// （10 万条 @ 100 字符 ≈ 10 MB，可接受；把 text_content 全长算进去就不一定了）。
+func itemPinyin(it *Item) string {
+	return pinyin.Initials(it.Preview)
+}
 
 // RowQuerier 是"查一行"的最小接口。
 //
@@ -134,6 +145,13 @@ func PutItem(ctx context.Context, ex Execer, it *Item) (PutResult, error) {
 		nullableString(it.ThumbPath),
 		filePaths,
 		it.Preview,
+		// pinyin 由**存储层自己算**，不由调用方传。
+		//
+		// 与 use_count 写死为 1 同一个理由：这是表的不变量，不是调用方的
+		// 责任。放在这里之后，捕获路径、导入路径、测试辅助都自动带上，
+		// 不存在"某条新路径忘了写、于是那条内容用首字母搜不到"的可能 ——
+		// 而漏掉一个调用点是不会让任何测试变红的。
+		itemPinyin(it),
 		it.Fingerprint,
 		it.ByteSize,
 		nullableString(strPtr(it.SourceAppID)),

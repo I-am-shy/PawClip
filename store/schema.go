@@ -22,11 +22,18 @@ import (
 	"sync"
 
 	sqlite3 "github.com/mattn/go-sqlite3"
+
+	"github.com/zego/pawclip/pinyin"
 )
 
 // SchemaVersion 是当前 schema 版本，写在 PRAGMA user_version 里。
 // 每次不兼容变更 +1，并在 migrations 里追加一步。
-const SchemaVersion = 1
+//
+// 版本历史：
+//
+//	1  全量建表（DESIGN §4.1）
+//	2  items.pinyin（拼音首字母检索，DESIGN §11 P2）+ FTS 加第三列
+const SchemaVersion = 2
 
 // cleanShutdownMarker 是"上次没有正常退出"的标记文件名（放在数据库同目录）。
 const cleanShutdownMarker = "clean_shutdown"
@@ -179,6 +186,13 @@ func Open(opts Options) (*DB, error) {
 		w.Close()
 		return nil, err
 	}
+	// 回填拼音首字母（v1 → v2 升级的老库）。
+	// 必须在 ensureFTS 之后：回填走的是 UPDATE，靠 items_au 触发器把新值
+	// 同步进 FTS 索引；FTS 表还没建的话触发器根本不存在。
+	if err := d.ensurePinyin(); err != nil {
+		// 不致命：算不出拼音最多是"打首字母搜不到"，汉字检索照旧。
+		log.Warn("拼音首字母回填失败，拼音检索对新老条目都可能不完整", "err", err)
+	}
 
 	// 启动自检：标记文件存在 → 上次是异常退出 → 才值得花几秒做 integrity_check。
 	if hadMarker {
@@ -247,6 +261,36 @@ var migrations = []func(*sql.Tx) error{
 	func(tx *sql.Tx) error {
 		_, err := tx.Exec(ddlV1)
 		return err
+	},
+
+	// 1 → 2：items.pinyin（拼音首字母检索）。
+	//
+	// 加列之后**必须把旧的 FTS 表与触发器整个拆掉**：
+	// items_fts 的三列是写死在 CREATE VIRTUAL TABLE 里的，`IF NOT EXISTS`
+	// 不会去改一个已存在的表。老库上如果留着两列版本的 items_fts，
+	// 触发器会往一个不存在的列里写 —— 插入直接报错，而且是在**捕获时**报，
+	// 表现为"升级之后一条都记不下来了"。
+	//
+	// 拆掉是安全的：items_fts 是 external content 表（content='items'），
+	// 内容全在 items 里，ensureFTS 紧接着会重建它并 rebuild 回填。
+	// 顺序也是安全的：migrate() 在 ensureFTS() 之前跑。
+	//
+	// pinyin 列为 NULL 的既有行由 ensurePinyin() 在启动时回填；
+	// 用 NULL 而不是空串表示"还没算过"——空串是"算过，但没有可提取的读音"。
+	func(tx *sql.Tx) error {
+		stmts := []string{
+			`ALTER TABLE items ADD COLUMN pinyin TEXT`,
+			`DROP TRIGGER IF EXISTS items_ai`,
+			`DROP TRIGGER IF EXISTS items_ad`,
+			`DROP TRIGGER IF EXISTS items_au`,
+			`DROP TABLE IF EXISTS items_fts`,
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("%s: %w", stmt, err)
+			}
+		}
+		return nil
 	},
 }
 
@@ -374,10 +418,20 @@ CREATE TABLE IF NOT EXISTS settings (
 //
 // ⚠️ 不要给 tokenize=trigram 加 detail=none / detail=column：建表与回填都会
 // 成功，但查询直接抛 OperationalError（DESIGN.md §14 第 8 条，已实测）。
+// ⚠️ pinyin 是第三列，且**不需要改任何查询表达式**。
+//
+// FTS5 里无限定的短语（`MATCH '"zgd"'`）会**搜索所有被索引的列**，所以
+// pinyin 加入之后，同一个查询同时覆盖"正文 / 预览 / 拼音首字母"三条路，
+// 而 `store/query.go` 里的 SQL 一个字都不用动（实测确认，见 fts_test.go 的
+// TestSearch_PinyinInitials）。
+//
+// 曾经考虑过写成列过滤 `{text_content preview}:"q" OR pinyin:"q"`，
+// 那是多余的：不加限定本来就是这个语义，而且列过滤写法更脆（列名改了要跟着改）。
 const ftsDDL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
   text_content,
   preview,
+  pinyin,
   content       = 'items',
   content_rowid = 'id',
   tokenize      = 'trigram'
@@ -389,14 +443,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
 // external content 表必须用 'delete' 命令形式喂旧值，直接 DELETE 是不行的。
 const ftsTriggersDDL = `
 CREATE TRIGGER IF NOT EXISTS items_ai AFTER INSERT ON items BEGIN
-  INSERT INTO items_fts(rowid, text_content, preview) VALUES (new.id, new.text_content, new.preview);
+  INSERT INTO items_fts(rowid, text_content, preview, pinyin) VALUES (new.id, new.text_content, new.preview, new.pinyin);
 END;
 CREATE TRIGGER IF NOT EXISTS items_ad AFTER DELETE ON items BEGIN
-  INSERT INTO items_fts(items_fts, rowid, text_content, preview) VALUES('delete', old.id, old.text_content, old.preview);
+  INSERT INTO items_fts(items_fts, rowid, text_content, preview, pinyin) VALUES('delete', old.id, old.text_content, old.preview, old.pinyin);
 END;
 CREATE TRIGGER IF NOT EXISTS items_au AFTER UPDATE ON items BEGIN
-  INSERT INTO items_fts(items_fts, rowid, text_content, preview) VALUES('delete', old.id, old.text_content, old.preview);
-  INSERT INTO items_fts(rowid, text_content, preview) VALUES (new.id, new.text_content, new.preview);
+  INSERT INTO items_fts(items_fts, rowid, text_content, preview, pinyin) VALUES('delete', old.id, old.text_content, old.preview, old.pinyin);
+  INSERT INTO items_fts(rowid, text_content, preview, pinyin) VALUES (new.id, new.text_content, new.preview, new.pinyin);
 END;
 `
 
@@ -422,6 +476,78 @@ func (d *DB) ensureFTS() error {
 		d.log.Warn("FTS rebuild failed; triggers will keep it in sync from now on", "err", err)
 	}
 	return nil
+}
+
+// ensurePinyin 给 pinyin 列为 NULL 的条目回填拼音首字母。
+//
+// 为什么需要它：pinyin 是 v2 才加的列，老库里的行 ALTER 之后全是 NULL；
+// 而新条目在 PutItem 里当场算好，永远不为 NULL。所以"NULL"就是
+// "这一行还没算过"的精确标记，这个函数跑完之后应当一条都找不到。
+//
+// 分批 + 先收集再更新，不是风格问题：写句柄是 SetMaxOpenConns(1) 的
+// 单连接池，**在 Query 的 rows 还开着的时候执行 UPDATE 会永久死锁**
+// （database/sql 在等一条被占住的连接，不报错也不超时）。
+//
+// 为什么用 Go 算而不是写进 SQL：汉字→首字母需要一张 2 万多项的表，
+// 那是 Go 侧的 pinyin 包，SQLite 里没有（也不可能为此注册 UDF——UDF 得走
+// 驱动私有接口，在非 cgo 构建下不存在）。
+func (d *DB) ensurePinyin() error {
+	const batch = 500
+	total := 0
+	for {
+		ids, previews, err := d.pendingPinyin(batch)
+		if err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			break
+		}
+		tx, err := d.w.Begin()
+		if err != nil {
+			return fmt.Errorf("store: backfill pinyin begin: %w", err)
+		}
+		for i, id := range ids {
+			// 空串是"算过但没有读音"，不是 NULL — 见函数注释。
+			if _, err := tx.Exec(`UPDATE items SET pinyin = ? WHERE id = ?`,
+				pinyin.Initials(previews[i]), id); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("store: backfill pinyin id=%d: %w", id, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("store: backfill pinyin commit: %w", err)
+		}
+		total += len(ids)
+	}
+	if total > 0 {
+		d.log.Info("已为历史条目回填拼音首字母", "count", total)
+	}
+	return nil
+}
+
+// pendingPinyin 取一批还没算过拼音的条目（id + preview）。
+func (d *DB) pendingPinyin(limit int) ([]int64, []string, error) {
+	rows, err := d.w.Query(
+		`SELECT id, COALESCE(preview, '') FROM items WHERE pinyin IS NULL ORDER BY id LIMIT ?`, limit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: select pending pinyin: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	var previews []string
+	for rows.Next() {
+		var id int64
+		var preview string
+		if err := rows.Scan(&id, &preview); err != nil {
+			return nil, nil, fmt.Errorf("store: scan pending pinyin: %w", err)
+		}
+		ids = append(ids, id)
+		previews = append(previews, preview)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("store: iterate pending pinyin: %w", err)
+	}
+	return ids, previews, nil
 }
 
 // checkFTS 是启动自检：HANDOFF-PROMPT §4 第 7 条指定的那条查询。

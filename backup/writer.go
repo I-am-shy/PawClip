@@ -78,6 +78,14 @@ type ExportOptions struct {
 	AppVersion string
 	Platform   string
 	Settings   map[string]any
+
+	// Preamble 是 README.txt 开头那段**给人看的**提示（按调用方的界面语言
+	// 生成，见 §14 第 24 条"备份包内 README.txt"）。
+	//
+	// 为什么由调用方传而不是在这里翻译：backup 包是纯格式层，
+	// 它不该知道用户选了哪种语言；同样的理由，它也不该 import i18n。
+	// 传进来一段现成的文本，职责边界最干净。
+	Preamble string
 }
 
 func (o ExportOptions) withDefaults() ExportOptions {
