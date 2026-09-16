@@ -4,6 +4,11 @@
 # 忽略 build/。
 build/bin/
 build/windows/
+# build/dist/ 是本地的打包输出（scripts/accept.sh 之后手工 ditto 出来的 zip）。
+# 它和 build/bin/ 是同一类东西：发布产物只进 Release，不进仓库。
+# 之所以单独列出来，是因为 *.zip 不在下面的忽略清单里——最初的版本漏了它，
+# `git status` 里就多出一个 10MB 的未跟踪文件，很容易被 `git add -A` 带进去。
+build/dist/
 *.app
 *.dmg
 *.exe
