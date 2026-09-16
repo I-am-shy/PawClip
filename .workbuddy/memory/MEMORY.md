@@ -10,14 +10,26 @@
 - 移动/重命名文档时，**必须同步改全仓引用**（这个仓库有 150+ 处）。
 - `poc/` 是自包含的 M0 验证工程，连它自己的 md 一起保持原样，不要拆散、不要清理。
 
+## 测试与脚本布局
+
+- `scripts/` 只放**构建与开发的入口**：`build.sh`（出包）、`dev.sh`（本地开发）、图标工具。
+- `test/` 放**可独立执行的测试资产**：`run.sh`（总入口）、`accept.sh`（产物验收）、
+  `demo-m1.sh`（链路演示）、`check-i18n.mjs`（前端 i18n）、`README.md`（分层说明）。
+- **`*_test.go` 不搬**：Go 要求与被测包同目录（`package foo_test` 也一样），
+  且本仓库测试访问包内未导出符号。别被"测试文件应集中"的直觉带偏。
+- 本地开发用 `scripts/dev.sh`，不直接 `wails dev` —— 同样要钉 `-tags sqlite_fts5`，
+  且默认会把数据目录隔离到 `.workbuddy/tmp/pawclip-dev/`（`PAWCLIP_DEV_REAL=1` 可关）。
+- 已知差距（如内存未达标）在验收脚本里记 **warn 不影响退出码**，另留一条回归线；
+  **不要让一条永远红的判据存在**，那会让人学会无视整张表。
+
 ## 构建与测试（四条硬口径，CI 里都钉了一遍）
 
 | 纪律 | 理由 |
 |---|---|
 | 构建走 `scripts/build.sh`，不直接 `wails build` | `wails.json` 无法持久化 Go 构建标签，漏 `-tags sqlite_fts5` 会让 FTS5 **静默降级**成逐行匹配（只打一行 WARN，界面照常） |
 | 测试带 `-tags sqlite_fts5` | 缺标签时 `store` 会**跳过**全文检索用例而不是变红 |
-| 测试带 `-p 1` | 有两类按墙上时间取证的规模测试，并行抢 CPU 会让数字虚高 2–3 倍 |
-| 产物验收走 `scripts/accept.sh` | 签名 / `Info.plist` / 构建标签这类问题**一条单测都不会红**，但用户打不开或功能少一半 |
+| 测试带 `-p 1`、`-count=1` | 有两类按墙上时间取证的规模测试，并行抢 CPU 会让数字虚高 2–3 倍；`-count=1` 才能与 CI 互推 |
+| 一切测试与验收走 `test/run.sh` | 它跑的每条命令都与 CI 同口径（`test/run.sh --build --accept` 是发布前完整口径） |
 
 - 提交纪律：Conventional Commits；改 `docs/DESIGN.md` 的**既有决策**要单独一个 `docs:` 提交
   并在回复里点出来（纯排版/路径/目录树修正不算改决策，但也要说明）。
