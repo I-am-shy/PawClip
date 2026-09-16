@@ -35,6 +35,21 @@ if ! command -v "$WAILS" >/dev/null 2>&1; then
   exit 1
 fi
 
+# ── 版本号注入 ────────────────────────────────────────────────────
+#
+# 版本号原先有两份且互不相干：Info.plist 的 CFBundleShortVersionString 来自
+# wails.json 的 info.productVersion，而 Go 侧 main.Version（config.go）是另一个
+# 手写常量。两份不一致的表现是：启动日志与关于窗口说 0.1.0-m1，系统信息里却是
+# 0.1.0 —— 用户报问题时完全无法确认他手上是哪个构建。
+#
+# 这里把 wails.json 的 productVersion 当**唯一真源**注入进去，允许 VERSION
+# 环境变量覆盖（release.yml 用 tag 号覆盖，这样发布包报的是真实版本）。
+VERSION="${VERSION:-$(sed -n 's/.*"productVersion"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' wails.json | head -1)}"
+if [ -z "$VERSION" ]; then
+  echo "无法从 wails.json 读出 info.productVersion" >&2
+  exit 1
+fi
+
 # FTS5 标签必须在最前面，用户追加的参数排后面（同名参数后者覆盖前者，
 # 所以这里也顺手防了一手：如果用户自己带了 -tags，下面的检查会拦下来）。
-exec "$WAILS" build -tags sqlite_fts5 "$@"
+exec "$WAILS" build -tags sqlite_fts5 -ldflags "-X main.Version=$VERSION" "$@"

@@ -47,8 +47,16 @@ type LogConfig struct {
 	Level string `toml:"level"`
 }
 
-// Version 是当前构建的版本号。M1 期间手工维护，发布时由 -ldflags 覆盖。
-var Version = "0.1.0-m1"
+// Version 是当前构建的版本号。
+//
+// 唯一真源是 wails.json 的 info.productVersion（它同时进 Info.plist 的
+// CFBundleShortVersionString）—— scripts/build.sh 在构建时用 -ldflags 把它
+// 注入到这里。所以下面的零值只是"直接 go run / go test 时的占位"，正常构建
+// 的产物绝不会报出它：一旦看到 -dev，说明这次构建绕过了 build.sh。
+//
+// 两份版本号曾经是各写各的（plist 说 0.1.0、日志说 0.1.0-m1），后果是用户
+// 报问题时无法确认他手上的构建，所以特意收敛成一份。
+var Version = "0.1.0-dev"
 
 // appDirName 是数据目录名（同时也是 config.toml 所在目录名）。
 const appDirName = "PawClip"

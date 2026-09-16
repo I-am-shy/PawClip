@@ -45,8 +45,14 @@ jobs:
       # 而 store.Open 对此是**优雅降级**（打一行 WARN、退回 LIKE 检索），
       # 于是测试会"跳过"一批全文检索用例而不是变红。
       # 同一个纪律在 scripts/build.sh 里也钉了一遍，理由见那个文件。
+      #
+      # `-p 1` 也不能省：本仓库有两类**按墙上时间取证**的规模测试
+      # （store 的 10 万条检索延迟、capture 的捕获延迟）。go test 默认并行
+      # 跑包，CPU 被 9 个包抢满时，这些数字会飙到 2~3 倍——那是机器被占满，
+      # 不是产品退化。串行跑让度量条件稳定，代价是总耗时基本不变
+      # （互相抢 CPU 本来也在拖慢彼此）。
       - name: go test
-        run: go test ./... -tags sqlite_fts5 -count=1
+        run: go test -tags sqlite_fts5 -p 1 -count=1 ./...
 
       - name: go vet
         run: go vet ./...
@@ -82,7 +88,12 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: amd64
           CGO_ENABLED: "0"
-        run: go build ./... -tags sqlite_fts5
+        # ⚠️ 标签必须写在包路径**之前**。`go build ./... -tags x` 不是
+        # "把标签传给构建"，而是把 `-tags` / `x` 当成两个**包路径**来解析，
+        # 报的是 `malformed import path "-tags"` 与 `package x is not in std`。
+        # （`go test` 对"包后面的参数"有兼容处理，所以同样写法在测试那一步
+        # 能过——这个不对称正好是最容易被抄错的地方。）
+        run: go build -tags sqlite_fts5 ./...
 
   # ── 前端：i18n 检查 + 类型检查 + 产物 ─────────────────────────
   frontend:
