@@ -201,6 +201,9 @@ func (c *darwinController) Hide() { C.paw_hide() }
 // Visible 报告面板可见性。
 func (c *darwinController) Visible() bool { return C.paw_visible() != 0 }
 
+// Drag 开始一次原生窗口拖动（见 Controller.Drag 的说明）。
+func (c *darwinController) Drag() { C.paw_panel_drag() }
+
 // SetTray 安装托盘图标与菜单。
 func (c *darwinController) SetTray(iconPNG []byte, items []TrayItem) error {
 	var errBuf [512]C.char

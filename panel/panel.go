@@ -287,6 +287,11 @@ type Controller interface {
 	Hide()
 	// Visible 报告面板是否可见。
 	Visible() bool
+	// Drag 开始一次原生窗口拖动。前端在标题栏空白处按下鼠标时调用：
+	// 面板是无边框窗口（macOS 上 borderless NSPanel 没有可抓的标题栏，
+	// Wails 的 CSS app-region 只作用于它自己的宿主窗口），只能由前端
+	// 显式把"按住了"转交给原生的拖动循环。拖动/缩放过的位置归用户。
+	Drag()
 
 	// RegisterHotkey 注册 / 换绑全局热键。
 	RegisterHotkey(combo string) error

@@ -225,11 +225,22 @@ export default function App() {
     void call('HidePanel').catch(() => {})
   }, [])
 
+  // 标题栏拖动：面板是无边框窗口（macOS 上是 borderless NSPanel），
+  // Wails 的 CSS app-region 机制只作用于它自己的宿主窗口，对面板无效。
+  // 所以在标题栏空白处按下时显式调用 DragPanel，把拖动交给原生循环。
+  // 落在按钮/输入框上的按下仍然留给控件自己，不能抢。
+  const startDrag = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    const el = e.target as HTMLElement | null
+    if (el?.closest('button, input, select, textarea, a')) return
+    void call('DragPanel').catch(() => {})
+  }, [])
+
   const modLabel = platform === 'darwin' ? '⌘' : 'Ctrl+'
 
   return (
     <div className="app">
-      <header className="titlebar">
+      <header className="titlebar" onMouseDown={startDrag}>
         <div className="brand">
           <span className="brand-dot" />
           <span className="brand-name">{t('app.name')}</span>
@@ -240,6 +251,16 @@ export default function App() {
           <NavBtn view="stats" cur={view} set={setView} icon={<IconChart size={14} />} label={t('nav.stats')} />
           <NavBtn view="backup" cur={view} set={setView} icon={<IconArchive size={14} />} label={t('nav.backup')} />
           <NavBtn view="settings" cur={view} set={setView} icon={<IconSettings size={14} />} label={t('nav.settings')} />
+          {/* 关闭 = 收起面板（热键再按一次也能收起）。 */}
+          <button
+            type="button"
+            className="iconbtn titlebtn-close"
+            aria-label={t('common.close')}
+            title={t('common.close')}
+            onClick={hidePanel}
+          >
+            <IconX size={13} />
+          </button>
         </nav>
       </header>
 

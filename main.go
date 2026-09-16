@@ -134,8 +134,10 @@ func main() {
 		Frameless:   true,
 		AlwaysOnTop: true,
 
-		// 面板是可缩放的固定尺寸窗口：底部固定高度、宽度锁定在 panelWidth。
-		// 不让用户随意拖拽——剪贴板面板的布局是按 460pt 宽设计的。
+		// 这一项只作用于这个永远隐藏的宿主窗口。用户真正看到的面板是
+		// panel/ 在 startup 之后自建的 NSPanel，那边是可拖动、可缩放的
+		//（panel_darwin.m：Resizable styleMask + 380×480~760×1100 的边界），
+		// 与这里的取值无关。
 		DisableResize: true,
 
 		// ⚠️ 这一行是"缩略图能不能显示"的总开关。

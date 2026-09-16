@@ -438,6 +438,8 @@ export type Bindings = {
 
   ShowPanel(): Promise<void>
   HidePanel(): Promise<void>
+  /** 在标题栏空白处按下鼠标时调用：交给原生拖动循环移动窗口。 */
+  DragPanel(): Promise<void>
   PanelVisible(): Promise<boolean>
   PanelDiag(): Promise<string>
   AutoPasteAvailable(): Promise<boolean>

@@ -66,6 +66,12 @@ double paw_panel_width(void);
 double paw_panel_height(void);
 
 // 把面板移到鼠标所在屏幕的顶部居中（多屏时出现在用户正在看的那块屏上）。
+// 用户手动拖动/缩放过面板后不再生效（位置归用户管）。
 void paw_panel_recenter(void);
+
+// 启动一次原生窗口拖动（前端在标题栏空白处按下鼠标时调用）。
+// borderless 面板没有标题栏，Wails 的 CSS app-region 也管不到它，只能走
+// performWindowDragWithEvent 交还 AppKit 的标准拖动循环。
+void paw_panel_drag(void);
 
 #endif

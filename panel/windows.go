@@ -58,6 +58,10 @@ const (
 	wmHotkey = 0x0312
 	wmApp    = 0x8000
 
+	// Drag 用：让无边框窗口进入系统的移动循环。
+	wmNclButtonDown = 0x00A1 // WM_NCLBUTTONDOWN
+	htCaption       = 2      // HTCAPTION
+
 	// hotkeyID 是 RegisterHotKey 的 id，同一线程内唯一。
 	hotkeyID = 1
 )
@@ -105,6 +109,8 @@ var (
 	procGetCursorPos     = user32.NewProc("GetCursorPos")
 	procPostMessage      = user32.NewProc("PostMessageW")
 	procSendInput        = user32.NewProc("SendInput")
+	procReleaseCapture   = user32.NewProc("ReleaseCapture")
+	procSendMessage      = user32.NewProc("SendMessageW")
 	procLoadImageW       = user32.NewProc("LoadImageW")
 	procGetLastError     = kernel32.NewProc("GetLastError")
 
@@ -469,6 +475,22 @@ func (c *winController) Visible() bool {
 	}
 	ret, _, _ := procIsWindowVisible.Call(uintptr(hwnd))
 	return ret != 0
+}
+
+// Drag 开始一次原生窗口拖动。
+//
+// Win32 惯用法：ReleaseCapture + WM_NCLBUTTONDOWN(HTCAPTION)，让 DefWindowProc
+// 进入 SC_MOVE 循环，窗口就跟着鼠标走了——与给非客户区加标题栏是同一回事。
+// ⚠️ 本平台实现未经真机验证（见文件头说明）。
+func (c *winController) Drag() {
+	c.mu.Lock()
+	hwnd := c.hwnd
+	c.mu.Unlock()
+	if hwnd == 0 {
+		return
+	}
+	procReleaseCapture.Call(uintptr(hwnd))
+	procSendMessage.Call(uintptr(hwnd), wmNclButtonDown, htCaption, 0)
 }
 
 // RegisterHotkey 换绑热键（重启热键线程以切到新组合）。

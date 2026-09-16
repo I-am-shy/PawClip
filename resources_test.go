@@ -74,6 +74,9 @@ func (f *fakePanel) Visible() bool {
 	return f.visible
 }
 
+// Drag 是无操作：测试替身没有窗口可拖。
+func (f *fakePanel) Drag() {}
+
 func (f *fakePanel) RegisterHotkey(combo string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

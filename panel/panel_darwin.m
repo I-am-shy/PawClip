@@ -2,6 +2,7 @@
 #import <Cocoa/Cocoa.h>
 #import <Carbon/Carbon.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #import <string.h>
 #import <stdlib.h>
@@ -24,6 +25,11 @@ static NSMenu    *g_statusMenu  = nil;
 static id         g_trayTarget  = nil;
 static EventHotKeyRef g_hotkeyRef = NULL;
 static EventHandlerRef g_hotkeyHandler = NULL;
+
+// 用户是否已经亲手摆过面板（拖动过位置或拉伸过尺寸）。
+// 置位之后 paw_panel_recenter 不再在每次呼出时把面板拉回屏幕顶部居中——
+// 用户既然自己放了位置，呼出时把窗口"传送"走就是跟他抢鼠标。
+static BOOL g_userPlaced = NO;
 
 // block 不允许捕获"数组类型"的局部变量（clang: cannot refer to declaration
 // with an array type inside block），所以把错误缓冲区包进 struct 再用 __block 共享。
@@ -140,9 +146,14 @@ static int PawClip_AttachOnMain(int width, int height, char *err, int errlen) {
 
     NSRect frame = NSMakeRect(0, 0, width, height);
 
+    // styleMask 里必须有 Resizable：borderless 窗口默认完全没有缩放边缘，
+    // 加上这一位后 macOS 会在窗口四周给出约 8pt 的隐形拉伸边（没有标题栏，
+    // 视觉上仍然是全圆角卡片）。NonactivatingPanel 是免抢焦点的根基，
+    // 见 docs/DESIGN.md §0.2。
     id panel = [[cls alloc] initWithContentRect:frame
                                       styleMask:(NSWindowStyleMaskNonactivatingPanel |
-                                                 NSWindowStyleMaskBorderless)
+                                                 NSWindowStyleMaskBorderless |
+                                                 NSWindowStyleMaskResizable)
                                         backing:NSBackingStoreBuffered
                                           defer:NO];
     if (!panel) { snprintf(err, errlen, "NSPanel init returned nil"); return 6; }
@@ -154,6 +165,26 @@ static int PawClip_AttachOnMain(int width, int height, char *err, int errlen) {
     [cv setFrame:frame];
     [cv setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
 
+    // ── 圆角卡片 + 投影（对齐喵剪贴图标的"扁平 + 柔和阴影"风格）────────
+    // 窗口本身透明、由内容层裁出圆角：非不透明窗口的系统投影取自内容的
+    // alpha 形状，所以圆角卡片得到的是跟着圆角走的柔和投影，而不是方角影子。
+    // 注意这与 Wails 的 WebviewIsTransparent 是两回事：WebView 自己仍然
+    // 不透明地画底色，只是被内容层的 cornerRadius 裁掉四个角，文字抗锯齿
+    // 不受影响（M0 的结论针对的是 WebView 画在透明底上的情形）。
+    [(NSWindow *)panel setOpaque:NO];
+    [(NSWindow *)panel setBackgroundColor:[NSColor clearColor]];
+    [(NSWindow *)panel setHasShadow:YES];
+    [cv setWantsLayer:YES];
+    CALayer *cvLayer = [cv layer];
+    if (cvLayer) {
+        [cvLayer setCornerRadius:16.0];
+        [cvLayer setMasksToBounds:YES];
+    }
+
+    // 缩放边界：太小布局会挤碎，太大就失去了"轻量面板"的形态。
+    [(NSWindow *)panel setContentMinSize:NSMakeSize(380, 480)];
+    [(NSWindow *)panel setContentMaxSize:NSMakeSize(760, 1100)];
+
     [(NSWindow *)panel setContentView:cv];
     [cv release];
     g_webView = cv;
@@ -164,6 +195,13 @@ static int PawClip_AttachOnMain(int width, int height, char *err, int errlen) {
     [(NSWindow *)panel setReleasedWhenClosed:NO];
     [(NSWindow *)panel setCollectionBehavior:(NSWindowCollectionBehaviorCanJoinAllSpaces |
                                               NSWindowCollectionBehaviorFullScreenAuxiliary)];
+
+    // 用户开始拉伸尺寸也算"亲手摆过"：呼出时同样不再自动居中。
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSWindowWillStartLiveResizeNotification
+                    object:panel
+                     queue:nil
+                usingBlock:^(__unused NSNotification *note) { g_userPlaced = YES; }];
 
     g_panel = panel;
 
@@ -234,6 +272,9 @@ double paw_panel_height(void) {
 void paw_panel_recenter(void) {
     PawClip_OnMain(^{
         if (!g_panel) return;
+        // 用户亲手拖过/拉伸过面板之后，位置归用户管：呼出时不再把它
+        // "传送"回顶部居中，否则拖动功能等于形同虚设。
+        if (g_userPlaced) return;
         NSScreen *screen = nil;
         NSPoint mouse = [NSEvent mouseLocation];
         for (NSScreen *s in [NSScreen screens]) {
@@ -249,6 +290,23 @@ void paw_panel_recenter(void) {
         CGFloat y = vis.origin.y + vis.size.height - f.size.height - vis.size.height * 0.12;
         if (y < vis.origin.y) y = vis.origin.y;
         [g_panel setFrameOrigin:NSMakePoint(x, y)];
+    });
+}
+
+// ── 拖动 ────────────────────────────────────────────────────────
+// 面板是 borderless 窗口，没有标题栏可抓；Wails 的 CSS app-region 机制
+// 作用在它自己的（已被掏空的）宿主窗口上，对面板无效。所以拖动由前端
+// 在标题栏空白处按下鼠标时调用本函数，交还给 AppKit 的标准拖动循环。
+void paw_panel_drag(void) {
+    PawClip_OnMain(^{
+        if (!g_panel) return;
+        // performWindowDragWithEvent 需要一个鼠标事件来启动拖动循环；
+        // 前端按下 → IPC → 到这里，NSApp 的 currentEvent 仍是那次
+        // leftMouseDown（拖动还没开始，事件循环没有推进）。
+        NSEvent *ev = [NSApp currentEvent];
+        if (ev == nil) return;
+        g_userPlaced = YES;
+        [g_panel performWindowDragWithEvent:ev];
     });
 }
 
