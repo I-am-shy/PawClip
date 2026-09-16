@@ -375,6 +375,59 @@ func TestTogglePanel_ReportsKeyboardFailure(t *testing.T) {
 	}
 }
 
+// TestPanelBlur_ClosesOnlyWhenEnabled 钉住 ui.closeOnBlur 的三条边界。
+//
+// "原生到底有没有在上报失焦"必须真人点窗口才看得到（见 test/accept.sh 的
+// 说明），但"收到上报之后收不收"是纯策略，必须在这里钉死——它是默认开启的
+// 行为，写反了要么让面板变成完全关不掉（一直不收起），要么变成根本留不住
+// （用户在面板里点任何东西都被收掉）。
+func TestPanelBlur_ClosesOnlyWhenEnabled(t *testing.T) {
+	// ① 开着（默认）：面板可见时失焦 → 收起，并留下 hide 事件。
+	a, fp := newTrayApp(t, true, "zh-CN")
+	if !a.settings.UI.CloseOnBlur {
+		t.Fatal("ui.closeOnBlur 的默认值应当是 true")
+	}
+	a.showPanel()
+	a.TakeEvents()
+
+	a.onPanelBlur()
+	if fp.Visible() {
+		t.Error("closeOnBlur = true 时失去焦点应当收起面板")
+	}
+	if !hasEvent(a.TakeEvents(), EventHide) {
+		t.Error("自动收起应当留下 hide 事件（与热键收起保持一致）")
+	}
+
+	// ② 关掉：面板留着不动。有人就是要把面板钉在屏幕上对照着抄。
+	a.settings.UI.CloseOnBlur = false
+	a.showPanel()
+	a.TakeEvents()
+	a.onPanelBlur()
+	if !fp.Visible() {
+		t.Error("closeOnBlur = false 时不该收起面板")
+	}
+
+	// ③ 面板本来就不可见：幂等，不产生事件。
+	//    这条路径真机上一定会走到：收起面板本身就会让窗口 resign key，
+	//    于是原生又报一次"失焦"。
+	fp.Hide()
+	a.TakeEvents()
+	a.settings.UI.CloseOnBlur = true
+	a.onPanelBlur()
+	if fp.Visible() {
+		t.Error("面板不可见时 onPanelBlur 不该把它变可见")
+	}
+	if evs := a.TakeEvents(); len(evs) != 0 {
+		t.Errorf("面板不可见时 onPanelBlur 不该产生事件，得到 %+v", evs)
+	}
+
+	// ④ 没有面板实现（Linux 骨架）：不能 panic。
+	//    panelController() 返回 nil 在该平台上是常态，不是异常。
+	b, _ := newTrayApp(t, true, "zh-CN")
+	b.ctrl = nil
+	b.onPanelBlur()
+}
+
 // TestIdleTick_HidesOnlyWhenOverThreshold 检查空闲收起的边界。
 //
 // 三个必须成立的分支：

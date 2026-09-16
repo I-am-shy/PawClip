@@ -33,6 +33,12 @@ int paw_show(void);
 // 隐藏面板。
 void paw_hide(void);
 
+// 失焦自动收起的**触发源**在原生侧：面板丢掉键盘（用户点了面板以外的
+// 任何地方）时，通过回调 pawGoPanelBlur（见 export_darwin.go）把这件事
+// 报给 Go，由 Go 按设置 ui.closeOnBlur 决定收不收。原生只负责识别时机、
+// 不做策略判断——所以这里没有配套的导出函数，逻辑在 panel_darwin.m 的
+// PawClip_ScheduleBlurCheck / PawClip_ReportBlur 里。
+
 int paw_visible(void);
 
 // ── 全局热键 ────────────────────────────────────────────────────

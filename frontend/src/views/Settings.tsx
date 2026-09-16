@@ -174,6 +174,10 @@ export function Settings(p: SettingsProps) {
           <NumberInput value={u.quickPasteCount} disabled={busy} onCommit={(v) => void set('ui.quickPasteCount', v)} />
         </Row>
 
+        <Row label={t('settings.closeOnBlur')} note={t('settings.closeOnBlur.note')} wide>
+          <Toggle value={u.closeOnBlur} disabled={busy} onChange={(v) => void set('ui.closeOnBlur', v)} />
+        </Row>
+
         <Row label={t('settings.idleDestroy')} note={t('settings.idleDestroy.note')} wide>
           <NumberInput
             value={u.windowIdleDestroySec}

@@ -44,6 +44,7 @@ const (
 	KeyUIQuickPasteCount      = "ui.quickPasteCount"
 	KeyUILanguage             = "ui.language"
 	KeyUITheme                = "ui.theme"
+	KeyUICloseOnBlur          = "ui.closeOnBlur"
 	KeyUIPanelWidth           = "ui.panelWidth"
 	KeyUIPanelHeight          = "ui.panelHeight"
 
@@ -111,6 +112,14 @@ type UISettings struct {
 	Language             string `json:"language"`
 	Theme                string `json:"theme"`
 
+	// CloseOnBlur 为真时，用户点到面板以外的任何地方（别的 App、桌面、
+	// 别的窗口）面板自动收起。
+	//
+	// 判据是**面板丢掉了键盘焦点**，不是"App 失去激活"：面板是
+	// NonactivatingPanel，呼出时它自己拿键盘却不会把 App 切到前台
+	// （docs/DESIGN.md §0.2），所以 App 层面的激活状态在这里没有意义。
+	CloseOnBlur bool `json:"closeOnBlur"`
+
 	// PanelWidth / PanelHeight 是面板尺寸（逻辑点）。
 	//
 	// 它们不是"给用户填的参数"，而是**用户拖出来的结果**：面板边缘可拉伸，
@@ -177,6 +186,7 @@ func DefaultSettings() *Settings {
 			QuickPasteCount:      9,
 			Language:             LanguageSystem,
 			Theme:                ThemeSystem,
+			CloseOnBlur:          true,
 			// 560×760：420×520 太窄，分类树 + 列表一起放不下（用户实测反馈）。
 			// 这个值只在"用户从没拖过边缘"时生效，一旦拖过就以库里的为准。
 			PanelWidth:  560,
@@ -229,6 +239,7 @@ func (s *Settings) bindings() []binding {
 		{KeyUIQuickPasteCount, &s.UI.QuickPasteCount},
 		{KeyUILanguage, &s.UI.Language},
 		{KeyUITheme, &s.UI.Theme},
+		{KeyUICloseOnBlur, &s.UI.CloseOnBlur},
 		{KeyUIPanelWidth, &s.UI.PanelWidth},
 		{KeyUIPanelHeight, &s.UI.PanelHeight},
 

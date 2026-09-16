@@ -85,14 +85,23 @@ func (a Action) Valid() bool { return a >= 0 && a < actionMax }
 
 // Handler 是面板回调的出口。实现者是 app.go。
 //
-// 两个方法都会在**非主线程**被调用（热键回调在 Carbon 事件处理里，
-// 托盘在 AppKit 菜单动作里），实现者必须自己保证线程安全——
-// 尤其是别在里面直接碰 WebView。
+// 三个方法都会在**非主线程**被调用（热键回调在 Carbon 事件处理里、
+// 托盘在 AppKit 菜单动作里、失焦通知来自窗口的 key 变化），实现者必须
+// 自己保证线程安全——尤其是别在里面直接碰 WebView。
 type Handler interface {
 	// OnAction 收到一个菜单 / 托盘动作。
 	OnAction(a Action)
 	// OnHotkey 热键被按下。
 	OnHotkey()
+	// OnPanelBlur 面板丢掉了键盘焦点（用户点了面板以外的区域）。
+	//
+	// ⚠️ 它报告的是**事实**，不是"请收起面板"：是否收起由上层按设置
+	// （ui.closeOnBlur）决定。把策略留在 Go 侧有两个好处——三平台的窗口
+	// 行为语义一致，且不必把设置一路传进原生代码里。
+	//
+	// 原生上报前已经做过一轮过滤（面板不可见、key 又回来了、有模态窗口
+	// 都不报），但那是"识别时机"的过滤，不是策略。
+	OnPanelBlur()
 }
 
 // TrayItem 是托盘菜单的一项。

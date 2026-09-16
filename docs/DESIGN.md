@@ -540,6 +540,7 @@ blobs/
 | 7 | 隐藏 Dock 图标 | 必须把激活策略设为 Accessory。两条路径：① `build/darwin/Info.plist` 加 `LSUIElement = true`（**推荐**，进程启动前生效，避免开机抢一次焦点）；② cgo 调 `NSApp.setActivationPolicy(NSApplicationActivationPolicyAccessory)`。**注意：这不只是"隐藏 Dock 图标"的美观需求——M0 实测证明它是免抢焦点面板的必要条件**（见 §0.2） |
 | 8 | 通用二进制 | `wails build -platform darwin/universal`；同时设 `LSMinimumSystemVersion = 12.0` |
 | 9 | 数据库损坏 | WAL + `clean_shutdown` 标记文件（正常退出删除；启动时**发现标记存在才**跑 `PRAGMA integrity_check`，见 §14 第 6 条）+ 每日备份到 `backups/` 保留 7 份 |
+| 10 | 点了面板以外的地方，面板赖着不走 | 判据**不能**用 `NSApp.isActive`：面板是 NonactivatingPanel——它拿键盘却不激活 App（第 3 条），所以"用户点走了"只能看**窗口自己的 key 状态**。听两条通知：`NSWindowDidResignKeyNotification`（点别的 App / 桌面 / 别的窗口，主路径）与 `NSApplicationDidResignActiveNotification`（Spotlight、切 Space，此时面板可能连 key 都没拿到）。判定**延后 80ms 复核**：合并同一轮的多条通知、挡掉 key 瞬间抖动，并且**有模态窗口时不收起**（导出/导入要弹系统文件面板，那一刻收起等于把用户的操作上下文弄丢）。原生只负责"识别时机"，收不收由 `ui.closeOnBlur` 决定，策略留在 Go 侧 |
 
 ---
 
@@ -604,6 +605,7 @@ TOML 解析用 `github.com/BurntSushi/toml`（约 100 KB、无传递依赖）。
 | `ui.restoreDelayMs` | `250` | 恢复延迟 |
 | `ui.windowIdleDestroySec` | `300` | 面板静默多久后销毁以释放内存 |
 | `ui.quickPasteCount` | `9` | ⌘/Ctrl + 1..N 直贴 |
+| `ui.closeOnBlur` | `true` | 面板丢掉**键盘焦点**（点到面板以外的任何地方：别的 App、桌面、别的窗口）时自动收起。判据不是 `NSApp.isActive`——面板是 NonactivatingPanel，呼出时它自己拿键盘却不激活 App。原生侧只上报"失焦了"，收不收由这一项决定 |
 | `ui.language` | `"system"` | `system` / `zh-CN` / `en`。解析顺序：本机设置 → 系统区域 → 回退 `en` |
 | `ui.theme` | `"system"` | `light` / `dark` / `system` |
 | `ui.panelWidth` | `560` | 面板宽度（逻辑点）。**不是给用户填的参数**：面板边缘可拉伸，收起/退出时把当前 frame 写回这两项，下次启动照原样打开。取值域 `380–760`（`panel.ClampPanelSize`） |

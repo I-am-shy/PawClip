@@ -97,6 +97,8 @@ const zh: Dict = {
   'settings.restoreClipboard': '粘贴后恢复原剪贴板',
   'settings.restoreDelayMs': '恢复延迟（毫秒）',
   'settings.quickPaste': '⌘/Ctrl + 1..N 直贴条数',
+  'settings.closeOnBlur': '点击面板以外时自动收起',
+  'settings.closeOnBlur.note': '点到别的应用、桌面或别的窗口时收起面板（点面板内部不受影响）。',
   'settings.idleDestroy': '面板静默多少秒后收起',
   'settings.idleDestroy.note':
     'DESIGN 要求的是"销毁"以释放 WebView 内存。当前 Wails 版本没有窗口销毁 API，' +
@@ -335,6 +337,9 @@ const en: Dict = {
   'settings.restoreClipboard': 'Restore previous clipboard after pasting',
   'settings.restoreDelayMs': 'Restore delay (ms)',
   'settings.quickPaste': '⌘/Ctrl + 1..N quick-paste count',
+  'settings.closeOnBlur': 'Hide when clicking outside the panel',
+  'settings.closeOnBlur.note':
+    'Collapses when you click another app, the desktop, or another window. Clicks inside the panel do not count.',
   'settings.idleDestroy': 'Collapse the panel after N idle seconds',
   'settings.idleDestroy.note':
     'The design asks for *destroy* to free WebView memory. The current Wails version exposes ' +

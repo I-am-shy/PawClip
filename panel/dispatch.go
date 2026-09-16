@@ -23,6 +23,7 @@ var (
 	cbOnce    sync.Once
 	cbHotkeys = make(chan struct{}, 4)
 	cbActions = make(chan Action, 16)
+	cbBlurs   = make(chan struct{}, 4)
 )
 
 // bindHandler 把事件出口挂到某个 Handler 上，并确保消费者已启动。
@@ -49,6 +50,10 @@ func cbDispatch() {
 			}
 			if h := loadHandler(); h != nil {
 				h.OnAction(a)
+			}
+		case <-cbBlurs:
+			if h := loadHandler(); h != nil {
+				h.OnPanelBlur()
 			}
 		}
 	}
@@ -77,6 +82,17 @@ func emitAction(a Action) {
 	}
 	select {
 	case cbActions <- a:
+	default:
+	}
+}
+
+// emitPanelBlur 报告"面板丢掉了键盘焦点"（用户点了面板以外的区域）。
+//
+// 同样非阻塞：连点几下只会留下一两条待处理的失焦，而上层收到第一条
+// 就会把面板收起来——后面那些到达时面板已经不可见，天然是空操作。
+func emitPanelBlur() {
+	select {
+	case cbBlurs <- struct{}{}:
 	default:
 	}
 }

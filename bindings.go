@@ -685,6 +685,11 @@ func (a *App) ShowPanel() error {
 }
 
 // HidePanel 收起面板。
+//
+// ⚠️ 这是"收起面板"的**唯一出口**，四条路径都走它：面板上的 ✕、热键 toggle、
+// 失去焦点自动收起（ui.closeOnBlur）、空闲超时收起。这样做是因为收起
+// 还带着一件容易被漏掉的事——**把面板尺寸落盘**。之前只有 ✕ 那条路会落盘，
+// 于是"拖大面板 → 按热键收起 → 重启"就又回到了旧尺寸。
 func (a *App) HidePanel() {
 	if ctrl := a.panelController(); ctrl != nil {
 		// 先落盘尺寸再收起：用户可能刚拖过边缘，这次收起之后就不再打开

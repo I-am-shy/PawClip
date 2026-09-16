@@ -124,6 +124,7 @@ type panelHandler struct{ app *App }
 
 func (h *panelHandler) OnAction(act panel.Action) { h.app.handlePanelAction(act) }
 func (h *panelHandler) OnHotkey()                 { h.app.togglePanel() }
+func (h *panelHandler) OnPanelBlur()              { h.app.onPanelBlur() }
 
 // PanelEvent 是给前端的原生侧事件。
 type PanelEvent struct {
@@ -234,7 +235,7 @@ func (a *App) togglePanel() {
 		return
 	}
 	if ctrl.Visible() {
-		ctrl.Hide()
+		a.HidePanel() // 唯一出口：顺带把面板尺寸落盘
 		pushEvent(EventHide, "")
 		return
 	}
@@ -254,6 +255,34 @@ func (a *App) showPanel() {
 		return
 	}
 	pushEvent(EventShow, "")
+}
+
+// onPanelBlur 处理"面板丢掉了键盘焦点"（用户点了面板以外的任何地方）。
+//
+// 这是 §9 的 ui.closeOnBlur：把面板当成 Spotlight 那样的临时浮层——
+// 视线/鼠标移开就意味着"不用了"，让它自己退场，而不是留在屏幕上挡着。
+//
+// 三个不该收起的时刻：
+//
+//	· 面板本来就不可见。原生已经过滤了一道，但从"上报"到"执行"之间有
+//	  一段跨线程的路（原生 → channel → 这个 goroutine），而收起面板本身
+//	  也会让窗口 resign key，所以这里必须再判一次。
+//	· 用户在设置里关掉了这个行为（有人就喜欢面板钉在屏幕上）。
+//	· 没有面板可用（Linux 骨架）——panelController 为 nil。
+//
+// 收起走的是 HidePanel（= 前端 ✕ 按钮那条路）：先落盘尺寸再收起。
+// 用户完全可能把面板拖大、点一下别处让它自己消失，尺寸不能因此丢掉。
+func (a *App) onPanelBlur() {
+	ctrl := a.panelController()
+	if ctrl == nil || !ctrl.Visible() {
+		return
+	}
+	if !a.uiSettings().CloseOnBlur {
+		return
+	}
+	a.log.Debug("面板失去焦点，自动收起", "note", "ui.closeOnBlur")
+	a.HidePanel()
+	pushEvent(EventHide, "")
 }
 
 // toggleCapture 切换"暂停记录"并刷新托盘勾选态。
@@ -385,7 +414,7 @@ func (a *App) idleTick() {
 	if idle < int64(sec) {
 		return
 	}
-	ctrl.Hide()
+	a.HidePanel() // 唯一出口：顺带把面板尺寸落盘
 	pushEvent(EventIdleHidden, "")
 	idleHides.Add(1)
 	a.log.Info("面板已按空闲阈值收起",

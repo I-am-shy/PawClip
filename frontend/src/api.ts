@@ -346,6 +346,13 @@ export type SettingsShape = {
     language: string
     theme: string
     /**
+     * 点到面板以外的任何地方（别的 App、桌面、别的窗口）时自动收起。
+     *
+     * 判据是**面板丢掉键盘焦点**，不是"应用失去激活"：面板是
+     * NonactivatingPanel，呼出时它自己拿键盘但不会把应用切到前台。
+     */
+    closeOnBlur: boolean
+    /**
      * 面板尺寸（逻辑点）。
      *
      * 不是给用户填的参数，而是**用户拖出来的结果**：面板边缘可拉伸，

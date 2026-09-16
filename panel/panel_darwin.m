@@ -12,6 +12,7 @@
 // 声明成 void 参数形式以匹配 cgo 生成的原型。
 extern void pawGoHotkey(void);
 extern void pawGoTrayAction(int action);
+extern void pawGoPanelBlur(void);
 
 // 热键的 four-char signature。用 'PAWC' 避免和别的 App 的热键 ID 撞上。
 #define PAW_HOTKEY_SIG 'PAWC'
@@ -30,6 +31,9 @@ static EventHandlerRef g_hotkeyHandler = NULL;
 // 置位之后 paw_panel_recenter 不再在每次呼出时把面板拉回屏幕顶部居中——
 // 用户既然自己放了位置，呼出时把窗口"传送"走就是跟他抢鼠标。
 static BOOL g_userPlaced = NO;
+
+// 见后半的「失焦自动收起」一节：attach 里要注册观察者，所以先声明。
+static void PawClip_ScheduleBlurCheck(void);
 
 // block 不允许捕获"数组类型"的局部变量（clang: cannot refer to declaration
 // with an array type inside block），所以把错误缓冲区包进 struct 再用 __block 共享。
@@ -206,6 +210,19 @@ static int PawClip_AttachOnMain(int width, int height,
                      queue:nil
                 usingBlock:^(__unused NSNotification *note) { g_userPlaced = YES; }];
 
+    // 失焦自动收起的两条触发源（见「失焦自动收起」一节）。
+    // 这里只报告"面板丢掉了键盘"，是否真的收起由 Go 侧按 ui.closeOnBlur 决定：
+    // 策略留在 Go 里，三平台才有一致的语义，也不必把设置传进 C。
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+    [nc addObserverForName:NSWindowDidResignKeyNotification
+                    object:panel
+                     queue:nil
+                usingBlock:^(__unused NSNotification *note) { PawClip_ScheduleBlurCheck(); }];
+    [nc addObserverForName:NSApplicationDidResignActiveNotification
+                    object:NSApp
+                     queue:nil
+                usingBlock:^(__unused NSNotification *note) { PawClip_ScheduleBlurCheck(); }];
+
     g_panel = panel;
 
     // 把 Wails 的窗口藏起来。它已经不含 WebView 了，留着只是个空壳。
@@ -313,6 +330,49 @@ void paw_panel_drag(void) {
         g_userPlaced = YES;
         [g_panel performWindowDragWithEvent:ev];
     });
+}
+
+// ── 失焦自动收起 ────────────────────────────────────────────────
+// 需求：点到面板以外的任何地方（别的 App、桌面、别的窗口），面板自己收起。
+//
+// 判据**不能**用 NSApp.isActive。面板是 NonactivatingPanel：它拿键盘、
+// 却不把 App 切到前台（docs/DESIGN.md §0.2），所以"用户点走了"这件事在
+// App 层面基本看不见——只能盯面板自己的 key 状态。两条通知都要听：
+//
+//   · NSWindowDidResignKeyNotification —— 点别的 App / 桌面 / 本 App 的
+//     别的窗口，面板丢掉 key。这是主路径。
+//   · NSApplicationDidResignActiveNotification —— App 整体失去激活
+//     （打开 Spotlight、切换 Space、系统弹窗抢了前台），这时面板可能连
+//     key 都还没拿到，不会有上一条。
+//
+// 判定**延后 80ms** 再上报：一次点击可能同时触发两条通知，拖动与新建
+// 窗口时 key 状态也可能瞬时抖动；合并掉既避免重复上报，也留出
+// "再过一帧是不是又变回 key 了"的复核机会（复核不过就不报）。
+static BOOL g_blurPending = NO;
+
+static void PawClip_ReportBlur(void) {
+    if (g_panel == nil) return;
+    if (![g_panel isVisible]) return;   // 已经收起了，没什么可报的
+    if ([g_panel isKeyWindow]) return;  // 复核：key 又回来了（抖动）
+    // 有模态窗口时不算"用户点走了"：导出/导入要弹系统的文件面板，它会把
+    // key 从面板手里拿走，那一刻顺手收起面板等于把用户的操作上下文弄丢。
+    //
+    // 两种形态都要挡：runModal 式的（NSApp.modalWindow）与 sheet 式的
+    // （附在某个窗口上的 attachedSheet —— 它不注册成 modalWindow）。
+    if ([NSApp modalWindow] != nil || [g_panel attachedSheet] != nil) return;
+    pawGoPanelBlur();
+}
+
+static void PawClip_ScheduleBlurCheck(void) {
+    if (g_blurPending) return;
+    if (g_panel == nil || ![g_panel isVisible]) return;
+    if ([g_panel isKeyWindow]) return;
+    g_blurPending = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(80 * NSEC_PER_MSEC)),
+                   dispatch_get_main_queue(), ^{
+                       g_blurPending = NO;
+                       PawClip_ReportBlur();
+                   });
 }
 
 // ── 全局热键 ────────────────────────────────────────────────────
