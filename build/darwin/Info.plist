@@ -1,0 +1,50 @@
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+    <dict>
+        <key>CFBundlePackageType</key>
+        <string>APPL</string>
+        <key>CFBundleName</key>
+        <string>{{.Info.ProductName}}</string>
+        <key>CFBundleDisplayName</key>
+        <string>{{.Info.ProductName}}</string>
+        <key>CFBundleExecutable</key>
+        <string>{{.OutputFilename}}</string>
+        <key>CFBundleIdentifier</key>
+        <string>com.pawclip.app</string>
+        <key>CFBundleVersion</key>
+        <string>{{.Info.ProductVersion}}</string>
+        <key>CFBundleGetInfoString</key>
+        <string>{{.Info.Comments}}</string>
+        <key>CFBundleShortVersionString</key>
+        <string>{{.Info.ProductVersion}}</string>
+        <key>CFBundleIconFile</key>
+        <string>iconfile</string>
+        <key>LSMinimumSystemVersion</key>
+        <string>12.0</string>
+        <key>NSHighResolutionCapable</key>
+        <string>true</string>
+        <key>NSHumanReadableCopyright</key>
+        <string>{{.Info.Copyright}}</string>
+
+        <!--
+          LSUIElement = true —— 这是免抢焦点面板的**必要条件之一**，
+          不是外观偏好。DESIGN.md §0.2 的实测矩阵写得很明白：
+
+              必须运行在 Accessory 激活策略下（NSApplicationActivationPolicyAccessory，
+              等价 Info.plist 的 LSUIElement = true）。两个条件缺一不可 ——
+              实测中单独去掉任一条件都会立刻失败（去掉 Accessory 后，
+              键盘焦点 0/6 次拿到）。
+
+          为什么写在这里、而不是只靠 runtime 的 setActivationPolicy：
+          那一句要等窗口建出来之后才执行，中间会闪一下 Dock 图标；
+          而 LSUIElement 由 launchd 在进程启动前读取，从第一帧就成立。
+          runtime 那一句保留为兜底（见 panel/darwin.go）。
+
+          ⚠️ 这个文件**必须入库**。它原先是被 .gitignore 掉的生成物，
+          那样 `git clone && wails build` 出来的 App 就没有这一段，
+          面板会变成"能显示但收不到键盘" —— 而且没有任何测试会变红。
+        -->
+        <key>LSUIElement</key>
+        <true/>
+    </dict>
+</plist>

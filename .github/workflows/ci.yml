@@ -1,0 +1,112 @@
+name: CI
+
+# 每次推分支 / 提 PR 都跑一遍。目的只有两个：
+#
+#   ① 让"绿"这件事有第三方证据 —— 本地 `go test ./...` 通过之后，
+#      提交、推送、CI 上仍然绿，才算真的通过。
+#   ② 拦住"只在某一种平台上能编过"的改动。这个项目里这类风险是实打实的：
+#      panel / clipboard / reveal / autostart 全都是按平台分文件的
+#      （`//go:build darwin` 等），本机是 macOS 的话，Windows 分支的编译错误
+#      只有到 CI（或真机）才会暴露。
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["v*"] # 打 tag 走 release.yml，不重复跑
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新 push 取消上一次仍在跑的 CI。
+# 不是为了省资源，是为了让"最后一次提交的结果"尽快出现在页面上——
+# 多个 run 同时排队时，人容易看错哪一个才是当前提交。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── 后端：全量测试 ────────────────────────────────────────────
+  go-test:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # 唯一真源是 go.mod，不在这里再写一遍版本号：
+          # 两处各写一份的结果是"本地 1.26 能过、CI 用 1.24 过不了"，
+          # 或者反过来（CI 悄悄升级了而本地没升）。
+          go-version-file: go.mod
+          cache: true
+
+      # `-tags sqlite_fts5` 不能省：不带它编译出的二进制里没有 fts5 模块，
+      # 而 store.Open 对此是**优雅降级**（打一行 WARN、退回 LIKE 检索），
+      # 于是测试会"跳过"一批全文检索用例而不是变红。
+      # 同一个纪律在 scripts/build.sh 里也钉了一遍，理由见那个文件。
+      - name: go test
+        run: go test ./... -tags sqlite_fts5 -count=1
+
+      - name: go vet
+        run: go vet ./...
+
+  # ── 后端：跨平台编译烟测 ──────────────────────────────────────
+  #
+  # ⚠️ 这一条**只证明"能编过"**，不证明 Windows / Linux 版能跑。
+  #
+  # 原因：mattn/go-sqlite3 在 `CGO_ENABLED=0` 下会编译进一个空桩驱动
+  # （static_mock.go），驱动名注册得上、但任何实际连接都会失败。
+  # 也就是说这里的产物是"能链接、不能开库"的。
+  #
+  # 那为什么还要跑：本仓库有大量按平台分文件的代码，而**编译**是唯一能
+  # 在没有真机的情况下检查它们的办法。真正的可运行产物由 release.yml
+  # 在原生 runner（windows-2022 / macos-14，自带编译器和 cgo）上构建。
+  compile-check:
+    name: Compile check (${{ matrix.goos }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [windows, linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go build (${{ matrix.goos }})
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: go build ./... -tags sqlite_fts5
+
+  # ── 前端：i18n 检查 + 类型检查 + 产物 ─────────────────────────
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # `npm ci` 而不是 `npm install`：CI 要的是**可复现**。
+      # install 会在 lockfile 与 package.json 不一致时悄悄改 lockfile，
+      # 于是"CI 过了"可能只是因为 CI 自己升级了一个依赖。
+      - run: npm ci
+
+      # npm run build 的第一段就是 scripts/check-i18n.mjs：
+      # 中途某次改动漏了一个键、或者两份字典对不上，这里会直接失败。
+      # 放在构建最前面是为了让错误信息指向真正的问题（少了一个文案），
+      # 而不是被 TS 的连锁报错淹没。
+      - run: npm run build

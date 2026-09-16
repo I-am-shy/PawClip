@@ -1,0 +1,185 @@
+name: Release
+
+# 按 DESIGN §14 第 21 条：macOS 出通用二进制，Windows 出 NSIS 安装包；
+# 路径按 §10 的目录结构表定为 `.github/workflows/release.yml`。
+#
+# 触发方式：推一个 `v*` 的 tag。手工 `workflow_dispatch` 也留着——
+# tag 打错位置、或者只想重跑一次构建时，不必删 tag 再打一遍
+# （删 tag 会连带把已经发出的 Release 一起弄丢）。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# 发 Release 要写仓库内容（创建 / 更新 Release、上传附件）。
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台失败不牵连同批的另一个：用户可能只要 mac 版，
+      # 而 Windows runner 上的偶发网络失败不该让 mac 的包也发不出去。
+      fail-fast: false
+      matrix:
+        include:
+          # 单个 macos-14 runner 上直接出 arm64 + x86_64 的通用二进制。
+          # §14 第 21 条给了两条路（两个 runner 分别构建 / 一个 runner 出
+          # universal），这里选后者：产物只有一份，"用户该下哪个"这个问题
+          # 就不存在了。
+          #
+          # 注意 macos-14 是 arm64，出 universal 意味着 cgo 要走
+          # `-arch arm64 -arch x86_64` 双架构链接（wails 会设好 CGO_CFLAGS，
+          # Xcode 的 clang 支持多 -arch）。若某天这条链断了，退路是按
+          # §14 第 21 条的前半句拆成 macos-14 + macos-13 两个 job，
+          # 各自出单架构包。
+          - os: macos-14
+            label: macOS universal
+            platform: darwin/universal
+            artifact: PawClip-macos-universal
+          - os: windows-2022
+            label: Windows amd64
+            platform: windows/amd64
+            artifact: PawClip-windows-amd64
+            nsis: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # 钉死 wails 版本，与本地开发用的版本保持一致。
+      #
+      # `@latest` 在这里是个陷阱：wails 的小版本会改打包行为
+      # （模板变量、Info.plist 合并规则、NSIS 脚本），于是"本地能出包、
+      # CI 出包不一样"这种问题会以最难查的方式出现——产物能生成，
+      # 只是某个字段丢了。升级 wails 应当是一次**显式的改动**，
+      # 而不是某次 CI 自己顺手做的。
+      - name: Install wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+
+      # wails 的 `-nsis` 走 makensis。不预装的话它找不到命令就失败。
+      - name: Install NSIS
+        if: matrix.nsis == 'true'
+        run: choco install nsis --no-progress -y
+        shell: pwsh
+
+      - name: Build
+        # `-tags sqlite_fts5` 是硬要求，见 scripts/build.sh 的长注释：
+        # 缺了它 FTS5 会在正式产物里**静默失效**（退回 LIKE 检索，
+        # 只打一行 WARN），而这是发出去的包，没人会去看日志。
+        #
+        # CGO_ENABLED=1 显式写出来：go-sqlite3 是 cgo 包，
+        # 而 CI 环境里任何一步设了 CGO_ENABLED=0 都会让产物退化成空桩驱动。
+        env:
+          CGO_ENABLED: "1"
+        run: wails build -tags sqlite_fts5 -platform ${{ matrix.platform }} ${{ matrix.nsis == 'true' && '-nsis' || '' }}
+
+      # ── macOS：ad-hoc 签名 ────────────────────────────────────
+      #
+      # §14 第 18 条：Apple Silicon 上内核直接拒绝执行未签名的 App。
+      # 链接出的可执行文件自带 ad-hoc 签名，但 **.app 包本身要显式签**。
+      #
+      # 这里的 `--sign -` 是 ad-hoc（无证书）。副作用是 cdhash 每次构建都变，
+      # macOS 会把每个新构建当成另一个 App，于是 TCC 的辅助功能授权要重给
+      # ——这是**开发期**的麻烦，写在了 README 里；发布包给用户装的时候
+      # 只需授权一次，所以这里不引入自签证书（§0 的前提是"不买证书"）。
+      - name: Codesign (ad-hoc)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          APP="build/bin/PawClip.app"
+          test -d "$APP" || { echo "没有找到 $APP —— 产物路径变了？"; exit 1; }
+          codesign --sign - --force --deep "$APP"
+          # 立刻验一次。签名失败的典型表现是"命令成功、包仍然不可用"，
+          # 所以不能只看退出码。
+          codesign --verify --verbose=2 "$APP"
+
+      # 用 zip 而不是 dmg：dmg 需要额外工具链，而且对签名更敏感。
+      # ditto 会保留 .app 里的符号链接、可执行位与扩展属性——
+      # 普通的 `zip` 会丢掉可执行位，用户把包拖进 Applications 后打不开，
+      # 而这个问题只在用户机器上出现。
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          ditto -c -k --sequesterRsrc --keepParent build/bin/PawClip.app "${{ matrix.artifact }}.zip"
+          ls -lh "${{ matrix.artifact }}.zip"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # NSIS 安装包（wails 的输出名形如 pawclip-amd64-installer.exe）
+          # 与免安装的 exe 一起发。有人就是不想装东西。
+          $installer = Get-ChildItem build/bin -Filter "*-installer.exe" -ErrorAction SilentlyContinue
+          if (-not $installer) { Write-Error "没有生成 NSIS 安装包"; exit 1 }
+          Copy-Item $installer.FullName "${{ matrix.artifact }}-installer.exe"
+          Copy-Item build/bin/PawClip.exe "${{ matrix.artifact }}.exe"
+          Get-ChildItem "${{ matrix.artifact }}*" | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            ${{ matrix.artifact }}.zip
+            ${{ matrix.artifact }}*.exe
+
+  # 把两个平台的产物合并到同一个 Release。
+  #
+  # 单独一个 job 而不是在 build 里各自上传，是因为并行 job 同时创建同一个
+  # Release 会互相打架（谁先创建、谁覆盖谁的附件）。这里等全部构建完了
+  # 一次性发，顺序是确定的。
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -lh dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          # 正文里给出 §14 第 19/20 条要求的两条"下载后怎么办"：
+          # 这是用户唯一会看的地方，写在 README 里等于没写。
+          body: |
+            ## 下载
+
+            | 平台 | 文件 |
+            |---|---|
+            | macOS（Apple Silicon + Intel） | `PawClip-macos-universal.zip` |
+            | Windows（安装版） | `PawClip-windows-amd64-installer.exe` |
+            | Windows（免安装） | `PawClip-windows-amd64.exe` |
+
+            ## 首次打开
+
+            **macOS**：本包未做 Apple 公证（无签名分发，见 DESIGN §14 F），
+            Gatekeeper 会拦一次。执行下面这行，或在「系统设置 → 隐私与安全性」
+            里点「仍要打开」：
+
+            ```sh
+            xattr -dr com.apple.quarantine /Applications/PawClip.app
+            ```
+
+            要自动粘贴还需授权：**系统设置 → 隐私与安全性 → 辅助功能** 里勾选 PawClip。
+
+            **Windows**：SmartScreen 提示时点「更多信息」→「仍要运行」。
+          fail_on_unmatched_files: true

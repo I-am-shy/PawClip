@@ -1,15 +1,24 @@
 # ── 发布产物（只进 Release，绝不进仓库）──────────────────────
-# Wails 把最终产物放在 build/bin/，同时在 build/ 下生成平台模板目录
-# （Info.plist / windows 资源）。appicon.png 是**输入**，必须入库，所以
-# 这里只忽略生成出来的子目录，不能整个忽略 build/。
+# Wails 把最终产物放在 build/bin/，同时在 build/ 下生成平台资源。
+# appicon.png 是**输入**，必须入库，所以这里只忽略具体产物，不能整个
+# 忽略 build/。
 build/bin/
-build/darwin/
 build/windows/
 *.app
 *.dmg
 *.exe
 *.msi
 *.clipbak
+
+# build/darwin/ 里默认全是生成物，**但 Info.plist 例外**：
+# wails 对它的处理是"项目里有就用项目的，没有就用内置模板"
+# （packager.go 的 processPList → buildassets.ReadFileWithProjectData）。
+# 而我们把 LSUIElement=true 写在了里面 —— 那是免抢焦点面板的必要条件
+# （DESIGN §0.2），一旦跟着 .gitignore 丢掉，新 clone 构建出的 App
+# 会"能显示面板但收不到键盘"，且没有任何测试会变红。
+# 所以这里用「先忽略目录、再显式放行一个文件」的写法。
+build/darwin/*
+!build/darwin/Info.plist
 
 # ── 编译中间物 ───────────────────────────────────────────────
 # frontend/dist 是 Vite 产物，但其中 gitkeep 必须入库：
