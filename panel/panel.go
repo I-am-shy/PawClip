@@ -124,6 +124,46 @@ type Config struct {
 	Tooltip string
 }
 
+// 面板尺寸边界（逻辑点）。
+//
+// ⚠️ 这是**唯一**一份边界定义，三处都从它取：
+//
+//	① 原生侧把它设成窗口的 contentMinSize / contentMaxSize（darwin.go 传给
+//	   paw_attach，Windows 侧同样吃这一份）；
+//	② 上层在"把设置里的尺寸交给面板"之前夹取（app.go attachPanel）——
+//	   库里的值可能是老版本写进去的、或者被人手改过；
+//	③ 落库前再夹一次（app.go persistPanelSize），免得把窗口实际被系统
+//	   限制过的尺寸之外的怪值写回去。
+//
+// 下限的理由是布局：380pt 以下分类树 + 列表就挤碎了；上限的理由是形态，
+// 再大就不是"浮在别人窗口上的轻量面板"了。
+const (
+	MinPanelWidth  = 380
+	MaxPanelWidth  = 760
+	MinPanelHeight = 480
+	MaxPanelHeight = 1100
+)
+
+// ClampPanelSize 把一组尺寸夹进合法区间，0 或负值表示"没设置"，返回 0。
+//
+// 返回 0 而不是最小值：调用方据此区分"用户设过尺寸"与"没有值、该用默认"。
+func ClampPanelSize(w, h int) (int, int) {
+	if w <= 0 || h <= 0 {
+		return 0, 0
+	}
+	if w < MinPanelWidth {
+		w = MinPanelWidth
+	} else if w > MaxPanelWidth {
+		w = MaxPanelWidth
+	}
+	if h < MinPanelHeight {
+		h = MinPanelHeight
+	} else if h > MaxPanelHeight {
+		h = MaxPanelHeight
+	}
+	return w, h
+}
+
 // Hotkey 是**平台无关**的热键描述。
 //
 // 刻意停在"哪个键 + 哪几个修饰键"这一层：macOS 要的是 kVK_* 虚拟键码、
@@ -287,6 +327,11 @@ type Controller interface {
 	Hide()
 	// Visible 报告面板是否可见。
 	Visible() bool
+	// Size 报告面板当前的逻辑尺寸（由用户拖动边缘改变）。
+	//
+	// 返回 (0, 0) 表示当前平台拿不到可靠数值——调用方据此**不要**落库，
+	// 否则会把 0 写进设置、下次启动变成"没有尺寸"。
+	Size() (int, int)
 	// Drag 开始一次原生窗口拖动。前端在标题栏空白处按下鼠标时调用：
 	// 面板是无边框窗口（macOS 上 borderless NSPanel 没有可抓的标题栏，
 	// Wails 的 CSS app-region 只作用于它自己的宿主窗口），只能由前端

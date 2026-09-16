@@ -44,6 +44,8 @@ const (
 	KeyUIQuickPasteCount      = "ui.quickPasteCount"
 	KeyUILanguage             = "ui.language"
 	KeyUITheme                = "ui.theme"
+	KeyUIPanelWidth           = "ui.panelWidth"
+	KeyUIPanelHeight          = "ui.panelHeight"
 
 	KeyStorageCleanShutdownMarker = "storage.cleanShutdownMarker"
 	KeyStorageWALCheckpointEvery  = "storage.walCheckpointEvery"
@@ -108,6 +110,15 @@ type UISettings struct {
 	QuickPasteCount      int    `json:"quickPasteCount"`
 	Language             string `json:"language"`
 	Theme                string `json:"theme"`
+
+	// PanelWidth / PanelHeight 是面板尺寸（逻辑点）。
+	//
+	// 它们不是"给用户填的参数"，而是**用户拖出来的结果**：面板边缘可拉伸，
+	// 收起面板与退出时把当前 frame 写回这里，下次启动照原样打开。
+	// 取值域由 panel.ClampPanelSize 在生产侧夹取（store 不认识 panel 包，
+	// 也不想认识——这里只存整数）。
+	PanelWidth  int `json:"panelWidth"`
+	PanelHeight int `json:"panelHeight"`
 }
 
 // StorageSettings ← storage.*
@@ -166,6 +177,10 @@ func DefaultSettings() *Settings {
 			QuickPasteCount:      9,
 			Language:             LanguageSystem,
 			Theme:                ThemeSystem,
+			// 560×760：420×520 太窄，分类树 + 列表一起放不下（用户实测反馈）。
+			// 这个值只在"用户从没拖过边缘"时生效，一旦拖过就以库里的为准。
+			PanelWidth:  560,
+			PanelHeight: 760,
 		},
 		Storage: StorageSettings{
 			CleanShutdownMarker: true,
@@ -214,6 +229,8 @@ func (s *Settings) bindings() []binding {
 		{KeyUIQuickPasteCount, &s.UI.QuickPasteCount},
 		{KeyUILanguage, &s.UI.Language},
 		{KeyUITheme, &s.UI.Theme},
+		{KeyUIPanelWidth, &s.UI.PanelWidth},
+		{KeyUIPanelHeight, &s.UI.PanelHeight},
 
 		{KeyStorageCleanShutdownMarker, &s.Storage.CleanShutdownMarker},
 		{KeyStorageWALCheckpointEvery, &s.Storage.WALCheckpointEvery},

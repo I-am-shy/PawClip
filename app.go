@@ -305,10 +305,20 @@ func (a *App) initialize(ctx context.Context) error {
 // 全部失败路径都只记日志：面板/托盘/热键都是"增强"，任何一项起不来
 // 都不该让捕获链路停摆——用户的剪贴板历史照记不误。
 func (a *App) attachPanel(ctrl panel.Controller, s *store.Settings) {
+	// 尺寸来自设置（= 用户上次拖出来的结果），夹进合法区间再交给面板。
+	//
+	// 夹取放在这里而不是 store 里：store 不该认识 panel 包，而 panel 是边界
+	// 的唯一定义处（panel.ClampPanelSize）。两种"没有值"都会落到默认值：
+	// 老库根本没有这两个键（LoadSettings 给出默认值），或者库里的值是
+	// 0/负数/越界（ClampPanelSize 返回 0,0）。
+	w, h := panel.ClampPanelSize(s.UI.PanelWidth, s.UI.PanelHeight)
+	if w == 0 || h == 0 {
+		w, h = panelDefaultWidth, panelDefaultHeight
+	}
 	cfg := panel.Config{
 		Hotkey:  s.UI.Hotkey,
-		Width:   panelDefaultWidth,
-		Height:  panelDefaultHeight,
+		Width:   w,
+		Height:  h,
 		Tooltip: a.T(msgTrayTooltip),
 	}
 	if err := ctrl.Attach(cfg); err != nil {
@@ -339,10 +349,51 @@ func (a *App) attachPanel(ctrl panel.Controller, s *store.Settings) {
 	a.log.Info("面板与托盘就绪", "hotkey", s.UI.Hotkey, "diag", ctrl.Diag())
 }
 
-// 面板默认尺寸（逻辑点）。docs/DESIGN.md §11 P0 的面板尺寸。
+// persistPanelSize 把面板当前尺寸写回设置（ui.panelWidth / ui.panelHeight）。
+//
+// 面板边缘可拉伸，用户的调整得活过这次运行：收起面板与退出时各写一次
+// （退出那次是必要的——用户完全可能拖完直接退，中间没收起过）。
+//
+// 三处不该写：面板还没建出来、平台拿不到可靠尺寸（Size 返回 0,0）、
+// 尺寸与库里相同（每次 SetSetting 都会重读一遍设置，没必要白跑）。
+func (a *App) persistPanelSize() {
+	ctrl := a.panelController()
+	if ctrl == nil {
+		return
+	}
+	w, h := ctrl.Size()
+	w, h = panel.ClampPanelSize(w, h)
+	if w == 0 || h == 0 {
+		// (0,0) 的含义见 Controller.Size 的文档：拿不到可靠数值。
+		// 写进去会把面板尺寸变成 0，下次启动直接没有合理尺寸。
+		return
+	}
+
+	a.initMu.Lock()
+	s := a.settings
+	a.initMu.Unlock()
+	if s != nil && s.UI.PanelWidth == w && s.UI.PanelHeight == h {
+		return
+	}
+
+	// value 是 JSON 字面量，整数就是不带引号的数字。
+	if err := a.SetSetting(store.KeyUIPanelWidth, fmt.Sprint(w)); err != nil {
+		a.log.Warn("面板宽度落库失败", "w", w, "err", err)
+	}
+	if err := a.SetSetting(store.KeyUIPanelHeight, fmt.Sprint(h)); err != nil {
+		a.log.Warn("面板高度落库失败", "h", h, "err", err)
+	}
+}
+
+// 面板默认尺寸（逻辑点）。
+//
+// ⚠️ 这**不是**用户看到的默认值——真正的默认值在 store.DefaultSettings 的
+// ui.panelWidth / ui.panelHeight（首次运行时 SeedSettings 会把它写进库）。
+// 这里只是"设置了面板尺寸的那些键都读不到"时的兜底，正常情况下走不到。
+// 改默认尺寸请改 store.DefaultSettings，两处同步也没有意义：库里的值优先。
 const (
-	panelDefaultWidth  = 420
-	panelDefaultHeight = 520
+	panelDefaultWidth  = 560
+	panelDefaultHeight = 760
 )
 
 // filterConfigFrom 把 settings 视图翻译成过滤器的输入。
@@ -375,6 +426,9 @@ func (a *App) Shutdown() {
 		//    托盘菜单项里要读设置（"暂停记录"的勾选态），
 		//    留到库关掉之后再响应点击就会撞上已关闭的 db。
 		if ctrl != nil {
+			// 面板尺寸要在 ctrl.Close() 与 db.Close() 之前落盘——
+			// 前者之后窗口已经收摊、拿不到 frame，后者之后没地方写。
+			a.persistPanelSize()
 			ctrl.Close()
 		}
 		// ① 停 GC：它会在库里做删除与 VACUUM，必须早于写入器关闭。

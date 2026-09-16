@@ -606,6 +606,8 @@ TOML 解析用 `github.com/BurntSushi/toml`（约 100 KB、无传递依赖）。
 | `ui.quickPasteCount` | `9` | ⌘/Ctrl + 1..N 直贴 |
 | `ui.language` | `"system"` | `system` / `zh-CN` / `en`。解析顺序：本机设置 → 系统区域 → 回退 `en` |
 | `ui.theme` | `"system"` | `light` / `dark` / `system` |
+| `ui.panelWidth` | `560` | 面板宽度（逻辑点）。**不是给用户填的参数**：面板边缘可拉伸，收起/退出时把当前 frame 写回这两项，下次启动照原样打开。取值域 `380–760`（`panel.ClampPanelSize`） |
+| `ui.panelHeight` | `760` | 面板高度（逻辑点）。取值域 `480–1100` |
 | `storage.cleanShutdownMarker` | `true` | 正常退出时删除标记文件，启动时发现标记存在才做完整性检查 |
 | `storage.walCheckpointEvery` | `1000` | 每 N 次写入或每 1 小时执行 `wal_checkpoint(TRUNCATE)` |
 | `backup.manifestFormat` | `"json"` | `json` / `yaml` |

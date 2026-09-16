@@ -687,6 +687,9 @@ func (a *App) ShowPanel() error {
 // HidePanel 收起面板。
 func (a *App) HidePanel() {
 	if ctrl := a.panelController(); ctrl != nil {
+		// 先落盘尺寸再收起：用户可能刚拖过边缘，这次收起之后就不再打开
+		// （比如直接退出），尺寸不能丢。
+		a.persistPanelSize()
 		ctrl.Hide()
 	}
 }

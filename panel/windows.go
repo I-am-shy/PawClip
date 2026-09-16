@@ -111,6 +111,8 @@ var (
 	procSendInput        = user32.NewProc("SendInput")
 	procReleaseCapture   = user32.NewProc("ReleaseCapture")
 	procSendMessage      = user32.NewProc("SendMessageW")
+	procGetClientRect    = user32.NewProc("GetClientRect")
+	procGetDpiForWindow  = user32.NewProc("GetDpiForWindow")
 	procLoadImageW       = user32.NewProc("LoadImageW")
 	procGetLastError     = kernel32.NewProc("GetLastError")
 
@@ -491,6 +493,37 @@ func (c *winController) Drag() {
 	}
 	procReleaseCapture.Call(uintptr(hwnd))
 	procSendMessage.Call(uintptr(hwnd), wmNclButtonDown, htCaption, 0)
+}
+
+// Size 报告面板的逻辑尺寸。
+//
+// ⚠️ GetClientRect 给的是**物理像素**，直接当逻辑点落库的话，在 125%/150%
+// 缩放的屏幕上每次启动都会把窗口放大一档。所以按窗口 DPI 折回 96 DPI 的
+// 逻辑点（GetDpiForWindow 是 Win10 1607+ 的入口；拿不到就按 96 处理）。
+func (c *winController) Size() (int, int) {
+	c.mu.Lock()
+	hwnd := c.hwnd
+	c.mu.Unlock()
+	if hwnd == 0 {
+		return 0, 0
+	}
+	var r struct{ Left, Top, Right, Bottom int32 }
+	if ret, _, _ := procGetClientRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&r))); ret == 0 {
+		return 0, 0
+	}
+	w, h := r.Right-r.Left, r.Bottom-r.Top
+	if w <= 0 || h <= 0 {
+		return 0, 0
+	}
+	dpi := uintptr(96)
+	if v, _, _ := procGetDpiForWindow.Call(uintptr(hwnd)); v > 0 {
+		dpi = v
+	}
+	if dpi != 96 {
+		w = int32(int64(w) * 96 / int64(dpi))
+		h = int32(int64(h) * 96 / int64(dpi))
+	}
+	return int(w), int(h)
 }
 
 // RegisterHotkey 换绑热键（重启热键线程以切到新组合）。

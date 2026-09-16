@@ -41,13 +41,15 @@ var assets embed.FS
 const (
 	// panelWidth / panelHeight 是面板的逻辑尺寸。
 	//
-	// 这两个数**同时**要传给 Wails（宿主窗口）和我们自己的 NSPanel：
+	// ⚠️ 这两个数只是"建窗时先用着"的初始值，**不是**默认尺寸：真正的默认
+	// 尺寸是 store.DefaultSettings 里的 ui.panelWidth / ui.panelHeight
+	// （用户拖过边缘之后以库里存的为准），面板拿到的是 panel.Config 里的值。
 	// M0 实测的坑是"Wails 仍持有原窗口引用，它后续的 SetSize 会作用在已被
-	// 掏空的原窗口上"，所以面板尺寸必须以 panel.Config 为准（app.go 里
-	// 从 settings 读、传给 panel.Attach）。这里给 Wails 的值只是初始值，
-	// 避免创建时出现一个尺寸不对的窗口闪一下。
-	panelWidth  = 460
-	panelHeight = 620
+	// 掏空的原窗口上"，所以尺寸一律以 panel.Config 为准。
+	//
+	// 这里跟默认值保持一致，纯粹是为了避免创建瞬间出现一个尺寸不对的窗口。
+	panelWidth  = 560
+	panelHeight = 760
 )
 
 func main() {

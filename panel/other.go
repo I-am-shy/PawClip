@@ -27,6 +27,7 @@ func (unsupportedController) Attach(Config) error { return ErrUnsupported }
 func (unsupportedController) Show() error         { return ErrUnsupported }
 func (unsupportedController) Hide()               {}
 func (unsupportedController) Visible() bool       { return false }
+func (unsupportedController) Size() (int, int)    { return 0, 0 }
 func (unsupportedController) Drag()               {}
 
 func (unsupportedController) RegisterHotkey(string) error { return ErrUnsupported }

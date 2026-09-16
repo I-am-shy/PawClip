@@ -77,6 +77,10 @@ func (f *fakePanel) Visible() bool {
 // Drag 是无操作：测试替身没有窗口可拖。
 func (f *fakePanel) Drag() {}
 
+// Size 返回 0,0 —— 与"平台拿不到可靠尺寸"同义，于是 persistPanelSize
+// 不会把尺寸写进库（测试里没有真窗口）。
+func (f *fakePanel) Size() (int, int) { return 0, 0 }
+
 func (f *fakePanel) RegisterHotkey(combo string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

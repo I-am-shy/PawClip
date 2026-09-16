@@ -345,6 +345,15 @@ export type SettingsShape = {
     quickPasteCount: number
     language: string
     theme: string
+    /**
+     * 面板尺寸（逻辑点）。
+     *
+     * 不是给用户填的参数，而是**用户拖出来的结果**：面板边缘可拉伸，
+     * 收起/退出时把当前 frame 写回这两项，下次启动照原样打开。
+     * 设置页只读展示，不需要可编辑控件。
+     */
+    panelWidth: number
+    panelHeight: number
   }
   storage: {
     cleanShutdownMarker: boolean

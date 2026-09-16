@@ -149,7 +149,10 @@ func (c *darwinController) Attach(cfg Config) error {
 
 func (c *darwinController) attachOnce(w, h int) error {
 	var errBuf [512]C.char
-	rc := C.paw_attach(C.int(w), C.int(h), &errBuf[0], C.int(len(errBuf)))
+	rc := C.paw_attach(C.int(w), C.int(h),
+		C.int(MinPanelWidth), C.int(MinPanelHeight),
+		C.int(MaxPanelWidth), C.int(MaxPanelHeight),
+		&errBuf[0], C.int(len(errBuf)))
 	if rc != 0 {
 		return fmt.Errorf("panel: paw_attach 失败(rc=%d)：%s", int(rc), C.GoString(&errBuf[0]))
 	}
@@ -200,6 +203,19 @@ func (c *darwinController) Hide() { C.paw_hide() }
 
 // Visible 报告面板可见性。
 func (c *darwinController) Visible() bool { return C.paw_visible() != 0 }
+
+// Size 报告面板当前尺寸（逻辑点）。
+//
+// 取的是 NSPanel 的 frame：用户拖动边缘之后这里就是新尺寸，上层据此落库，
+// 下次启动就能复原。面板还没建出来时返回 (0, 0)——调用方不要落库。
+func (c *darwinController) Size() (int, int) {
+	w := float64(C.paw_panel_width())
+	h := float64(C.paw_panel_height())
+	if w <= 0 || h <= 0 {
+		return 0, 0
+	}
+	return int(w + 0.5), int(h + 0.5)
+}
 
 // Drag 开始一次原生窗口拖动（见 Controller.Drag 的说明）。
 func (c *darwinController) Drag() { C.paw_panel_drag() }

@@ -129,7 +129,9 @@ int paw_has_window(void) {
 // NSKVONotifying_WailsWindow，带 userMinSize/userMaxSize 两个 ivar；
 // NSPanel 的 ivar 布局与之重叠，调用 NSPanel 专有方法会写坏尺寸约束内存，
 // 随后任何 orderOut 直接 SIGTRAP。实测结论，别再试。
-static int PawClip_AttachOnMain(int width, int height, char *err, int errlen) {
+static int PawClip_AttachOnMain(int width, int height,
+                                int minw, int minh, int maxw, int maxh,
+                                char *err, int errlen) {
     if (g_panel != nil) return 0; // 幂等
 
     NSWindow *w = nil;
@@ -182,8 +184,9 @@ static int PawClip_AttachOnMain(int width, int height, char *err, int errlen) {
     }
 
     // 缩放边界：太小布局会挤碎，太大就失去了"轻量面板"的形态。
-    [(NSWindow *)panel setContentMinSize:NSMakeSize(380, 480)];
-    [(NSWindow *)panel setContentMaxSize:NSMakeSize(760, 1100)];
+    // 数值由 Go 侧传入（panel.go 是唯一定义处），避免两处常量各自漂移。
+    [(NSWindow *)panel setContentMinSize:NSMakeSize(minw, minh)];
+    [(NSWindow *)panel setContentMaxSize:NSMakeSize(maxw, maxh)];
 
     [(NSWindow *)panel setContentView:cv];
     [cv release];
@@ -212,12 +215,14 @@ static int PawClip_AttachOnMain(int width, int height, char *err, int errlen) {
     return 0;
 }
 
-int paw_attach(int width, int height, char *err, int errlen) {
+int paw_attach(int width, int height, int minw, int minh, int maxw, int maxh,
+               char *err, int errlen) {
     __block int rc = 0;
     __block PawMsgBuf mb;
     mb.msg[0] = '\0';
     PawClip_OnMain(^{
-        rc = PawClip_AttachOnMain(width, height, mb.msg, (int)sizeof(mb.msg));
+        rc = PawClip_AttachOnMain(width, height, minw, minh, maxw, maxh,
+                                  mb.msg, (int)sizeof(mb.msg));
     });
     if (rc != 0) snprintf(err, errlen, "%s", mb.msg);
     return rc;
