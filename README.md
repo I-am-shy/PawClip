@@ -171,7 +171,55 @@
 | Xcode CLT | 必需（macOS 侧 cgo 编译） |
 | Node | 20+（仅前端构建需要；图标产物已入库，纯 Go 侧构建不需要） |
 
-### 命令
+### 本地开发（改代码时看效果）
+
+**能直接热重载开发，不必每次打包安装。** 一条命令：
+
+```bash
+scripts/dev.sh            # 启动开发模式（带热重载）
+scripts/dev.sh -browser   # 额外参数透传给 wails dev
+```
+
+起来之后：
+
+| 你改了什么 | 会发生什么 |
+|---|---|
+| 前端 `frontend/src/**` | Vite HMR，存盘即生效，**不用重启** |
+| Go `**/*.go` | Wails 自动重新编译并重启 App（默认只监听 `.go`） |
+
+两个本地端口：
+
+| 地址 | 是什么 |
+|---|---|
+| `http://localhost:5173` | Vite 的站点，只有前端资源 |
+| `http://localhost:34115` | Wails dev server：**在浏览器里也能调绑定的 Go 方法**，调 UI 交互时很方便 |
+
+> 浏览器里没有原生部分——`NSPanel`、`⌘⇧V` 热键、托盘只有 App 进程里才有。
+> 面板行为（免抢焦点、失焦收起）必须在 App 里验。
+
+**为什么开发也要走 `scripts/dev.sh`，不能直接 `wails dev`：** 同样是那个构建标签——
+不带 `sqlite_fts5` 时全文检索会**静默降级**成逐行匹配，于是开发时最容易得出的错误结论
+就是"搜索怎么感觉不准"，然后去改检索代码，而真正的问题是构建标签。另外 `wails dev`
+默认读写**真实数据目录**（`~/Library/Application Support/PawClip`），开发时反复重启会
+一边写你的真实剪贴板历史、一边把 debug 日志刷满真实剪贴板内容；包装脚本默认给一个隔离
+的运行目录（`.workbuddy/tmp/pawclip-dev/`）。想对着真实数据调试就
+`PAWCLIP_DEV_REAL=1 scripts/dev.sh`。
+
+<details>
+<summary>启动时那行 <code>flag provided but not defined: -config</code> 是正常的</summary>
+
+`wails dev` 用 `-appargs` 把参数转给 App，同时它自己的 dev flagset 也会去解析
+`os.Args`。Wails 源码在那处的注释写的是 "Parse args but ignore errors in case
+`-appargs` was used to pass in args for the app" ——也就是说这个报错是**有意容忍**的，
+发生在你的 `-config` 已经生效之后，不影响运行。确认方式：日志里能看到
+`db=…/.workbuddy/tmp/pawclip-dev/pawclip.db`。
+
+</details>
+
+> 只想改样式、不需要后端数据时，也可以 `cd frontend && npm run dev` 单独跑 Vite。
+> 但拿不到绑定的 Go 方法（列表/搜索都是空的），日常开发还是用 `scripts/dev.sh`。
+
+### 打包
 
 ```bash
 # 构建 .app —— 一定用这个包装脚本，别直接 wails build
@@ -180,18 +228,24 @@ scripts/build.sh -platform darwin/universal           # 通用二进制（Intel 
 scripts/build.sh -platform windows/amd64 -nsis        # Windows + 安装程序
 scripts/build.sh -platform darwin/universal -clean    # 清干净重来
 
-# 跑测试（两个开关都不能省，理由见下）
-go test -tags sqlite_fts5 -p 1 -count=1 ./...         # 257 条用例 / 9 个包
-
-# 对打包好的 .app 做真机验收（真剪贴板、真磁盘、真 SIGKILL；会覆盖你当前的剪贴板）
-scripts/accept.sh
-
-# 看一遍捕获链路（启动真实 App → 模拟复制 → 查库）
-scripts/demo-m1.sh
-
 # 打包成可分发压缩包
 ditto -c -k --sequesterRsrc --keepParent build/bin/pawclip.app build/dist/PawClip-macos-universal.zip
 ```
+
+### 测试与验收
+
+```bash
+test/run.sh                    # 一条命令跑全部：格式 → 静态检查 → 单测 → 前端检查
+test/run.sh --short            # 跳过规模测试（10 万条检索延迟、5 MB 图片）
+test/run.sh --build --accept   # 发布前的完整口径：重新出包 + 对产物做真机验收
+```
+
+`test/run.sh --help` 是权威用法，分层说明与"为什么 Go 单测不在 `test/` 目录"见
+[`test/README.md`](test/README.md)。**`accept.sh` 会覆盖你当前的系统剪贴板。**
+
+**为什么要用 `test/run.sh` 而不是手敲 `go test`：** 它跑的每条命令都和 CI 一模一样
+（同一个标签、同一个 `-p 1`、同一个 `-count=1`）。本机绿了 CI 就该绿——"我本地明明是好的"
+这类分歧，多半来自两边参数不一致。
 
 **为什么构建必须走 `scripts/build.sh`：**
 FTS5 全文索引依赖 `sqlite_fts5` 构建标签，而 `wails.json` 的 schema **没有**任何字段能持久化
@@ -203,8 +257,8 @@ Go 构建标签（只有 CLI 的 `-tags`）。直接 `wails build` 出来的产�
 5MB 图片捕获延迟）。`go test` 默认并行跑包，CPU 被抢满时这些数字会飙到 2–3 倍——那是机器被占满，
 不是产品退化。串行让度量条件稳定，总耗时基本不变。
 
-**`accept.sh` 与 `go test` 是两件事，缺一不可：**
-单测证明「逻辑正确」（注入假后端、可重复）；`accept.sh` 证明「这个产物真能跑」——
+**`test/accept.sh` 与 `go test` 是两件事，缺一不可：**
+单测证明「逻辑正确」（注入假后端、可重复）；`test/accept.sh` 证明「这个产物真能跑」——
 签名坏了、`Info.plist` 丢了 `LSUIElement`、构建漏了标签，这些**一条单测都不会红**，
 但用户一定打不开或功能少一半。实测结果见 [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)。
 
@@ -222,11 +276,16 @@ pawclip/
 ├─ writer.go / tray.go / autostart.go / i18n.go   # 回贴、托盘、开机自启、后端文案
 ├─ panel/                              # 免抢焦点面板与全局热键的平台实现
 ├─ frontend/                           # React + Vite + TypeScript（无 UI 组件库）
-├─ assets/icon/  scripts/              # 图标源图与生成物、构建与验收脚本
+├─ assets/icon/                        # 图标源图与生成物
+├─ scripts/                            # build.sh（构建）· dev.sh（本地开发）· 图标工具
+├─ test/                               # run.sh（总入口）· accept.sh（产物验收）· check-i18n.mjs
 ├─ poc/                                # M0 技术门禁验证（含可直接复用的面板 cgo 代码）
 ├─ docs/                               # 开发文档：设计规格 / 格式规范 / 验收报告
 └─ README.md                           # 本文件：功能 · 安装 · 使用 · 构建
 ```
+
+> `*_test.go` 仍与被测的包**同目录**（Go 工具链的要求，也是访问包内未导出符号的前提），
+> 所以 `test/` 里没有单测；它收的是可独立执行的测试资产。详见 [`test/README.md`](test/README.md)。
 
 ---
 
@@ -249,6 +308,7 @@ pawclip/
 | [`docs/DESIGN.md`](docs/DESIGN.md) | **唯一权威设计规格**（16 节 + 附录 A）：架构、数据模型与 DDL、过期策略、双平台踩坑、里程碑、优化清单 |
 | [`docs/README.md`](docs/README.md) | 开发文档索引：技术栈、已锁定决策、功能分期、开工三坑、构建与验收口径 |
 | [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) | §12 全项验收的实测结果、归因与已知遗留 |
+| [`test/README.md`](test/README.md) | 测试分层与验收口径：各层证明什么、`accept.sh` 的三种结论、三条硬口径 |
 | [`docs/BACKUP-FORMAT.md`](docs/BACKUP-FORMAT.md) | `.clipbak` 备份包格式规范（含第三方消费指南） |
 | [`docs/HANDOFF-PROMPT.md`](docs/HANDOFF-PROMPT.md) | M1 开工时的提示词存档（历史文件） |
 | `poc/` | M0 技术门禁验证：报告 + 可运行工程 |
