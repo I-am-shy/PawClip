@@ -101,6 +101,17 @@ func main() {
 
 	log := newLogger(boot.Log.Level)
 
+	// §12 的空闲内存要能和"Wails/WebKit 占了多少"分开，否则 55MB 这样的
+	// 数字无法归因：是 Go + SQLite + 捕获链路的开销，还是建窗口拉起来的
+	// WebView 框架？判据只有一个——**建窗口之前**量一次。
+	// wails.Run 一返回，窗口与 WebKit 就已经起来了，之后再量都太晚，
+	// 所以这条基线必须打在 wails.Run 之前。
+	// 与 resprobe.go 的两条「资源快照」（第 5s / 第 25s）一起看，三点连成
+	// 一条曲线：基线 → 刚建完窗口 → 稳态。
+	if rss := ownRSSBytes(); rss >= 0 {
+		log.Debug("启动基线（wails.Run 之前，窗口与 WebView 都还没有）", "rssMB", rss/(1024*1024))
+	}
+
 	// NewApp 零副作用（不开库、不碰磁盘），所以 `wails build` 生成绑定时
 	// 跑这一遍是廉价且安全的。真正的初始化在 startup 里。见 app.go 的说明。
 	app := newApp(boot, cfgPath, log, bootWarn)

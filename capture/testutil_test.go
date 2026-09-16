@@ -176,7 +176,27 @@ type pipeline struct {
 
 // newTestPipeline 起一条完整的落库链路：真 DB + 真 BlobStore + 真 Writer，
 // 只有剪贴板后端是假的。
+//
+// 写入器用**加快的**合批窗口（5ms / 10 条）——功能测试关心的是"落库结果对不对"，
+// 不该被 50ms 的合批窗口拖成几十秒。需要按**生产参数**测延迟的用例
+// （latency_test.go）走 newProdPipeline。
 func newTestPipeline(t *testing.T, b clipboard.Backend, cfg Config) *pipeline {
+	t.Helper()
+	return newTestPipelineWith(t, b, cfg, store.WriterConfig{
+		FlushInterval: 5 * time.Millisecond,
+		BatchMax:      10,
+	})
+}
+
+// newProdPipeline 用 WriterConfig 的**默认值**（合批窗口 50ms / 20 条，
+// 全部来自 store.WriterConfig.withDefaults）起链路，供 §12 的延迟验收使用。
+func newProdPipeline(t *testing.T, b clipboard.Backend) *pipeline {
+	t.Helper()
+	return newTestPipelineWith(t, b, DefaultConfig(), store.WriterConfig{})
+}
+
+// newTestPipelineWith 是上面两个的公共实现。
+func newTestPipelineWith(t *testing.T, b clipboard.Backend, cfg Config, wcfg store.WriterConfig) *pipeline {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -191,10 +211,7 @@ func newTestPipeline(t *testing.T, b clipboard.Backend, cfg Config) *pipeline {
 	if err != nil {
 		t.Fatalf("store.NewBlobStore: %v", err)
 	}
-	w, err := store.NewWriter(db, blobs, store.WriterConfig{
-		FlushInterval: 5 * time.Millisecond,
-		BatchMax:      10,
-	}, quietLogger())
+	w, err := store.NewWriter(db, blobs, wcfg, quietLogger())
 	if err != nil {
 		t.Fatalf("store.NewWriter: %v", err)
 	}

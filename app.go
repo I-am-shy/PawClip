@@ -150,6 +150,11 @@ func (a *App) startup(ctx context.Context) {
 		"capture.enabled", a.settings.Capture.Enabled,
 		"capture.types", a.settings.Capture.Types,
 	)
+
+	// §12「空闲内存 / 空闲 CPU」的取证手段。详见 resprobe.go：
+	// 让进程自己按 Debug 级别打资源快照，验收脚本据此算窗口内的 CPU 占用，
+	// 免掉"从外面读一个进程的统计信息"这条路（ps/top 在受限环境下会被拒）。
+	a.startResourceProbes(a.runCtx)
 }
 
 // initialize 打开库、建好整条链路并启动它。

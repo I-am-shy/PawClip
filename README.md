@@ -7,14 +7,24 @@
 
 ---
 
-## 当前状态：M1 已完成（捕获链路 + 落库）
+## 当前状态：M1–M4 已完成（可日用）
 
-**M1 已交付**：工程骨架、`store/` 持久化层、`clipboard/` 双平台后端、`capture/` 捕获流水线，
-`main` 10 / `store` 50 / `clipboard` 59 / `capture` 22 = **141 条测试全绿**，
-`scripts/build.sh` 可产出可运行的 `.app`。M1 是**纯后端**，没有历史列表 UI —— 想"看效果"请用
-下面「怎么构建与验收」。
+**已交付**：捕获链路（文本 / 图片 / 文件）、SQLite + FTS5 中文检索（trigram 两段式 + 1–2 字 LIKE 兜底）、
+免抢焦点面板（⌘⇧V）、回贴与 ⌘1..9 直贴、分类与标签、三级 TTL 与回收站、`.clipbak` 导出导入、
+统计面板、开机自启、中英双语、内容转换器、连续粘贴、拼音首字母检索。
 
-**下一步**：M2（搜索面板、回贴/自动粘贴、回收站与保留策略、设置 UI、免抢焦点面板）。
+```bash
+go test -tags sqlite_fts5 -p 1 -count=1 ./...   # 257 条用例 / 10 个包 → 全绿
+scripts/build.sh                                 # → build/bin/pawclip.app（universal，ad-hoc 签名）
+scripts/accept.sh                                # 对打包产物做真机验收
+```
+
+**`scripts/accept.sh` 20/21 通过**，唯一未达标的是 §12 的「空闲常驻内存 ≤ 30 MB」：
+实测稳态 **54 MB**，其中 **41 MB 是 Wails 建的窗口 + WebView**（同一进程在 `wails.Run` 之前只有 13 MB）。
+判据里的「面板销毁态」需要面板闲置销毁才能成立，而它在 Wails v2.16 的单窗口模型下做不了
+（见 §13 与下面「已知遗留」）。其余 9 项指标全部实测达标，见文末「验收结果」。
+
+**下一步**：把常驻内存收进 30 MB（唯一实质缺口），以及 Windows 侧的真机验证（本期只在 macOS 上实测）。
 
 ---
 
@@ -101,14 +111,18 @@ FTS5 的 `trigram` 分词器要求查询词 **≥ 3 字符**，1–2 字（含�
 ## 怎么构建与验收
 
 ```bash
-# 跑测试（-tags sqlite_fts5 必须带，否则 store 包会因为缺 fts5 模块而失败）
-go test ./... -tags sqlite_fts5
+# 后端全量测试。两个开关都不能省，理由见下面。
+go test -tags sqlite_fts5 -p 1 -count=1 ./...
 
 # 构建 .app —— 一定用这个包装脚本，别直接 wails build
 scripts/build.sh                          # 默认 darwin/arm64
+scripts/build.sh -platform darwin/universal
 scripts/build.sh -platform windows/amd64  # 透传任意 wails build 参数
 
-# 看懂 M1 到底干了什么（启动真实 App → 模拟复制 → 查库）
+# 成品验收：对打包好的 .app 做真机实跑（真剪贴板、真磁盘、真 SIGKILL）
+scripts/accept.sh
+
+# 看懂 M1 那条捕获链路（启动真实 App → 模拟复制 → 查库）
 scripts/demo-m1.sh
 
 # 真机验收（会覆盖你当前的系统剪贴板）
@@ -120,6 +134,21 @@ FTS5 全文索引依赖 `sqlite_fts5` 构建标签，而 `wails.json` 的 schema
 Go 构建标签的字段（只有 CLI 的 `-tags`）。直接 `wails build` 出来的产物缺 fts5 模块，
 `store.Open` 会按设计**优雅降级**——打一行 WARN 然后退回 LIKE 检索，进程照常启动。
 也就是说全文检索会**静默失效**，不查日志根本发现不了。包装脚本把标签钉死，避免这个坑。
+同一纪律在 `.github/workflows/release.yml` 里也复用（那个 job 走的就是这个脚本）。
+
+**为什么测试要带 `-p 1`：**
+本仓库有两类**按墙上时间取证**的规模测试（store 的 10 万条检索延迟、capture 的 5MB 图片捕获
+延迟）。`go test` 默认并行跑包，CPU 被 10 个包抢满时这些数字会飙到 2–3 倍——那是机器被占满，
+不是产品退化。串行跑让度量条件稳定，总耗时基本不变。
+
+**为什么测试要带 `-tags sqlite_fts5`：**
+缺了这个标签，`store` 会因为 fts5 模块不存在而**跳过**一批全文检索用例（而不是变红）——
+静默降级的另一种形态。
+
+**`scripts/accept.sh` 与 `go test` 的分工**（两者缺一不可）：
+单测证明"逻辑正确"（注入假后端、可重复）；accept.sh 证明"这个产物真能跑"——
+签名坏了、`Info.plist` 丢了 LSUIElement、构建漏了标签，这些**一条单测都不会红**，
+但用户一定打不开或功能少一半。
 
 ---
 
@@ -138,12 +167,47 @@ NODE_PATH=<node_modules> node scripts/build-icons.cjs
 
 ---
 
-## 验收标准（§12 摘录）
+## 验收结果（DESIGN §12 全项）
 
-| 项 | 指标 |
-|---|---|
-| 无自捕获 | 连续 100 次面板回贴，历史条目数增加为 **0** |
-| 去重正确性 | 同一内容复制 100 次，库中始终 **1 行**且 `use_count = 100` |
-| 断电安全 | 捕获过程中强杀进程，重启后库可正常打开且无半截记录 |
-| 空闲内存（面板销毁态） | macOS ≤ 30 MB；Windows ≤ 25 MB |
-| 检索延迟 | ≥3 字 < 50 ms @ 10 万条；1–2 字 LIKE < 300 ms |
+实测环境：macOS / Apple Silicon，2026-09-16。单测口径为 `go test -tags sqlite_fts5 -p 1`；
+真机口径为 `scripts/accept.sh`（对 `build/bin/pawclip.app` 实跑）。
+
+| 项 | §12 指标 | 实测 | 取证方式 | 结论 |
+|---|---|---|---|---|
+| 捕获延迟（文本） | < 30 ms | 流水线 p95 **1.2 ms**（端到端含 50ms 合批窗口约 48 ms） | `capture` `TestCaptureLatencyText` | ✅ |
+| 捕获延迟（5 MB 图片） | < 200 ms | 1600×1200 噪声 PNG（5.8 MB）端到端中位数 **108 ms** | `capture` `TestCaptureLatencyImageAt5MB` | ✅ |
+| 检索延迟（≥3 字） | < 50 ms @ 10 万条 | 3 字中文 p95 **2.5 ms**；4 字 **4.9 ms**；英文 **4.5 ms**；中英混排 **4.4 ms** | `store` `TestSearchLatencyAt100k` | ✅ |
+| 检索延迟（2 字 LIKE） | < 300 ms | p95 **0.67 ms**（中/英） | 同上 | ✅ |
+| 空闲内存 | macOS ≤ 30 MB（面板销毁态） | 稳态 **54 MB**；`wails.Run` 之前基线 13 MB → **窗口+WebView 约 41 MB** | `scripts/accept.sh` ③（进程自报快照） | ❌ 见下 |
+| 空闲 CPU | macOS < 1% | **0.33–0.42%**（20 秒窗口，已排除启动开销） | 同上 | ✅ |
+| 无自捕获 | 连续 100 次回贴 → 新增 0 | 100 次回贴后 `CountAlive` 仍为 1，守卫拦下 100 次 | `capture` `TestAcceptance1_NoSelfCapture` | ✅ |
+| 去重正确性 | 复制 100 次 → 1 行、`use_count=100` | 真机 `pbcopy` 100 次 → 1 行、`use_count=100` | `capture` `TestAcceptance2` + `accept.sh` ⑥ | ✅ |
+| 搜索正确性 | 1/2/3 字、英文、混排、大小写、特殊字符 | 全部命中符合预期（含 2 字走 LIKE 的分支） | `store` `TestSearch_CorrectnessTable` / `TestSearchCorrectnessAtTwoChars` | ✅ |
+| 导出完整性 | 导出→清库→导入，全字段一致 | 条目/内容/分类/标签/置顶/过期时间逐项比对一致 | `backup` `TestAcceptance1_ExportThenImportPreservesEverything` | ✅ |
+| 导入幂等 | 同包导入两次，第二次全跳过 | 第二次全部走跳过，库中无重复 | `backup` `TestAcceptance2_ImportTwiceIsIdempotent` | ✅ |
+| 断电安全 | 捕获中强杀，重启后可开库且无半截记录 | 真机 SIGKILL → 重启走「标记 → integrity_check=ok」→ 无悬空 blob | `capture` `TestAcceptance3_Kill9Recovery` + `accept.sh` ⑦ | ✅ |
+| （附）前端体积 | §14 第 14 条：gzip 后 < 150 KB | gzip **69.3 KB**（JS 65.4 + CSS 3.7） | `npm run build` 产物实测 | ✅ |
+
+**关于唯一未达标的「空闲内存」**：数字本身是真的，归因也是确定的——
+`wails.Run` 之前进程只有 13 MB，把窗口与 WebView 建出来之后就是 53–55 MB。
+也就是说超出的 41 MB 全在 Wails/WebKit 侧，Go + SQLite + 捕获链路那部分只占十几 MB。
+而 §12 的判据写的是「**面板销毁态**」：它默认面板闲置时会被销毁、把 WebView 一起还回去。
+本实现做不到这件事，因为 Wails v2.16 的单窗口模型只导出 `Show/Hide/Quit`，
+**没有窗口销毁与重建 API**（销毁了就没法再显示，那比内存超标更糟）。
+所以当前实现改成"按空闲阈值收起面板"，并把这个事实与实测数字摆在 `PanelLifecycle()` 里
+（见 §13 已列风险、§14 第 10 条）。
+
+要真正收进 30 MB，需要换掉 Wails 的单窗口模型（改成启动时不建窗口、首次呼出时才创建，
+或改用能销毁/重建窗口的方案）。那是一次架构改动，不属于本期打磨范围。
+
+---
+
+## 已知遗留
+
+| 项 | 现状 | 影响 |
+|---|---|---|
+| 空闲常驻内存 54 MB | 面板闲置销毁做不了（Wails v2.16 单窗口无重建 API） | §12 唯一未达标项；面板收起后内存仍在 |
+| Windows 真机未验证 | 只有 `CGO_ENABLED=0` 交叉编译烟测 + `windows-2022` 上的正式构建 | 只能证明"能编过"；剪贴板/热键/托盘的实际行为未在真机测过 |
+| 辅助功能授权未授予 | 真机验收里 `axTrusted: 0` | 自动粘贴不可用，降级为"只复制"（§13 已列，行为正确） |
+| Linux | 只有接口骨架 | 按 §11 的边界，本期不投入 |
+
