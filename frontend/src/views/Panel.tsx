@@ -52,7 +52,10 @@ export function Panel(p: PanelProps) {
 
   // ── 检索与列表状态 ─────────────────────────────────────────────
   const [text, setText] = useState('')
-  const [kinds, setKinds] = useState<string[] | null>(null)
+  // 类型筛选是**单选**：null = 全部，否则是 SearchBar 里某个组的 key。
+  // 用单值而不是数组，是为了让"同时选中文本和图片"这种状态在类型上
+  // 就不可能出现——它是界面上的非法状态，不该靠约定去避免。
+  const [kind, setKind] = useState<string | null>(null)
   const [pinnedOnly, setPinnedOnly] = useState(false)
   const [categoryId, setCategoryId] = useState<number | null>(null)
   const [uncategorized, setUncategorized] = useState(false)
@@ -97,8 +100,8 @@ export function Panel(p: PanelProps) {
   // nonce 也在里面：它表达"条件没变，但请再查一次"。
   const filterKey = useMemo(
     () =>
-      JSON.stringify({ debouncedText, kinds, pinnedOnly, trashed, categoryId, uncategorized, tagId, nonce }),
-    [debouncedText, kinds, pinnedOnly, trashed, categoryId, uncategorized, tagId, nonce],
+      JSON.stringify({ debouncedText, kind, pinnedOnly, trashed, categoryId, uncategorized, tagId, nonce }),
+    [debouncedText, kind, pinnedOnly, trashed, categoryId, uncategorized, tagId, nonce],
   )
 
   useEffect(() => {
@@ -110,7 +113,7 @@ export function Panel(p: PanelProps) {
     base.categoryId = categoryId
     base.uncategorized = uncategorized
     base.tagId = tagId
-    const opts = buildOpts(base, debouncedText, kinds, pinnedOnly, trashed)
+    const opts = buildOpts(base, debouncedText, kind, pinnedOnly, trashed)
 
     call('List', opts)
       .then((pg) => {
@@ -155,7 +158,7 @@ export function Panel(p: PanelProps) {
     base.uncategorized = uncategorized
     base.tagId = tagId
     base.cursor = cursor
-    const opts = buildOpts(base, debouncedText, kinds, pinnedOnly, trashed)
+    const opts = buildOpts(base, debouncedText, kind, pinnedOnly, trashed)
     call('List', opts)
       .then((pg) => {
         setRows((prev) => [...prev, ...(pg.rows ?? [])])
@@ -164,7 +167,7 @@ export function Panel(p: PanelProps) {
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false))
-  }, [cursor, loading, debouncedText, kinds, pinnedOnly, trashed, categoryId, uncategorized, tagId])
+  }, [cursor, loading, debouncedText, kind, pinnedOnly, trashed, categoryId, uncategorized, tagId])
 
   // ── 连续粘贴（§11 P2）─────────────────────────────────────────
   //
@@ -452,8 +455,8 @@ export function Panel(p: PanelProps) {
           t={t}
           text={text}
           onText={setText}
-          kinds={kinds}
-          onKinds={setKinds}
+          kind={kind}
+          onKind={setKind}
           pinnedOnly={pinnedOnly}
           onPinnedOnly={setPinnedOnly}
           trashed={trashed}

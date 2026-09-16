@@ -189,7 +189,7 @@ code.path,
   cursor: pointer;
 }
 
-.navbtn:hover {
+.navbtn:hover:not(.navbtn-on) {
   background: var(--bg-hover);
   color: var(--fg);
 }
@@ -336,8 +336,9 @@ code.path,
 }
 
 .chip {
-  padding: 1px 8px;
-  border: 1px solid var(--border);
+  padding: 1px 9px;
+  /* 扁平化：chip 是纯色块，不描边——未选中"没有底色"，选中才染色。 */
+  border: 0;
   border-radius: 999px;
   background: transparent;
   color: var(--fg-dim);
@@ -346,15 +347,28 @@ code.path,
   cursor: pointer;
 }
 
-.chip:hover {
+/* ⚠️ hover 一律排除选中态（:not(…-on)）：`.x:hover` 的特异性 (0,2,0) 高于
+   `.x-on` (0,1,0)，不加 :not() 的话，鼠标悬在**已选中**的项上时选中态
+   会被 hover 的灰色盖掉——视觉上像"选中丢了"。这个坑在 chip/tab/navbtn/
+   treeitem/item 五处都存在，修法一致。 */
+.chip:hover:not(.chip-on) {
   color: var(--fg);
-  border-color: var(--border-strong);
+  background: var(--bg-hover);
 }
 
 .chip-on {
   background: var(--bg-active);
-  border-color: transparent;
   color: var(--accent);
+}
+
+/* 「三选一的类型」与「置顶/回收站这两个独立开关」之间的分隔线。
+   没有它，六个 chip 看起来像同一组，会让人以为只能选一个。 */
+.chip-sep {
+  width: 1px;
+  height: 12px;
+  flex: none;
+  margin: 0 1px;
+  background: var(--border-strong);
 }
 
 .searchbar-count {
@@ -423,7 +437,7 @@ code.path,
   cursor: pointer;
 }
 
-.treeitem:hover {
+.treeitem:hover:not(.treeitem-on) {
   background: var(--bg-hover);
   color: var(--fg);
 }
@@ -480,7 +494,7 @@ code.path,
   border-left: 2px solid transparent;
 }
 
-.item:hover {
+.item:hover:not(.item-selected) {
   background: var(--bg-hover);
 }
 
@@ -783,16 +797,23 @@ code.path,
   align-items: center;
   gap: 5px;
   padding: 4px 10px;
-  border: 1px solid var(--border-strong);
+  /* 扁平化：去掉描边，改用"浮层底色 + 极轻投影"把按钮托起来。
+     为什么不用下沉色块（--bg-sunken）：它和页面底色 --bg 只差几个色阶，
+     按钮落在页面底（设置页、分类/标签页）上会几乎看不见；而 --bg-panel
+     在白色浮层（batchbar、预览）上又靠投影划边。两种落点都成立只有这一种。 */
+  border: 0;
   border-radius: var(--radius-sm);
   background: var(--bg-panel);
+  box-shadow: var(--shadow-card);
   color: var(--fg);
   font: inherit;
   cursor: pointer;
 }
 
 .btn:hover:not(:disabled) {
-  background: var(--bg-hover);
+  /* 用 brightness 而不是换一个底色：--bg-panel 在浅色主题是白的、深色主题
+     是深灰，"提亮"这个方向在两边都成立，换底色则要按主题各写一条。 */
+  filter: brightness(1.06);
 }
 
 .btn:disabled {
@@ -853,7 +874,8 @@ code.path,
 .input {
   height: 26px;
   padding: 0 6px;
-  border: 1px solid var(--border);
+  /* 扁平化：输入框也是"下沉色块"，边框只在聚焦时出现（见 .input:focus）。 */
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: var(--bg-sunken);
   color: var(--fg);
@@ -1146,9 +1168,11 @@ select.input {
 
 .statcard {
   padding: 9px 10px;
-  border: 1px solid var(--border);
+  /* 扁平化：统计卡是"贴地白卡"，靠极轻的投影与页底分开，不描边。 */
+  border: 0;
   border-radius: var(--radius);
   background: var(--bg-panel);
+  box-shadow: var(--shadow-card);
 }
 
 .statcard-v {
@@ -1267,7 +1291,8 @@ select.input {
 
 .tab {
   padding: 4px 12px;
-  border: 1px solid var(--border);
+  /* 扁平化：和 chip 同一套语义——不选中无底色，选中染 accent。 */
+  border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--fg-dim);
@@ -1275,10 +1300,14 @@ select.input {
   cursor: pointer;
 }
 
-.tab-on {
-  background: var(--bg-panel);
-  border-color: var(--border-strong);
+.tab:hover:not(.tab-on) {
   color: var(--fg);
+  background: var(--bg-hover);
+}
+
+.tab-on {
+  background: var(--bg-active);
+  color: var(--accent);
 }
 
 .pane {

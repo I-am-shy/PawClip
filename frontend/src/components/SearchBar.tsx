@@ -11,9 +11,9 @@ export type SearchBarProps = {
   t: TFn
   text: string
   onText: (v: string) => void
-  /** 当前正在筛选的类型组；null = 不限 */
-  kinds: string[] | null
-  onKinds: (k: string[] | null) => void
+  /** 当前选中的类型组；null = 全部（不限类型）。**单选**，见 KIND_FILTERS */
+  kind: string | null
+  onKind: (k: string | null) => void
   pinnedOnly: boolean
   onPinnedOnly: (v: boolean) => void
   trashed: boolean
@@ -39,8 +39,14 @@ export type SearchBarProps = {
   inputRef: React.RefObject<HTMLInputElement>
 }
 
-/** 三个类型组：把用户的直觉分组映射到 `items.kind` 的具体取值。 */
-const KINDS: Array<{ key: string; labelKey: string; kinds: string[] }> = [
+/**
+ * 三个类型组：把用户的直觉分组映射到 `items.kind` 的具体取值。
+ *
+ * 数组本身是"单选"的候选项——界面上同时只有一个能选中（`kind === key`）。
+ * 分组是多对一的，一个组对应后端好几个 kind 值（见下面的对应关系），
+ * 所以真正发给后端的是展开后的 `kinds`，不是这里的 `key`。
+ */
+const KIND_FILTERS: Array<{ key: string; labelKey: string; kinds: string[] }> = [
   { key: 'text', labelKey: 'kind.text', kinds: ['text', 'html', 'rtf'] },
   // 'mixed' 归到"图片"：它几乎总是"浏览器里复制图片"产生的
   // （image + text 同时在剪贴板上）。归到"文本"会让筛选图片时漏掉它们，
@@ -51,17 +57,15 @@ const KINDS: Array<{ key: string; labelKey: string; kinds: string[] }> = [
 
 export function SearchBar(p: SearchBarProps) {
   const {
-    t, text, onText, kinds, onKinds,
+    t, text, onText, kind, onKind,
     pinnedOnly, onPinnedOnly, trashed, onTrashed,
     total, totalValid, loading, mode, ftsAvailable, showHint, onToggleHint, inputRef,
   } = p
 
-  const toggleKind = (key: string) => {
-    const cur = kinds ?? []
-    const next = cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]
-    // 全不选 = 不限，而不是"什么都不显示"。后者会让用户以为库空了。
-    onKinds(next.length === 0 ? null : next)
-  }
+  // 单选：点中的那一个成为唯一选中项。再点一次已选中的等于取消，回到「全部」
+  // ——与点「全部」同义，但符合"点一下切换"的直觉，也顺手修掉"选了之后
+  // 怎么回全部"这个疑问。
+  const selectKind = (key: string) => onKind(kind === key ? null : key)
 
   return (
     <div className="searchbar">
@@ -105,20 +109,40 @@ export function SearchBar(p: SearchBarProps) {
       </div>
 
       <div className="searchbar-filters">
-        {KINDS.map((k) => (
+        {/*
+          类型是**单选**：「全部」是一个真正的选项，而不是"一个都没选"。
+          之前是多选，于是"文本 + 图片"这种状态既不像全部也不像某一类，
+          列表里混着两类内容，跟用户点这个 chip 时的预期不符。
+        */}
+        <button
+          type="button"
+          className={`chip ${kind === null ? 'chip-on' : ''}`}
+          aria-pressed={kind === null}
+          onClick={() => onKind(null)}
+        >
+          {t('list.all')}
+        </button>
+
+        {KIND_FILTERS.map((k) => (
           <button
             key={k.key}
             type="button"
-            className={`chip ${(kinds ?? []).includes(k.key) ? 'chip-on' : ''}`}
-            onClick={() => toggleKind(k.key)}
+            className={`chip ${kind === k.key ? 'chip-on' : ''}`}
+            aria-pressed={kind === k.key}
+            onClick={() => selectKind(k.key)}
           >
             {t(k.labelKey)}
           </button>
         ))}
 
+        {/* 分隔线：左边是"三选一"，右边两个是各自独立的开关，
+            不加这条线它们看起来像同一组，会让人以为只能选一个。 */}
+        <span className="chip-sep" aria-hidden="true" />
+
         <button
           type="button"
           className={`chip ${pinnedOnly ? 'chip-on' : ''}`}
+          aria-pressed={pinnedOnly}
           onClick={() => onPinnedOnly(!pinnedOnly)}
         >
           {t('action.pin')}
@@ -127,6 +151,7 @@ export function SearchBar(p: SearchBarProps) {
         <button
           type="button"
           className={`chip ${trashed ? 'chip-on' : ''}`}
+          aria-pressed={trashed}
           onClick={() => onTrashed(!trashed)}
         >
           {t('list.trash')}
@@ -179,33 +204,28 @@ export function modeLabel(mode: string): string {
  * 直接把 'text' 发下去会**只命中 kind='text'**，把 kind='html'（网页复制的
  * 纯文本）与 'rtf' 全漏掉——而那两类恰恰是"文本"这个筛选词最该覆盖的。
  * 这个错法不会报错，只是结果少得莫名其妙，所以在本文件里就展开掉。
+ *
+ * `group` 是**单个**组键（界面是单选），null = 不限类型。认不出的组原样带上：
+ * 后端将来加了分组、前端还没跟上时，至少请求是它要的，而不是被这里静默丢掉。
  */
 export function buildOpts(
   base: ListOptions,
   text: string,
-  groups: string[] | null,
+  group: string | null,
   pinnedOnly: boolean,
   trashed: boolean,
 ): ListOptions {
   let kinds: string[] | null = null
-  if (groups && groups.length > 0) {
-    const set = new Set<string>()
-    for (const g of groups) {
-      const def = KINDS.find((k) => k.key === g)
-      // 认不出的组原样带上：后端将来加了分组、前端还没跟上时，
-      // 至少请求是它要的，而不是被这里静默丢掉。
-      if (def) for (const k of def.kinds) set.add(k)
-      else set.add(g)
-    }
-    kinds = [...set]
+  if (group) {
+    const def = KIND_FILTERS.find((k) => k.key === group)
+    kinds = def ? [...def.kinds] : [group]
   }
 
   return {
     ...base,
     text,
-    // 空集合传 null：后端把空切片与 null 都当作"不限"，
-    // 但 null 更明确，也少一次序列化。
-    kinds: kinds && kinds.length > 0 ? kinds : null,
+    // null = 不限。后端把空切片与 null 都当作"不限"，但 null 更明确。
+    kinds,
     pinnedOnly,
     trashed,
   }
