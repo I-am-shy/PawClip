@@ -12,7 +12,7 @@ import (
 
 // BlobURLPrefix 是缩略图 / 原图在 WebView 里的 URL 前缀。
 //
-// DESIGN §14 第 1 条是一条硬约束：
+// docs/DESIGN.md §14 第 1 条是一条硬约束：
 //
 //	**列表只传元数据，图片绝不走 IPC。** 图片/缩略图通过自定义协议直接交给
 //	WebView 加载（Wails 静态资源服务）。把 100 张缩略图 base64 塞进 IPC 会让

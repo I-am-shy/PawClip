@@ -10,7 +10,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// 本文件只负责**引导配置**（DESIGN.md §9.0）。
+// 本文件只负责**引导配置**（docs/DESIGN.md §9.0）。
 //
 // §9.0 定了一条硬规则：settings 表是运行时设置的唯一真源，只有三项
 // "打开数据库之前就必须读到"的配置留在 config.toml：
@@ -163,7 +163,7 @@ const defaultConfigTOML = `# PawClip 引导配置
 #
 # 这里**只有**三项：打开数据库之前就必须知道的东西。
 # 其余所有设置（捕获类型、排除应用、保留策略、主题……）都存在数据库的
-# settings 表里，由界面修改，不会回写到本文件。详见设计文档 §9.0。
+# settings 表里，由界面修改，不会回写到本文件。详见 docs/DESIGN.md §9.0。
 
 [database]
 # SQLite 文件路径。留空 = 放在平台默认数据目录：

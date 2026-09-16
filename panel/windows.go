@@ -15,7 +15,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Windows 面板实现。DESIGN §8 规定：
+// Windows 面板实现。docs/DESIGN.md §8 规定：
 //
 //	#5 面板抢焦点  → 窗口样式加 WS_EX_NOACTIVATE，不要调用 SetForegroundWindow
 //	托盘           → 通知区图标 + 右键菜单（Shell_NotifyIcon）
@@ -253,7 +253,7 @@ func New(h Handler) Controller { return newController(h) }
 //
 // RegisterHotKey 是线程相关的：WM_HOTKEY 只投到注册它的那个线程。
 // 所以开一个 LockOSThread 的专属线程跑消息泵，而不是复用 Wails 的 UI 线程
-// （DESIGN §8 #1 对剪贴板监听给了同样的理由：别和 UI 线程的事件循环耦合）。
+// （docs/DESIGN.md §8 #1 对剪贴板监听给了同样的理由：别和 UI 线程的事件循环耦合）。
 func (c *winController) runHotkeyThread() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -315,7 +315,7 @@ func unregisterHotkeyOnThisThread() { procUnregisterHotKey.Call(0, hotkeyID) }
 //
 // CmdOrCtrl 在这里落成 Ctrl —— 同一份设置 "CmdOrCtrl+Shift+V"
 // 在 macOS 上是 ⌘⇧V、在 Windows 上是 Ctrl+Shift+V，
-// 这正是那个写法存在的意义（DESIGN §9）。
+// 这正是那个写法存在的意义（docs/DESIGN.md §9）。
 func winHotkey(h Hotkey) (uint32, uint32, error) {
 	vk, ok := winVirtualKeys[h.Key]
 	if !ok {
@@ -372,7 +372,7 @@ func findWailsWindow() windows.Handle {
 func applyNoActivateStyle(hwnd windows.Handle) error {
 	style, _, _ := procGetWindowLongPtr.Call(uintptr(hwnd), gwlExStyle)
 	// WS_EX_TOOLWINDOW：不在任务栏与 Alt+Tab 出现（等价于 macOS 的 Accessory）
-	// WS_EX_NOACTIVATE：点击不激活（DESIGN §8 #5）
+	// WS_EX_NOACTIVATE：点击不激活（docs/DESIGN.md §8 #5）
 	want := style | wsExNoActivate | wsExToolWindow
 	if want&wsExAppWindow != 0 {
 		want &^= wsExAppWindow
@@ -508,7 +508,7 @@ func (c *winController) UnregisterHotkey() {
 
 // ── 托盘 ────────────────────────────────────────────────────────
 // 托盘要靠窗口句柄收回调消息，所以自建一个 message-only 窗口（HWND_MESSAGE），
-// 与剪贴板监听的做法一致（DESIGN §8 #1）。
+// 与剪贴板监听的做法一致（docs/DESIGN.md §8 #1）。
 var (
 	trayWndProcOnce sync.Once
 	trayWndProcPtr  uintptr

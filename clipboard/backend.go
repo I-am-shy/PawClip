@@ -4,7 +4,7 @@
 // Windows 走 golang.org/x/sys/windows（无需 cgo）。上层（捕获流水线、回写）
 // 完全平台无关。
 //
-// 接口签名严格照 DESIGN.md §2，不要改。
+// 接口签名严格照 docs/DESIGN.md §2，不要改。
 package clipboard
 
 import (
@@ -104,7 +104,7 @@ func (privateChecker) IsPrivate(r *Raw) bool {
 // tickClock 给各平台后端复用：把当前时间转成 Tick.AtMs。
 func tickClock(t time.Time) int64 { return t.UnixMilli() }
 
-// BackendConfig 是构造平台后端时的调参，取自 settings 表（DESIGN.md §9）。
+// BackendConfig 是构造平台后端时的调参，取自 settings 表（docs/DESIGN.md §9）。
 type BackendConfig struct {
 	// PollIntervalActiveMs ← capture.pollIntervalActiveMs（macOS 专用）
 	PollIntervalActiveMs int

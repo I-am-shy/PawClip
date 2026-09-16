@@ -17,7 +17,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Windows 后端。**完全不需要 cgo**（DESIGN.md 附录 A.1）：
+// Windows 后端。**完全不需要 cgo**（docs/DESIGN.md 附录 A.1）：
 // x/sys/windows + syscall.NewCallback 就能建 message-only 窗口、
 // 注册 AddClipboardFormatListener、读写各种剪贴板格式。
 //

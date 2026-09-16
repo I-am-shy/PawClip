@@ -13,7 +13,7 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
-// 本文件是 Windows 专属逻辑里**纯计算**的那部分（DESIGN.md §2 要求把它们抽成
+// 本文件是 Windows 专属逻辑里**纯计算**的那部分（docs/DESIGN.md §2 要求把它们抽成
 // 无平台依赖的纯函数，好在 macOS 上直接单测）：
 //
 //	CF_DIBV5 → PNG（读取方向）
@@ -50,7 +50,7 @@ var jpegMagic = []byte{0xFF, 0xD8, 0xFF}
 // ImageFromPNG 校验 PNG 并取出像素尺寸；PNG 字节**原样保留**。
 //
 // 原样保留很关键：items.fingerprint 定义成存储内容的 sha256
-// （BACKUP-FORMAT.md §3.5 要求 fingerprint 与 blob 的 sha256 一致），
+// （docs/BACKUP-FORMAT.md §3.5 要求 fingerprint 与 blob 的 sha256 一致），
 // 重新编码会改变字节、进而改变指纹、进而破坏 SelfWriteGuard。
 // macOS 侧 public.png 直接走这条路。
 func ImageFromPNG(data []byte) (*Image, error) {

@@ -110,7 +110,7 @@ int pb_read(pb_snapshot *out, char *err, int errlen) {
         }
         out->change_count = (long)[pb changeCount];
 
-        // ① 来源应用：必须在同一帧读（DESIGN.md §7 第 2 条）。
+        // ① 来源应用：必须在同一帧读（docs/DESIGN.md §7 第 2 条）。
         //    放在读内容之前，把"变更发生"到"记下是谁复制的"之间的窗口压到最小。
         NSRunningApplication *app = [[NSWorkspace sharedWorkspace] frontmostApplication];
         if (app != nil) {

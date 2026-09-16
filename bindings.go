@@ -15,7 +15,7 @@ import (
 	"github.com/zego/pawclip/transform"
 )
 
-// 本文件是**前端能调用的一切**（DESIGN §10 里 app.go 的职责）。
+// 本文件是**前端能调用的一切**（docs/DESIGN.md §10 里 app.go 的职责）。
 //
 // 三条自律：
 //
@@ -493,7 +493,7 @@ func (a *App) PasteText(text string) error {
 	return wb.PasteText(text)
 }
 
-// ── 内容转换器（DESIGN §11 P2）──────────────────────────────────
+// ── 内容转换器（docs/DESIGN.md §11 P2）──────────────────────────────────
 
 // TransformOpList 返回后端支持的转换 ID（顺序即菜单顺序）。
 //
@@ -569,7 +569,7 @@ func (a *App) PasteTransformed(id int64, op string, autoPaste bool) (*PasteResul
 	return out, a.localizeErr(err)
 }
 
-// PastePlain 去格式贴纯文本（DESIGN §11 P2 的第一条转换器）。
+// PastePlain 去格式贴纯文本（docs/DESIGN.md §11 P2 的第一条转换器）。
 //
 // 它不是"对文本做变换"，而是**选择条目的哪一种表示**：丢掉 HTML / RTF，
 // 只把纯文本写进剪贴板。落到支持富文本的 App 里不会再带字体和超链接。

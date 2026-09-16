@@ -1,6 +1,6 @@
 // Package panel 管住三件"必须和操作系统打交道"的界面能力：
 //
-//	① 免抢焦点面板   —— 热键呼出时不抢走前台 App 的键盘焦点（DESIGN §0.2）
+//	① 免抢焦点面板   —— 热键呼出时不抢走前台 App 的键盘焦点（docs/DESIGN.md §0.2）
 //	② 全局热键       —— macOS Carbon RegisterEventHotKey / Windows RegisterHotKey
 //	③ 托盘菜单 + 自动粘贴（模拟 ⌘/Ctrl+V）
 //
@@ -116,7 +116,7 @@ func Item(label string, a Action) TrayItem { return TrayItem{Label: label, Actio
 
 // Config 是构造面板时的调参。
 type Config struct {
-	// Hotkey 是全局热键，形如 "CmdOrCtrl+Shift+V"（DESIGN §9 的 ui.hotkey）。
+	// Hotkey 是全局热键，形如 "CmdOrCtrl+Shift+V"（docs/DESIGN.md §9 的 ui.hotkey）。
 	Hotkey string
 	// Width / Height 是面板尺寸（逻辑点）。
 	Width, Height int
@@ -186,7 +186,7 @@ var namedKeys = map[string]bool{
 //	Shift                                                        → Shift
 //	Alt / Option / Opt                                           → Alt
 //
-// `CmdOrCtrl` 是跨平台写法（DESIGN §9 的默认值就是它）：
+// `CmdOrCtrl` 是跨平台写法（docs/DESIGN.md §9 的默认值就是它）：
 // 在 macOS 上等价于 ⌘，在 Windows 上等价于 Ctrl。这里把两种修饰位都置上，
 // 由各平台自己决定忽略哪一个——这样解析结果与平台无关，也就能被
 // 平台无关的单测覆盖。
@@ -309,7 +309,7 @@ type Controller interface {
 
 	// SetActivationPolicyAccessory 把 App 切到"无 Dock 图标"模式。
 	//
-	// ⚠️ 它不只是美观需求：DESIGN §0.2 实测证明 Accessory 是
+	// ⚠️ 它不只是美观需求：docs/DESIGN.md §0.2 实测证明 Accessory 是
 	// 免抢焦点面板的**必要条件**，与"真 NSPanel"缺一不可。
 	// 首选做法是 build/darwin/Info.plist 里的 LSUIElement（进程启动前生效），
 	// 这个方法是在窗口已经建出来之后的兜底。

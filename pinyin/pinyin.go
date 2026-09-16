@@ -1,6 +1,6 @@
 // Package pinyin 把中文串压成拼音首字母串，用于"打首字母找中文"的检索。
 //
-// 典型用法（DESIGN §11 P2）：
+// 典型用法（docs/DESIGN.md §11 P2）：
 //
 //	Initials("文档管理")  // "wdgl"
 //	Initials("ZIM 文档")  // "zimwd"

@@ -16,7 +16,7 @@ func TestParseHotkey_OK(t *testing.T) {
 		in   string
 		want Hotkey
 	}{
-		// DESIGN §9 的默认值。CmdOrCtrl 必须落成独立的字段，
+		// docs/DESIGN.md §9 的默认值。CmdOrCtrl 必须落成独立的字段，
 		// 而不是"Cmd 与 Ctrl 都置上"——否则 macOS 上会注册出 ⌘+Ctrl+Shift+V。
 		{"CmdOrCtrl+Shift+V", Hotkey{Key: "V", CmdOrCtrl: true, Shift: true}},
 		{"CommandOrControl+Shift+V", Hotkey{Key: "V", CmdOrCtrl: true, Shift: true}},

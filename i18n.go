@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-// 后端字符串目录（DESIGN §14 第 24 条点名的"6 个易漏位置"）。
+// 后端字符串目录（docs/DESIGN.md §14 第 24 条点名的"6 个易漏位置"）。
 //
 // 前端有自己的 i18n（frontend/src/i18n.ts），但下面这些字符串**不经过前端**：
 //
@@ -104,7 +104,7 @@ const (
 	msgNotifySeqNext     msgKey = "notify.seqNext"
 	msgNotifySeqFinished msgKey = "notify.seqFinished"
 
-	// ── 内容转换器失败的原因（DESIGN §11 P2）──
+	// ── 内容转换器失败的原因（docs/DESIGN.md §11 P2）──
 	//
 	// 一条一个键，与 transform 包的 Kind 一一对应（见 transformErrKey）。
 	// 为什么不让 transform 包直接返回中文/英文：那个包是纯逻辑，

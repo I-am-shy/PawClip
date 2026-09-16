@@ -13,7 +13,7 @@ import (
 
 // ── 内容类型（kind）─────────────────────────────────────────────
 
-// 与 DESIGN.md §4.1 的 items.kind 取值一致。
+// 与 docs/DESIGN.md §4.1 的 items.kind 取值一致。
 const (
 	KindText  = "text"
 	KindHTML  = "html"
@@ -23,7 +23,7 @@ const (
 	KindMixed = "mixed"
 )
 
-// PreviewMaxChars 是列表摘要的截断长度（DESIGN.md §4.1：preview 截断 200 字符）。
+// PreviewMaxChars 是列表摘要的截断长度（docs/DESIGN.md §4.1：preview 截断 200 字符）。
 const PreviewMaxChars = 200
 
 // TextMaxCharsDefault 对应设置项 capture.textMaxChars 的默认值（保留前 256K 字符）。
@@ -197,7 +197,7 @@ func (c Content) Groups() []string {
 	return out
 }
 
-// Kind 归并出 items.kind（DESIGN.md §4.1 取值）。
+// Kind 归并出 items.kind（docs/DESIGN.md §4.1 取值）。
 //
 // 文本组内按"信息量"取最高的那个：html > rtf > text。HTML 剪贴板数据天然
 // 附带一份纯文本孪生体，若把这种情形判成 mixed，几乎每个网页复制都会是
@@ -247,7 +247,7 @@ func (c Content) Kind() string {
 	}
 }
 
-// Fingerprint 对**完整内容**做 sha256（DESIGN.md §14 第 16 条：超大文本
+// Fingerprint 对**完整内容**做 sha256（docs/DESIGN.md §14 第 16 条：超大文本
 // 截断存储但要保留完整指纹，否则去重会漏）。
 //
 // 编码方式：按固定顺序遍历各表示，每段用 <role 长度><role><内容长度><内容>
@@ -409,7 +409,7 @@ func isAlphaByte(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
-// Preview 生成列表摘要（DESIGN.md §4.1：截断 200 字符）。
+// Preview 生成列表摘要（docs/DESIGN.md §4.1：截断 200 字符）。
 //
 // imageW / imageH 仅对图片有意义，传 0 时退化为 "图片"。
 func Preview(c Content, kind string, imageW, imageH int) string {
@@ -490,7 +490,7 @@ func lastPathComponent(p string) string {
 // ── 去抖 ────────────────────────────────────────────────────────
 
 // Debouncer 合并连续的剪贴板变更：同一指纹在窗口内的重复事件被丢弃
-// （DESIGN.md §2「去抖设计」，默认 120ms）。
+// （docs/DESIGN.md §2「去抖设计」，默认 120ms）。
 //
 // 只记"最近一次指纹与时刻"，不维护 map——单次复制的重复写入都是紧挨着的，
 // 常量内存即可覆盖真实场景，也避免热路径上的 map 分配。

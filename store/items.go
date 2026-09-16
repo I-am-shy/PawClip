@@ -13,7 +13,7 @@ import (
 // ErrNotFound 表示按条件没查到条目。
 var ErrNotFound = errors.New("store: item not found")
 
-// Item 是 items 表的一行（DESIGN.md §4.1）。
+// Item 是 items 表的一行（docs/DESIGN.md §4.1）。
 //
 // 可空列用指针表达，避免 0 / "" 与 NULL 混淆——expires_at 的 NULL 正是
 // "永不过期"的语义，不能被压成 0。
@@ -50,7 +50,7 @@ const itemColumns = `id, kind, text_content, html_content, rtf_path, image_path,
 	category_id, pinned, first_seen_at, expires_at, ttl_source, created_at, last_used_at,
 	use_count, deleted_at, import_id`
 
-// upsertItemSQL 是写入路径的核心（DESIGN.md §4.3 / HANDOFF-PROMPT §4 第 3 条）。
+// upsertItemSQL 是写入路径的核心（docs/DESIGN.md §4.3 / docs/HANDOFF-PROMPT.md §4 第 3 条）。
 //
 // 三个不能改的细节：
 //

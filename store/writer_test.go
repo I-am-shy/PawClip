@@ -365,10 +365,10 @@ func TestWriter_ContextCancelDrainsRemaining(t *testing.T) {
 func TestWriter_ConfigDefaults(t *testing.T) {
 	c := WriterConfig{}.withDefaults()
 	if c.FlushInterval != 50*time.Millisecond {
-		t.Errorf("FlushInterval = %v, DESIGN.md §14 要求 50ms", c.FlushInterval)
+		t.Errorf("FlushInterval = %v, docs/DESIGN.md §14 要求 50ms", c.FlushInterval)
 	}
 	if c.BatchMax != 20 {
-		t.Errorf("BatchMax = %d, DESIGN.md §14 要求 20 条", c.BatchMax)
+		t.Errorf("BatchMax = %d, docs/DESIGN.md §14 要求 20 条", c.BatchMax)
 	}
 	if c.QueueSize != 512 {
 		t.Errorf("QueueSize = %d", c.QueueSize)

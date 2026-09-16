@@ -202,7 +202,7 @@ func TestSetCleanShutdownMarkerEnabled_False(t *testing.T) {
 
 // ── FTS5 / 中文检索契约 ────────────────────────────────────────
 //
-// 这一组锁定的是 DESIGN.md §4.2 的两段式策略。M1 不实现检索，
+// 这一组锁定的是 docs/DESIGN.md §4.2 的两段式策略。M1 不实现检索，
 // 但 schema 与分词器行为必须在 M2 动工前就被钉死，否则 M2 会返工。
 func TestFTS5_TrigramBoundary(t *testing.T) {
 	db := newTestDB(t)

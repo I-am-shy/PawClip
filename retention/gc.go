@@ -1,4 +1,4 @@
-// Package retention 实现 DESIGN.md §5 的过期与生命周期管理。
+// Package retention 实现 docs/DESIGN.md §5 的过期与生命周期管理。
 //
 // 它只做一件事：按固定顺序跑完 §5.2 那张流程表的每一步，并产出一份可读的
 // 报告。所有数据库细节都在 store 包里，这里只负责**顺序**与**策略**。

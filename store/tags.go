@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// 标签（DESIGN.md §4.1 的 tags / item_tags 两张表 / §11 的 P1 功能）。
+// 标签（docs/DESIGN.md §4.1 的 tags / item_tags 两张表 / §11 的 P1 功能）。
 //
 // 多对多，删除标签会级联清掉 item_tags（两张表上都是 ON DELETE CASCADE）。
 
@@ -68,7 +68,7 @@ func (d *DB) CreateTag(ctx context.Context, name, color string) (int64, error) {
 
 // EnsureTag 按名字取标签，不存在则建。返回 id 与"是否新建"。
 //
-// 导入时按名字匹配标签要用它：两台机器的 id 体系完全无关（BACKUP-FORMAT §8.2）。
+// 导入时按名字匹配标签要用它：两台机器的 id 体系完全无关（docs/BACKUP-FORMAT.md §8.2）。
 func (d *DB) EnsureTag(ctx context.Context, name, color string) (int64, bool, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {

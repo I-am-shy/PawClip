@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// 分类（DESIGN.md §4.1 的 categories 表 / §5.1 的②级 TTL / §11 的 P1 功能）。
+// 分类（docs/DESIGN.md §4.1 的 categories 表 / §5.1 的②级 TTL / §11 的 P1 功能）。
 //
 // rule 是 JSON 自动归类规则（§3.2 的 match/conditions 结构）。这里只负责
 // 存取，规则的**求值**在 classify.go 里——把存储与判定分开，规则求值才能

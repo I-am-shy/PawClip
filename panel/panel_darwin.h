@@ -3,7 +3,7 @@
 
 // PawClip 的 macOS 面板桥：免抢焦点面板 + 全局热键 + 托盘 + 自动粘贴。
 //
-// 免抢焦点的方案来自 M0 实测（DESIGN §0.2 / poc/wails-panel），两个必要条件
+// 免抢焦点的方案来自 M0 实测（docs/DESIGN.md §0.2 / poc/wails-panel），两个必要条件
 // **缺一不可**，且都在这一个文件里：
 //
 //   ① 真正 alloc/init 出一个 NSPanel（不要 object_setClass，实测必崩）
@@ -13,7 +13,7 @@
 // 必须先 orderFrontRegardless 再 makeKeyWindow。
 
 // 把 App 切到 Accessory 激活策略（等价于 Info.plist 的 LSUIElement）。
-// 越早调用越好——最好在窗口创建之前，见 DESIGN §7 第 7 条。
+// 越早调用越好——最好在窗口创建之前，见 docs/DESIGN.md §7 第 7 条。
 int paw_set_accessory(void);
 
 // NSApp.windows 里是否已经有窗口（用于等 Wails 建窗完成）。
@@ -48,7 +48,7 @@ void paw_tray_commit(void);
 void paw_tray_remove(void);
 
 // ── 自动粘贴 ────────────────────────────────────────────────────
-// 是否已获得"辅助功能"授权（DESIGN §7 第 4 条 / §13 风险表）。
+// 是否已获得"辅助功能"授权（docs/DESIGN.md §7 第 4 条 / §13 风险表）。
 int paw_is_trusted(void);
 // 弹出系统授权引导（打开"系统设置 → 隐私与安全性 → 辅助功能"）。
 void paw_request_trust(void);

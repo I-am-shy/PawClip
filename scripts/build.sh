@@ -3,7 +3,7 @@
 #
 # 为什么需要这个包装脚本，而不能直接 `wails build`：
 #
-#   store/schema.go 里的 FTS5 全文索引（HANDOFF-PROMPT §4 第 7 条要求）
+#   store/schema.go 里的 FTS5 全文索引（docs/HANDOFF-PROMPT.md §4 第 7 条要求）
 #   依赖 mattn/go-sqlite3 的 `sqlite_fts5` 构建标签。不带这个标签编译出来的
 #   二进制里没有 fts5 模块，`CREATE VIRTUAL TABLE ... USING fts5` 会失败。
 #

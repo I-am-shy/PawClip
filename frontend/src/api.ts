@@ -132,7 +132,7 @@ export type SequenceState = {
   total: number
 }
 
-// ── 内容转换器（DESIGN §11 P2）───────────────────────────────────
+// ── 内容转换器（docs/DESIGN.md §11 P2）───────────────────────────────────
 
 export type TransformResult = {
   op: string

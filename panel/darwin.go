@@ -74,7 +74,7 @@ const (
 
 // carbonHotkey 把平台无关的 Hotkey 翻成 (keycode, modifiers)。
 //
-// CmdOrCtrl 在这里落成 ⌘ —— 这是 DESIGN §9 那个默认值
+// CmdOrCtrl 在这里落成 ⌘ —— 这是 docs/DESIGN.md §9 那个默认值
 // "CmdOrCtrl+Shift+V" 在 macOS 上的正确含义。
 func carbonHotkey(h Hotkey) (uint32, uint32, error) {
 	code, ok := darwinKeycodes[h.Key]
@@ -99,7 +99,7 @@ func carbonHotkey(h Hotkey) (uint32, uint32, error) {
 
 // Attach 等 Wails 的窗口出现，接管它并注册热键。
 func (c *darwinController) Attach(cfg Config) error {
-	// Accessory 激活策略要在窗口出现之前就位（DESIGN §7 第 7 条）。
+	// Accessory 激活策略要在窗口出现之前就位（docs/DESIGN.md §7 第 7 条）。
 	// 我们用 build/darwin/Info.plist 的 LSUIElement 做到了"进程启动前生效"，
 	// 这里再调一次是幂等的兜底——两者缺一不可的条件里它是后者。
 	if err := c.SetActivationPolicyAccessory(); err != nil {
@@ -271,7 +271,7 @@ func (c *darwinController) Close() {
 
 // Diag 返回一次诊断快照（JSON）。
 //
-// 用途是**验收取证**：DESIGN §0.2 强调判断"有没有抢焦点"的正确判据是
+// 用途是**验收取证**：docs/DESIGN.md §0.2 强调判断"有没有抢焦点"的正确判据是
 // frontmostApplication 有没有变成自己，而不是 NSApp.isActive。
 func (c *darwinController) Diag() string {
 	p := C.paw_diag_json()

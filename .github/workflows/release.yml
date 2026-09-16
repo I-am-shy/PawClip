@@ -1,6 +1,6 @@
 name: Release
 
-# 按 DESIGN §14 第 21 条：macOS 出通用二进制，Windows 出 NSIS 安装包；
+# 按 docs/DESIGN.md §14 第 21 条：macOS 出通用二进制，Windows 出 NSIS 安装包；
 # 路径按 §10 的目录结构表定为 `.github/workflows/release.yml`。
 #
 # 触发方式：推一个 `v*` 的 tag。手工 `workflow_dispatch` 也留着——
@@ -180,7 +180,7 @@ jobs:
 
             ## 首次打开
 
-            **macOS**：本包未做 Apple 公证（无签名分发，见 DESIGN §14 F），
+            **macOS**：本包未做 Apple 公证（无签名分发，见 docs/DESIGN.md §14 F），
             Gatekeeper 会拦一次。执行下面这行，或在「系统设置 → 隐私与安全性」
             里点「仍要打开」：
 

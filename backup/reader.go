@@ -20,7 +20,7 @@ import (
 	"github.com/zego/pawclip/store"
 )
 
-// 本文件是 .clipbak 的导入（BACKUP-FORMAT.md §8、§9）。
+// 本文件是 .clipbak 的导入（docs/BACKUP-FORMAT.md §8、§9）。
 //
 // §9 开篇那句话是整份规范里最要紧的一句：
 //

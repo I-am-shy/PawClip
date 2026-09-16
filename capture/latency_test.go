@@ -17,7 +17,7 @@ import (
 	"github.com/zego/pawclip/clipboard"
 )
 
-// 本文件是 DESIGN.md §12 第一行「捕获延迟」的可证伪实现。
+// 本文件是 docs/DESIGN.md §12 第一行「捕获延迟」的可证伪实现。
 //
 // 原文：| 捕获延迟 | 文本 < 30 ms；5 MB 图片从复制到落库 < 200 ms |
 //

@@ -14,7 +14,7 @@ import (
 	"github.com/zego/pawclip/store"
 )
 
-// 本文件是**回写与自动粘贴**（DESIGN §10 目录结构里的 `writer.go`）。
+// 本文件是**回写与自动粘贴**（docs/DESIGN.md §10 目录结构里的 `writer.go`）。
 //
 // 它把"用户选中一条历史记录"变成"剪贴板里有内容 / 目标 App 里出现内容"。
 //
@@ -28,7 +28,7 @@ import (
 // 两个实例各记各的期望指纹，谁也拦不住谁。
 //
 // 第二条纪律：**这里的每一句给用户看的话都必须走 w.t(...)**。
-// 见 DESIGN §14 第 24 条把"错误提示"列为 i18n 易漏位置的那一段。
+// 见 docs/DESIGN.md §14 第 24 条把"错误提示"列为 i18n 易漏位置的那一段。
 
 // PasteMode 是回写方式（§9 的 ui.pasteMode）。
 type PasteMode string
@@ -71,7 +71,7 @@ type Writeback struct {
 	// 会报，而真机上表现为"偶尔跳过一个"）。
 	seqMu sync.Mutex
 
-	// queue 标记"连续粘贴"模式的队列（DESIGN §11 P2）。
+	// queue 标记"连续粘贴"模式的队列（docs/DESIGN.md §11 P2）。
 	queue *pasteQueue
 }
 
@@ -364,7 +364,7 @@ func (w *Writeback) PasteCustomText(ctx context.Context, text string, autoPaste 
 	return w.deliver(ctx, p, autoPaste, "")
 }
 
-// PastePlain 只把条目的**纯文本**写回（DESIGN §11 P2 的"去格式贴纯文本"）。
+// PastePlain 只把条目的**纯文本**写回（docs/DESIGN.md §11 P2 的"去格式贴纯文本"）。
 //
 // 为什么不复用 Paste：Paste 的载荷里带着 HTML / RTF，落到支持富文本的
 // App 里会把字体、颜色、超链接一起带过去——这正是用户点"去格式"要避免的。
@@ -414,7 +414,7 @@ func joinNote(a, b string) string {
 	return a + "；" + b
 }
 
-// ── 连续粘贴模式（DESIGN §11 的 P2）──────────────────────────────
+// ── 连续粘贴模式（docs/DESIGN.md §11 的 P2）──────────────────────────────
 //
 // 语义：用户多选若干条，点"连续粘贴"，然后回到目标 App 里逐个按
 // ⌘V（或按一次热键）消费下一条。队列放在这里而不是前端，

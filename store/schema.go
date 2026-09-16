@@ -1,6 +1,6 @@
 // Package store 是持久化层：SQLite schema、条目写入路径、blob 文件、设置。
 //
-// 三条硬约束（DESIGN.md §2 / §14，HANDOFF-PROMPT §4）：
+// 三条硬约束（docs/DESIGN.md §2 / §14，docs/HANDOFF-PROMPT.md §4）：
 //
 //  1. **写必须串行**。本包暴露两个句柄：w（单连接，只被 Writer goroutine 触碰）
 //     与 r（连接池，只跑 SELECT）。WAL 下读不阻塞写，写不阻塞读。
@@ -31,8 +31,8 @@ import (
 //
 // 版本历史：
 //
-//	1  全量建表（DESIGN §4.1）
-//	2  items.pinyin（拼音首字母检索，DESIGN §11 P2）+ FTS 加第三列
+//	1  全量建表（docs/DESIGN.md §4.1）
+//	2  items.pinyin（拼音首字母检索，docs/DESIGN.md §11 P2）+ FTS 加第三列
 const SchemaVersion = 2
 
 // cleanShutdownMarker 是"上次没有正常退出"的标记文件名（放在数据库同目录）。
@@ -66,7 +66,7 @@ const (
 //     改成 DSN 参数之后，本包不再触碰任何驱动内部类型，跨平台编译干净。
 var pragmas = []struct{ key, val string }{
 	{"_foreign_keys", "on"},    // 外键级联：categories/tags 删除要连带清理
-	{"_busy_timeout", "5000"},  // 锁等待 5s（DESIGN.md §4.1 的连接约定）
+	{"_busy_timeout", "5000"},  // 锁等待 5s（docs/DESIGN.md §4.1 的连接约定）
 	{"_synchronous", "NORMAL"}, // WAL 下的推荐值
 }
 
@@ -216,7 +216,7 @@ func Open(opts Options) (*DB, error) {
 	ro.SetMaxIdleConns(readConns)
 	d.r = ro
 
-	// FTS 自检（DESIGN.md §13 风险表：失败则整体退化为 LIKE 模式）。
+	// FTS 自检（docs/DESIGN.md §13 风险表：失败则整体退化为 LIKE 模式）。
 	// 必须放在读句柄打开之后——自检走的是查询路径。
 	d.ftsAvailable = d.checkFTS()
 
@@ -257,7 +257,7 @@ var driverOnce sync.Once
 
 // migrations[i] 把 user_version 从 i 升到 i+1。
 var migrations = []func(*sql.Tx) error{
-	// 0 → 1：全量建表（DESIGN.md §4.1）
+	// 0 → 1：全量建表（docs/DESIGN.md §4.1）
 	func(tx *sql.Tx) error {
 		_, err := tx.Exec(ddlV1)
 		return err
@@ -332,7 +332,7 @@ func (d *DB) migrate() error {
 	return nil
 }
 
-// ddlV1 是 DESIGN.md §4.1 的建表 DDL（FTS 表与触发器见 ensureFTS）。
+// ddlV1 是 docs/DESIGN.md §4.1 的建表 DDL（FTS 表与触发器见 ensureFTS）。
 //
 // 父表先建，子表后建，避免外键引用悬空。
 const ddlV1 = `
@@ -392,7 +392,7 @@ CREATE INDEX IF NOT EXISTS idx_items_app    ON items(source_app_id);
 CREATE INDEX IF NOT EXISTS idx_items_cat    ON items(category_id);
 CREATE INDEX IF NOT EXISTS idx_items_import ON items(import_id);
 
--- 只对"存活条目"做指纹唯一，删掉后可重新录入同一内容（DESIGN.md §4.1）
+-- 只对"存活条目"做指纹唯一，删掉后可重新录入同一内容（docs/DESIGN.md §4.1）
 CREATE UNIQUE INDEX IF NOT EXISTS uq_items_fp_alive ON items(fingerprint) WHERE deleted_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS tags (
@@ -417,7 +417,7 @@ CREATE TABLE IF NOT EXISTS settings (
 // ftsDDL 是与 items 同步的 FTS5 表。
 //
 // ⚠️ 不要给 tokenize=trigram 加 detail=none / detail=column：建表与回填都会
-// 成功，但查询直接抛 OperationalError（DESIGN.md §14 第 8 条，已实测）。
+// 成功，但查询直接抛 OperationalError（docs/DESIGN.md §14 第 8 条，已实测）。
 // ⚠️ pinyin 是第三列，且**不需要改任何查询表达式**。
 //
 // FTS5 里无限定的短语（`MATCH '"zgd"'`）会**搜索所有被索引的列**，所以
@@ -550,7 +550,7 @@ func (d *DB) pendingPinyin(limit int) ([]int64, []string, error) {
 	return ids, previews, nil
 }
 
-// checkFTS 是启动自检：HANDOFF-PROMPT §4 第 7 条指定的那条查询。
+// checkFTS 是启动自检：docs/HANDOFF-PROMPT.md §4 第 7 条指定的那条查询。
 func (d *DB) checkFTS() bool {
 	rows, err := d.r.Query("SELECT * FROM items_fts LIMIT 1")
 	if err != nil {
@@ -649,7 +649,7 @@ func (d *DB) writeMarker() error {
 
 // SetCleanShutdownMarkerEnabled 对应设置 storage.cleanShutdownMarker。
 //
-// 为什么不能在设置加载前应用：设置本身存在这个库里（DESIGN.md §9.0 规定
+// 为什么不能在设置加载前应用：设置本身存在这个库里（docs/DESIGN.md §9.0 规定
 // settings 表是运行时设置唯一真源），所以"是否用标记"必然是"先按默认 true
 // 检查一次，加载到设置后再纠正"。
 func (d *DB) SetCleanShutdownMarkerEnabled(enabled bool) error {
@@ -662,7 +662,7 @@ func (d *DB) SetCleanShutdownMarkerEnabled(enabled bool) error {
 
 // ── 事务与检查点 ────────────────────────────────────────────────
 
-// Checkpoint 执行 PRAGMA wal_checkpoint(TRUNCATE)（DESIGN.md §14 第 5 条）。
+// Checkpoint 执行 PRAGMA wal_checkpoint(TRUNCATE)（docs/DESIGN.md §14 第 5 条）。
 //
 // 不截断的话 WAL 会一路涨到几百 MB。TRUNCATE 模式会等所有读者结束，
 // 因此只在写 goroutine 里调用。

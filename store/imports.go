@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// 本文件是 .clipbak 导入所需的存储支撑（BACKUP-FORMAT.md §8）。
+// 本文件是 .clipbak 导入所需的存储支撑（docs/BACKUP-FORMAT.md §8）。
 //
 // 与 items.go 的分工：items.go 是**捕获路径**的写入（去重式 upsert，
 // use_count 由存储层自己算）；这里是**导入路径**的写入（原样插入，

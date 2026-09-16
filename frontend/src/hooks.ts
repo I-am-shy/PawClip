@@ -1,6 +1,6 @@
 // 几个共享 hook。
 //
-// 不引状态库（DESIGN §0.4 冻结的技术栈里没有），所以状态由 App 持有、
+// 不引状态库（docs/DESIGN.md §0.4 冻结的技术栈里没有），所以状态由 App 持有、
 // 用 props 往下传。这个尺度（一个面板 + 五个视图）还不至于需要 store。
 
 import { useCallback, useEffect, useRef, useState } from 'react'

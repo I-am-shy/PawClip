@@ -7,7 +7,7 @@
 // 少一个编译开关就少一处跨版本行为差异。
 
 // 变更计数。**热路径**：内部只读一个 NSInteger，不构造任何 Objective-C 对象。
-// 之所以要单独给它一个函数，是因为 DESIGN.md §14 第 9 条把"轮询里零分配"
+// 之所以要单独给它一个函数，是因为 docs/DESIGN.md §14 第 9 条把"轮询里零分配"
 // 列为决定空闲 CPU 与内存增长率的关键。
 long pb_change_count(void);
 
@@ -35,7 +35,7 @@ typedef struct {
 // 读取快照。
 //
 // ⚠️ changeCount 与 frontmostApplication 必须在**同一次调用**里取，
-// 否则来源应用会记错（DESIGN.md §7 第 2 条）。调用方拿到 change_count 后
+// 否则来源应用会记错（docs/DESIGN.md §7 第 2 条）。调用方拿到 change_count 后
 // 应再调一次 pb_change_count()，不一致说明读的过程中剪贴板又变了（抖动）。
 //
 // 返回 0 成功；非 0 失败，原因写入 err。

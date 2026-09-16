@@ -14,7 +14,7 @@
 |---|---|
 | 平台 | macOS 12+（Intel + Apple Silicon 通用二进制）、Windows 10 1809+ / 11 |
 | 架构 | 单机本地应用，无服务端、无账号体系、无多设备同步 |
-| 数据出口 | `.clipbak` 压缩包（ZIP 容器 + JSON/YAML 清单 + 二进制 blob），见 `BACKUP-FORMAT.md` |
+| 数据出口 | `.clipbak` 压缩包（ZIP 容器 + JSON/YAML 清单 + 二进制 blob），见 `docs/BACKUP-FORMAT.md` |
 | 暂不做 | Linux（预留后端骨架）、端到端同步、团队共享、App Store / Microsoft Store 上架 |
 | 名称与标识 | 中文 **喵喵贴** · 英文 **PawClip**（Paw 猫爪 + Clip 剪贴）。bundle id / AppUserModelID / 仓库名 / 配置目录见 §15.1 |
 
@@ -514,7 +514,7 @@ blobs/
 
 ## 6. 备份与迁移包
 
-完整规范见 **`BACKUP-FORMAT.md`**。要点：
+完整规范见 **`docs/BACKUP-FORMAT.md`**。要点：
 
 - 扩展名 `.clipbak`，容器为 **ZIP**（不像 `tar.zst` 那样需要额外工具，双击即可用系统解压器查看，符合"数据主权"主张）
 - 内部结构：`manifest.json` 或 `manifest.yaml` + `blobs/<a>/<b>/<sha256>.<ext>` + `README.txt`
@@ -657,24 +657,36 @@ pawclip/
 │  ├─ pawclip-source.png                # 成品图标稿（822×782，无 alpha）
 │  └─ dist/                             # 生成物，见 §15
 ├─ scripts/
+│  ├─ build.sh                          # 唯一构建入口（钉死 -tags sqlite_fts5）
+│  ├─ accept.sh                         # 成品真机验收
+│  ├─ demo-m1.sh                        # 捕获链路演示
 │  ├─ build-icons.cjs                   # 图标资源构建
 │  └─ probe-icon-source.cjs             # 源图几何探测（换图后必跑）
-├─ .github/workflows/release.yml
-├─ BACKUP-FORMAT.md
-├─ DESIGN.md
-└─ package.json
+├─ .github/workflows/                   # ci.yml + release.yml
+├─ docs/                                # 开发文档（与产品源码分离）
+│  ├─ DESIGN.md                         # 本文件
+│  ├─ BACKUP-FORMAT.md                  # .clipbak 格式规范
+│  └─ HANDOFF-PROMPT.md                 # 新会话开工提示词
+└─ README.md                            # 面向使用者：功能 / 构建 / 使用
 ```
+
+> 开发文档统一放 `docs/`，仓库根只留 `README.md`。源码注释里引用设计条款一律写成
+> `docs/DESIGN.md §N`，保证从任意目录都能直接定位到文件。
 
 ### 构建命令
 
 | 目的 | 命令 |
 |---|---|
 | 开发（热重载） | `wails dev` |
-| macOS 通用二进制 | `wails build -platform darwin/universal` |
-| Windows + NSIS 安装包 | `wails build -platform windows/amd64 -nsis` |
+| macOS 通用二进制 | `scripts/build.sh -platform darwin/universal` |
+| Windows + NSIS 安装包 | `scripts/build.sh -platform windows/amd64 -nsis` |
 | 体积优化 | `go build -trimpath -ldflags="-s -w"` |
 | 重建图标 | `NODE_PATH=<node_modules> node scripts/build-icons.cjs` |
 | 重新探测源图几何 | `NODE_PATH=<node_modules> node scripts/probe-icon-source.cjs assets/icon/pawclip-source.png` |
+
+> 构建一律走 `scripts/build.sh` 而不是直接 `wails build`：FTS5 依赖 `sqlite_fts5`
+> 构建标签，而 `wails.json` 没有任何字段能持久化 Go 构建标签，漏掉它产物里的
+> 全文检索会**静默降级**成逐行匹配（只打一行 WARN，进程照常启动）。
 
 ---
 
@@ -984,5 +996,5 @@ import "C"
 
 ### A.3 语言无关性
 
-§2 的 `Backend` 接口抽象、§3 平台能力对照、§4 数据模型、§5 生命周期、`BACKUP-FORMAT.md` 全部与语言无关——只有 `clipboard/` 与 `store/` 两个目录是语言相关的实现。这是换语言成本可控的原因。
+§2 的 `Backend` 接口抽象、§3 平台能力对照、§4 数据模型、§5 生命周期、`docs/BACKUP-FORMAT.md` 全部与语言无关——只有 `clipboard/` 与 `store/` 两个目录是语言相关的实现。这是换语言成本可控的原因。
 

@@ -188,7 +188,7 @@ func utf8Valid(s string) bool {
 }
 
 func TestPreview(t *testing.T) {
-	// 图片摘要的格式与 BACKUP-FORMAT.md §3.4 的示例一致
+	// 图片摘要的格式与 docs/BACKUP-FORMAT.md §3.4 的示例一致
 	if got := Preview(Content{PNG: []byte{1}}, KindImage, 1080, 1920); got != "图片 1080 × 1920" {
 		t.Fatalf("图片摘要 = %q", got)
 	}

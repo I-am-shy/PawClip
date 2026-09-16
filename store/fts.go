@@ -13,7 +13,7 @@ import (
 // 而不是运行时问题。
 var ErrFTSUnavailable = errors.New("store: FTS5 is not available in this build (rebuild with -tags sqlite_fts5)")
 
-// 本文件是 DESIGN.md §4.2 / §10 里的 `store/fts.go`：**两段式检索**。
+// 本文件是 docs/DESIGN.md §4.2 / §10 里的 `store/fts.go`：**两段式检索**。
 //
 //	查询 ≥ 3 字符 → items_fts MATCH ?（trigram 分词器）
 //	查询 1–2 字符 → LIKE '%?%' 兜底（trigram 命中不了这么短的查询）

@@ -416,7 +416,7 @@ func TestIdleTick_HidesOnlyWhenOverThreshold(t *testing.T) {
 
 // TestPanelLifecycle_IsHonestAboutDestroy 钉住一件事：不能假装支持销毁。
 //
-// DESIGN §14 第 10 条要求"验证销毁是真的"，而 Wails v2 没有窗口销毁 API。
+// docs/DESIGN.md §14 第 10 条要求"验证销毁是真的"，而 Wails v2 没有窗口销毁 API。
 // 与其写一个"看起来在销毁"的实现，不如让报告如实说明——
 // 这条测试保证没人会顺手把 DestroySupported 改成 true 而没真的实现它。
 func TestPanelLifecycle_IsHonestAboutDestroy(t *testing.T) {

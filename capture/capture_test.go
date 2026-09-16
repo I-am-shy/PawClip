@@ -506,7 +506,7 @@ func TestCapture_TruncatesStoredButFingerprintsFull(t *testing.T) {
 	it, err := p.db.GetByFingerprint(context.Background(),
 		clipboard.Fingerprint(clipboard.Content{Text: &full}))
 	if err != nil {
-		t.Fatalf("按完整内容指纹查不到：(HANDOFF-PROMPT §4 第 4 条被破坏) %v", err)
+		t.Fatalf("按完整内容指纹查不到：(docs/HANDOFF-PROMPT.md §4 第 4 条被破坏) %v", err)
 	}
 	if it.TextContent == nil {
 		t.Fatal("TextContent 为空")

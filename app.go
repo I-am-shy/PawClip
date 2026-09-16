@@ -22,7 +22,7 @@ import (
 
 // App 是 Wails 的绑定对象：前端能调用的一切都在这里。
 //
-// 它同时是**应用生命周期的所有者**（DESIGN.md §2 的四条 goroutine 有三条
+// 它同时是**应用生命周期的所有者**（docs/DESIGN.md §2 的四条 goroutine 有三条
 // 归它管：监听、捕获、写入；GC 属于 M2 之后的里程碑）。
 //
 // ⚠️ 构造与初始化是**故意分开**的，这不是洁癖：
@@ -207,7 +207,7 @@ func (a *App) initialize(ctx context.Context) error {
 	}
 
 	// 平台后端。Linux 上这里会返回 ErrUnsupported——不阻止应用启动，
-	// 只是没有捕获能力（HANDOFF-PROMPT §二：Linux 只留接口骨架）。
+	// 只是没有捕获能力（docs/HANDOFF-PROMPT.md §二：Linux 只留接口骨架）。
 	backend, err := clipboard.NewBackend(clipboard.BackendConfig{
 		PollIntervalActiveMs: settings.Capture.PollIntervalActiveMs,
 		PollIntervalIdleMs:   settings.Capture.PollIntervalIdleMs,
@@ -329,7 +329,7 @@ func (a *App) attachPanel(ctrl panel.Controller, s *store.Settings) {
 	}
 
 	// Accessory 激活策略：不占 Dock、不抢前台。它是免抢焦点的**必要条件**
-	// （DESIGN §0.2 实测），首选做法是 plist 里的 LSUIElement，
+	// （docs/DESIGN.md §0.2 实测），首选做法是 plist 里的 LSUIElement，
 	// 这里是窗口已建出来之后的兜底。
 	if err := ctrl.SetActivationPolicyAccessory(); err != nil {
 		a.log.Warn("切换到 Accessory 激活策略失败", "err", err)
@@ -339,7 +339,7 @@ func (a *App) attachPanel(ctrl panel.Controller, s *store.Settings) {
 	a.log.Info("面板与托盘就绪", "hotkey", s.UI.Hotkey, "diag", ctrl.Diag())
 }
 
-// 面板默认尺寸（逻辑点）。DESIGN §11 P0 的面板尺寸。
+// 面板默认尺寸（逻辑点）。docs/DESIGN.md §11 P0 的面板尺寸。
 const (
 	panelDefaultWidth  = 420
 	panelDefaultHeight = 520

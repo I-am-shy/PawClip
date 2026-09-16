@@ -1,4 +1,4 @@
-// Package transform 是"内容转换器"（DESIGN §11 P2）的纯逻辑层。
+// Package transform 是"内容转换器"（docs/DESIGN.md §11 P2）的纯逻辑层。
 //
 // 六个能力，全部是 文本 → 文本 的纯函数：
 //
@@ -264,7 +264,7 @@ func removeBlankLines(s string) (string, error) {
 // trackingParams 是要剥掉的参数名（小写比对）。
 //
 // utm_* 用前缀匹配覆盖全部（utm_source / utm_campaign / …），
-// 其余是各平台自己的跟踪参数，按 DESIGN §11 P2 只点名了 utm_*，
+// 其余是各平台自己的跟踪参数，按 docs/DESIGN.md §11 P2 只点名了 utm_*，
 // 这里顺带带上最常见的几个——它们与 utm_* 一样是"给分享者看的"，
 // 用户复制链接时想去的正是它们。
 var trackingParams = []string{

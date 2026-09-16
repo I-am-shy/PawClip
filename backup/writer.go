@@ -19,7 +19,7 @@ import (
 	"github.com/zego/pawclip/store"
 )
 
-// 本文件是 .clipbak 的导出（BACKUP-FORMAT.md §7）。
+// 本文件是 .clipbak 的导出（docs/BACKUP-FORMAT.md §7）。
 //
 // 两条硬约束贯穿全文件：
 //
@@ -256,7 +256,7 @@ func Export(
 	// ── ② blobs/**（第一遍扫描）─────────────────────────────────
 	//
 	// imgDims 只缓存**图片条目**的像素尺寸。为什么要缓存：items 表没有
-	// image_width/height 列（DESIGN §4.1 的 DDL 里确实没有），尺寸只能从
+	// image_width/height 列（docs/DESIGN.md §4.1 的 DDL 里确实没有），尺寸只能从
 	// PNG 头读；第一遍本来就要打开每个图片文件，顺手读个头几乎免费，
 	// 而第二遍再打开一次就是成倍的文件 I/O。
 	//

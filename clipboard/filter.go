@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// 本文件实现 DESIGN.md §14 第 17 条规定的过滤顺序：
+// 本文件实现 docs/DESIGN.md §14 第 17 条规定的过滤顺序：
 //
 //	保密标记 → 应用黑名单 → 类型开关 → 自写入守卫 → 尺寸上限
 //
@@ -60,7 +60,7 @@ func (d Decision) String() string {
 // Dropped 判断是否被丢弃。
 func (d Decision) Dropped() bool { return d != Accept }
 
-// FilterConfig 是 filter 的输入，取自 settings 表（DESIGN.md §9）。
+// FilterConfig 是 filter 的输入，取自 settings 表（docs/DESIGN.md §9）。
 type FilterConfig struct {
 	// Enabled ← capture.enabled，捕获总开关
 	Enabled bool
@@ -93,7 +93,7 @@ func DefaultFilterConfig() FilterConfig {
 // 为什么把配置装进一个不可变结构体、用 atomic.Pointer 换掉整只，
 // 而不是给每个字段加锁：
 //
-//   - ①`Decide` 在**轮询热路径**上（macOS 每 0.2s 一次，DESIGN §14 第 9 条
+//   - ①`Decide` 在**轮询热路径**上（macOS 每 0.2s 一次，docs/DESIGN.md §14 第 9 条
 //     要求"绝不分配"）。atomic.Pointer.Load 是一条无锁读，不加锁、不分配。
 //   - ② 热重载是低频动作。整体替换的语义也比逐字段改更清楚：
 //     "某一刻起，判定规则换成了另一套"，不会出现"types 已经是新的、

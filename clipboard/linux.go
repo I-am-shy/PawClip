@@ -2,9 +2,9 @@
 
 package clipboard
 
-// Linux 骨架（DESIGN.md §10：linux.go —— 预留骨架，不参与编译）。
+// Linux 骨架（docs/DESIGN.md §10：linux.go —— 预留骨架，不参与编译）。
 //
-// M1 明确不做 Linux（HANDOFF-PROMPT §二「明确不做」），这里只留一个能被
+// M1 明确不做 Linux（docs/HANDOFF-PROMPT.md §二「明确不做」），这里只留一个能被
 // build tag 选中的占位实现，保证：
 //
 //  1. `GOOS=linux go build ./...` 不会因为缺少 NewBackend 而失败；

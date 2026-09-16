@@ -1,4 +1,4 @@
-// 预览面板（DESIGN §11 P1「图片缩略图 + 空格快速预览」）。
+// 预览面板（docs/DESIGN.md §11 P1「图片缩略图 + 空格快速预览」）。
 //
 // 只在需要时向后端要全文：列表给的是 preview（截断过的），
 // 全文走 Get(id)。§14 第 7 条明确要求列表查询**不取 text_content**，
@@ -141,7 +141,7 @@ export function Preview({ t, id, now, autoPaste, onClose, onCopy, onRevealFile, 
 }
 
 /**
- * Converter 是内容转换器的入口（DESIGN §11 P2）。
+ * Converter 是内容转换器的入口（docs/DESIGN.md §11 P2）。
  *
  * 三个决定：
  *

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// 本文件实现 DESIGN.md §2 的"单写 goroutine + 合批提交"。
+// 本文件实现 docs/DESIGN.md §2 的"单写 goroutine + 合批提交"。
 //
 // 为什么要单写 goroutine：SQLite 的写操作必须串行化，并发写会撞 SQLITE_BUSY。
 // 用单个 goroutine 消费 channel 顺便实现了 §14 第 4 条的合批提交——
@@ -31,7 +31,7 @@ var (
 
 // BlobRole 指明一个 blob 属于条目的哪个字段。
 //
-// 只有 image 与 rtf：DESIGN.md §4.1 的 items 表给这两个字段留了路径列。
+// 只有 image 与 rtf：docs/DESIGN.md §4.1 的 items 表给这两个字段留了路径列。
 // HTML 在 M1 一律内联在 html_content（超长则截断），原因见收尾报告里的
 // "文档缺口"一节（DDL 没有 html_path）。
 type BlobRole string

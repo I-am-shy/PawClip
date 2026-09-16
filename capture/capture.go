@@ -1,6 +1,6 @@
 // Package capture 把"平台后端的变更信号"变成"落库条目"。
 //
-// 它是 DESIGN.md §2 goroutine 模型里的[捕获 goroutine]：
+// 它是 docs/DESIGN.md §2 goroutine 模型里的[捕获 goroutine]：
 //
 //	[监听 goroutine] ──Tick──▶ [捕获 goroutine] ──WriteRequest──▶ [写入 goroutine]
 //	  (clipboard.Backend)        Read → filter → normalize → fingerprint      (store.Writer)
@@ -28,13 +28,13 @@ import (
 	"github.com/zego/pawclip/store"
 )
 
-// Config 是捕获流水线的调参。字段全部来自 settings 表（DESIGN.md §9）。
+// Config 是捕获流水线的调参。字段全部来自 settings 表（docs/DESIGN.md §9）。
 type Config struct {
 	// Filter ← capture.* / exclude.*，决策规则。
 	Filter clipboard.FilterConfig
 	// TextMaxChars ← capture.textMaxChars。
 	//
-	// 注意：HANDOFF-PROMPT §4 第 4 条要求"指纹对完整内容做 sha256，
+	// 注意：docs/HANDOFF-PROMPT.md §4 第 4 条要求"指纹对完整内容做 sha256，
 	// 只截断存储"。这个上限同时用于 html_content——§4.1 的 items 表
 	// 没有 html_path 列，HTML 只能内联，而 §9 也没有单独的 html 上限键。
 	TextMaxChars int
@@ -291,7 +291,7 @@ func (c *Capture) handle(tk clipboard.Tick) {
 // accept 执行 过滤 → 归一化 → 指纹 → 入队。
 func (c *Capture) accept(raw *clipboard.Raw) {
 	content := raw.Content()
-	// 指纹必须对**完整内容**算（HANDOFF-PROMPT §4 第 4 条），
+	// 指纹必须对**完整内容**算（docs/HANDOFF-PROMPT.md §4 第 4 条），
 	// 一旦在这里先截断再算，超长文本的重复复制就不会被去重命中。
 	fp := clipboard.Fingerprint(content)
 	now := c.now()
@@ -324,7 +324,7 @@ func (c *Capture) buildRequest(raw *clipboard.Raw, content clipboard.Content, fp
 		CreatedAt:     sec,
 		LastUsedAt:    &sec,
 		// expires_at 留 NULL（= 永不过期）。TTL 分级属于 §5 生命周期，
-		// 不在 M1 范围内（HANDOFF-PROMPT §三 明确排除 GC）。
+		// 不在 M1 范围内（docs/HANDOFF-PROMPT.md §三 明确排除 GC）。
 	}
 
 	var blobs []store.BlobWrite

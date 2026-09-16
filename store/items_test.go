@@ -513,7 +513,7 @@ func TestSettings_SeedDefaultsAndLoad(t *testing.T) {
 	}
 	keys := SettingKeys()
 	if len(keys) < 28 {
-		t.Fatalf("设置键只有 %d 个，DESIGN.md §9 的表里应不少于 28 项", len(keys))
+		t.Fatalf("设置键只有 %d 个，docs/DESIGN.md §9 的表里应不少于 28 项", len(keys))
 	}
 	for _, k := range keys {
 		if _, ok, err := db.GetRaw(ctx, k); err != nil || !ok {

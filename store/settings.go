@@ -9,13 +9,13 @@ import (
 	"time"
 )
 
-// settings 表是运行时设置的唯一真源（DESIGN.md §9.0）。
+// settings 表是运行时设置的唯一真源（docs/DESIGN.md §9.0）。
 //
 // 只有三项"打开数据库之前就必须读到"的引导配置留在 config.toml：
 // database.path / ui.language / log.level。UI 改设置即写库，不回写 TOML，
 // 因此不存在双写。
 
-// 设置键。取值与默认值见 DESIGN.md §9 的表。
+// 设置键。取值与默认值见 docs/DESIGN.md §9 的表。
 const (
 	KeyCaptureEnabled              = "capture.enabled"
 	KeyCaptureTypes                = "capture.types"
@@ -132,7 +132,7 @@ type Settings struct {
 	Backup    BackupSettings    `json:"backup"`
 }
 
-// DefaultSettings 是 DESIGN.md §9 的默认值表。默认值只在这一个地方写死。
+// DefaultSettings 是 docs/DESIGN.md §9 的默认值表。默认值只在这一个地方写死。
 func DefaultSettings() *Settings {
 	return &Settings{
 		Capture: CaptureSettings{
@@ -227,7 +227,7 @@ func (s *Settings) bindings() []binding {
 //
 // bootstrapLanguage 来自 config.toml 的 ui.language：它只在"库还没建"的时候
 // 有意义，所以仅在 ui.language 这一行确实不存在时作为初始值用一次；
-// 之后 settings 表说了算，也不回写 TOML（DESIGN.md §9.0 的"不存在双写"）。
+// 之后 settings 表说了算，也不回写 TOML（docs/DESIGN.md §9.0 的"不存在双写"）。
 func SeedSettings(ctx context.Context, d *DB, bootstrapLanguage string) error {
 	def := DefaultSettings()
 	if bootstrapLanguage != "" {

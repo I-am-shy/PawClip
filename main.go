@@ -121,7 +121,7 @@ func main() {
 		Width:  panelWidth,
 		Height: panelHeight,
 
-		// ⚠️ M2 明确要求的第一个遗留点（见 DESIGN §16 M2）：
+		// ⚠️ M2 明确要求的第一个遗留点（见 docs/DESIGN.md §16 M2）：
 		// Wails 创建窗口时会**激活一次 App**，实测首次显示时 frontmost 变成
 		// 自己。对一个"热键呼出的后台工具"来说，开机抢一次焦点是不能接受的。
 		// StartHidden 让宿主窗口自始至终不主动 show，第一次可见完全由
@@ -140,7 +140,7 @@ func main() {
 
 		// ⚠️ 这一行是"缩略图能不能显示"的总开关。
 		//
-		// DESIGN §14 第 1 条：列表只传元数据，**图片绝不走 IPC**（100 张
+		// docs/DESIGN.md §14 第 1 条：列表只传元数据，**图片绝不走 IPC**（100 张
 		// 缩略图 base64 塞进 IPC 会让首屏卡 1 秒以上、内存翻倍）。前端拿到的
 		// 是 `blob/9f/2a/<sha>.thumb.png` 这样的相对 URL，由这个 handler
 		// 直接从 blobs/ 目录把字节递给 WebView。

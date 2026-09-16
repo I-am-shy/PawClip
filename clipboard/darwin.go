@@ -21,7 +21,7 @@ import (
 
 // macOS 后端。
 //
-// 平台约束（DESIGN.md §3 / §7）：
+// 平台约束（docs/DESIGN.md §3 / §7）：
 //   - 系统没有剪贴板变更通知，只能轮询 NSPasteboard.changeCount；
 //   - 自适应间隔：检测到用户空闲 > idleThresholdSec 时从 200ms 降到 1000ms，
 //     否则笔记本续航会被 0.2s 轮询吃掉；
@@ -73,7 +73,7 @@ func (b *darwinBackend) Stop() {
 
 // poll 是轮询循环。
 //
-// ⚠️ 这是全项目唯一的热路径，DESIGN.md §14 第 9 条对它有硬要求：
+// ⚠️ 这是全项目唯一的热路径，docs/DESIGN.md §14 第 9 条对它有硬要求：
 //   - 每 0.2s 只读一个 NSInteger（C.pb_change_count 内部就是纯 ivar 读取）；
 //   - 循环里不构造 Objective-C 对象（不取 types、不取字符串）；
 //   - Go 侧循环内不 defer、不新建结构体。
@@ -127,7 +127,7 @@ func (b *darwinBackend) poll(ch chan<- Tick, stop chan struct{}) {
 // Read 读取剪贴板的全部可用表示。
 //
 // 内部带抖动重试：读到快照后再看一次 changeCount，不一致说明读取过程中
-// 剪贴板又被写了，这一份快照不可信（DESIGN.md §4 第 12 条）。
+// 剪贴板又被写了，这一份快照不可信（docs/DESIGN.md §4 第 12 条）。
 func (b *darwinBackend) Read() (*Raw, error) {
 	const maxAttempts = 3
 

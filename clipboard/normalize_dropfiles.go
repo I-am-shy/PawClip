@@ -8,7 +8,7 @@ import (
 // 本文件实现 CF_HDROP（文件列表）载荷的组装与解析。
 //
 // 为什么放在**无 build tag** 的文件里：这是纯字节运算，和操作系统 API 无关。
-// 放在这里就能在 macOS 上直接跑单测（HANDOFF-PROMPT §五的明确要求），
+// 放在这里就能在 macOS 上直接跑单测（docs/HANDOFF-PROMPT.md §五的明确要求），
 // 而 Windows 后端只负责"把 HGLOBAL 里的字节递进来"。
 //
 // ⚠️ 这个文件的存在是有代价换来的：早期版本把 DROPFILES 结构体直接写在

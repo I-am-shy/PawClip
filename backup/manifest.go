@@ -1,6 +1,6 @@
-// Package backup 实现 DESIGN.md §6 与 BACKUP-FORMAT.md 定义的 .clipbak 备份包。
+// Package backup 实现 docs/DESIGN.md §6 与 docs/BACKUP-FORMAT.md 定义的 .clipbak 备份包。
 //
-// 一句话原则（BACKUP-FORMAT.md §11 的最终裁判）：
+// 一句话原则（docs/BACKUP-FORMAT.md §11 的最终裁判）：
 // **包必须能被三行 Python 脚本读出来。** 所以它用 ZIP 容器、纯文本清单、
 // 无私有二进制编码，不用 tar.zst。
 package backup
@@ -17,7 +17,7 @@ import (
 const (
 	// FormatTag 是清单里的格式标识，导入时用来确认"这确实是我们家的包"。
 	FormatTag = "pawclip.backup"
-	// FormatVersion 是本实现写出的版本。读取方规则见 BACKUP-FORMAT.md §10。
+	// FormatVersion 是本实现写出的版本。读取方规则见 docs/BACKUP-FORMAT.md §10。
 	FormatVersion = 1
 
 	// ManifestJSON / ManifestYAML 是清单在包内的两个可能文件名。
@@ -52,7 +52,7 @@ var (
 	ErrNoSpace          = errors.New("backup: 磁盘可用空间不足")
 )
 
-// ── 清单结构（BACKUP-FORMAT.md §3）──────────────────────────────
+// ── 清单结构（docs/BACKUP-FORMAT.md §3）──────────────────────────────
 
 // Header 是清单里"非 items"的那部分。
 //

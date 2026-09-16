@@ -19,7 +19,7 @@ import (
 
 // BlobStore 管理 blobs/ 下的内容寻址文件。
 //
-// 布局（DESIGN.md §5.3）：
+// 布局（docs/DESIGN.md §5.3）：
 //
 //	blobs/9f/2a/9f2a1c…e4.png         sha256 前 2 位 / 第 3-4 位 两级分片
 //	blobs/9f/2a/9f2a1c…e4.thumb.png   派生缩略图，长边 ≤ 160
@@ -30,10 +30,10 @@ type BlobStore struct {
 	root string
 }
 
-// ThumbMaxEdge 是缩略图长边上限（DESIGN.md §4.1 的 thumb_path 注释、§14 第 15 条）。
+// ThumbMaxEdge 是缩略图长边上限（docs/DESIGN.md §4.1 的 thumb_path 注释、§14 第 15 条）。
 const ThumbMaxEdge = 160
 
-// blob 目录与文件权限。收紧到 0700 / 0600 是 BACKUP-FORMAT.md §9 的要求。
+// blob 目录与文件权限。收紧到 0700 / 0600 是 docs/BACKUP-FORMAT.md §9 的要求。
 const (
 	dirPerm  os.FileMode = 0o700
 	filePerm os.FileMode = 0o600
@@ -129,7 +129,7 @@ func (b *BlobStore) Put(data []byte, ext string) (rel, shaHex string, err error)
 
 // PutThumb 由原图 PNG 生成缩略图并落盘，返回相对路径与缩略图尺寸。
 //
-// 同步生成（DESIGN.md §14 第 15 条）：异步生成会让列表出现缩略图空窗，
+// 同步生成（docs/DESIGN.md §14 第 15 条）：异步生成会让列表出现缩略图空窗，
 // 体验明显变差。10 MB 图约 20–40 ms，可以接受。
 func (b *BlobStore) PutThumb(pngBytes []byte, shaHex string) (rel string, w, h int, err error) {
 	thumb, w, h, err := MakeThumbPNG(pngBytes, ThumbMaxEdge)

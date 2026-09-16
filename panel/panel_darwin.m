@@ -91,7 +91,7 @@ int paw_set_accessory(void) {
         // —— 它表示"策略没有发生变化"，而不是"切换失败"。原来把它当成失败，
         // 于是每次启动都固定打一条
         //     WARN 切换到 Accessory 激活策略失败
-        // 而这条 WARN 恰好出现在 DESIGN §0.2 认定的"免抢焦点必要条件"上，
+        // 而这条 WARN 恰好出现在 docs/DESIGN.md §0.2 认定的"免抢焦点必要条件"上，
         // 排查"面板抢焦点"的人会被它带偏（去查一个根本不存在的故障）。
         // 真正需要报警的只有下面那条路径：策略不是 Accessory，且切不过去。
         if (cur == NSApplicationActivationPolicyAccessory) {
@@ -347,7 +347,7 @@ int paw_tray_install(const void *icon_png, int png_len, const char *tooltip, cha
             }
             [img setSize:NSMakeSize(18, 18)];
             // 模板图：只由 alpha 承载形状，颜色交给系统按菜单栏明暗渲染。
-            // 做成彩色会在深色菜单栏下完全看不见（DESIGN §15.5）。
+            // 做成彩色会在深色菜单栏下完全看不见（docs/DESIGN.md §15.5）。
             [img setTemplate:YES];
             [[g_statusItem button] setImage:img];
             [img release];

@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// 本文件是 Windows 侧必须做的第二个转换：CF_HTML 头部剥离（DESIGN.md §8 第 7 条）。
+// 本文件是 Windows 侧必须做的第二个转换：CF_HTML 头部剥离（docs/DESIGN.md §8 第 7 条）。
 // 同样是纯函数，在 macOS 上直接单测。
 
 // ErrBadClipboardHTML 表示 "HTML Format" 数据里找不到可用的 HTML 片段。

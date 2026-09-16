@@ -48,7 +48,7 @@ trap cleanup EXIT
 q() { sqlite3 -readonly "$DB" "$1" 2>/dev/null; }
 
 echo "════════════════════════════════════════════════════════════"
-echo " PawClip 成品验收（DESIGN §12 里必须看真进程的那几项）"
+echo " PawClip 成品验收（docs/DESIGN.md §12 里必须看真进程的那几项）"
 echo "════════════════════════════════════════════════════════════"
 
 # ── ① 产物自检：这个 .app 本身是否合规 ────────────────────────────
@@ -64,7 +64,7 @@ ok "可执行文件存在（$(du -sh "$APP" | cut -f1)）"
 archs=$(lipo -archs "$BIN" 2>/dev/null)
 case "$archs" in
   *x86_64*arm64*|*arm64*x86_64*) ok "通用二进制：$archs" ;;
-  *) bad "不是通用二进制：$archs（DESIGN §14 第 21 条要求 darwin/universal）" ;;
+  *) bad "不是通用二进制：$archs（docs/DESIGN.md §14 第 21 条要求 darwin/universal）" ;;
 esac
 
 # §14 第 18 条：Apple Silicon 上内核只接受带签名的可执行文件，

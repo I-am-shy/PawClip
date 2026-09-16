@@ -2,7 +2,7 @@
 
 package panel
 
-// Linux 只留骨架（DESIGN §0.1：暂不做 Linux，只预留后端骨架）。
+// Linux 只留骨架（docs/DESIGN.md §0.1：暂不做 Linux，只预留后端骨架）。
 //
 // 这个文件的存在有两个意义：
 //

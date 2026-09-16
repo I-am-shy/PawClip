@@ -18,7 +18,7 @@ import (
 	"github.com/zego/pawclip/store"
 )
 
-// 本文件是 HANDOFF-PROMPT §五 的验收 1 / 2 / 3。
+// 本文件是 docs/HANDOFF-PROMPT.md §五 的验收 1 / 2 / 3。
 //
 // 三条都用**注入的假后端**跑（§五 明文要求）：可重复、不依赖真实剪贴板、
 // 不需要人工点击。真机抽查（验收 4）在 acceptance_real_darwin_test.go。
