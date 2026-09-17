@@ -22,7 +22,10 @@ const zh: Dict = {
   'nav.stats': '统计',
   'nav.backup': '导出 / 导入',
 
-  'search.placeholder': '搜索历史…（⌘⇧V 呼出）',
+  // 占位提示分两条：有热键时说清楚"按哪个键呼出"，没有就只说搜索。
+  // 合成一条会把热键写死在词条里 —— 改设置它也不会变（这就是原来的毛病）。
+  'search.placeholder': '搜索历史…',
+  'search.placeholder.summon': '搜索历史…（{key} 呼出）',
   'search.clear': '清空',
   'search.filterEmpty': '没有匹配的历史',
   'search.hint.title': '为什么搜不到？',
@@ -86,7 +89,13 @@ const zh: Dict = {
   'settings.theme.dark': '深色',
   'settings.hotkey': '全局热键',
   'settings.hotkey.warn':
-    '注意：全局热键会吞掉所有应用里的这个组合。⌘⇧V 在很多编辑器里是"粘贴并匹配样式"。',
+    '全局热键会吞掉所有应用里的这个组合（对 ⌘⇧V 尤其明显：很多编辑器里它是"粘贴并匹配样式"）。' +
+    '清空即不注册全局热键，只能从托盘图标呼出。',
+  'settings.hotkey.record': '点击后按下组合键',
+  'settings.hotkey.recording': '请按下组合键…',
+  'settings.hotkey.hint': '至少需要一个修饰键（⌘ / ⌃ / ⌥ / ⇧）。Backspace 清除，Esc 取消。',
+  'settings.hotkey.clear': '清除',
+  'settings.hotkey.none': '未设置',
   'settings.pasteMode': '点击历史时',
   'settings.pasteMode.clipboard': '只复制到剪贴板',
   'settings.pasteMode.autoPaste': '直接粘贴到前台应用',
@@ -261,7 +270,8 @@ const en: Dict = {
   'nav.stats': 'Stats',
   'nav.backup': 'Export / Import',
 
-  'search.placeholder': 'Search history…  (⌘⇧V to summon)',
+  'search.placeholder': 'Search history…',
+  'search.placeholder.summon': 'Search history…  ({key} to summon)',
   'search.clear': 'Clear',
   'search.filterEmpty': 'Nothing matches',
   'search.hint.title': 'Why no results?',
@@ -321,7 +331,13 @@ const en: Dict = {
   'settings.theme.dark': 'Dark',
   'settings.hotkey': 'Global hotkey',
   'settings.hotkey.warn':
-    'Heads-up: a global hotkey swallows that combination everywhere. ⌘⇧V means "paste and match style" in many editors.',
+    'A global hotkey swallows that combination everywhere (⌘⇧V is the classic trap: many editors use it for "paste and match style"). ' +
+    'Clear it to register no global hotkey at all — the tray icon still opens the panel.',
+  'settings.hotkey.record': 'Click, then press a combination',
+  'settings.hotkey.recording': 'Press a combination…',
+  'settings.hotkey.hint': 'At least one modifier is required. Backspace clears, Esc cancels.',
+  'settings.hotkey.clear': 'Clear',
+  'settings.hotkey.none': 'Not set',
   'settings.pasteMode': 'When clicking an item',
   'settings.pasteMode.clipboard': 'Copy to clipboard only',
   'settings.pasteMode.autoPaste': 'Paste into the frontmost app',

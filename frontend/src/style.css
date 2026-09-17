@@ -1113,6 +1113,62 @@ select.input {
   min-width: 0;
 }
 
+/* ── 热键控件（Settings.tsx 的 HotkeyInput）─────────────────────────
+   它长得像输入框，但**不是**输入框：点一下就进入"读键盘"状态。
+   所以视觉上沿用 .input 的下沉色块，行为上是个按钮。 */
+.hotkeyrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+/* 录制中：提示语换到字段下面（字段是 flex 容器里唯一会伸长的那个）。 */
+.hotkeyrow-col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.hotkey-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* .settings-row-wide .input 给了 width:100%——那是给"真正的输入框"的；
+     这里会把它撑成整行、把旁边的"清除"挤成竖排，所以抵消掉，
+     让 flex-grow 去分剩余空间。 */
+  width: auto;
+  /* 按钮默认居中且不是等宽字体，热键记号用等宽字更整齐（⌘⇧V / Ctrl+Shift+V）。 */
+  text-align: left;
+  font-family: var(--mono);
+  cursor: pointer;
+  /* .input 的 height/padding/圆角/底色已经有了，这里不重复。 */
+}
+
+/* 旁边的动作按钮不能被压窄（"清除"两个字竖着排就是这条漏掉的后果）。 */
+.hotkeyrow .btn {
+  flex: none;
+  white-space: nowrap;
+}
+
+.hotkey-field:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+/* 录制中：描边+主色，让"我正在听你按键"这件事一眼可见。 */
+.hotkey-field-recording,
+.hotkey-field-recording:focus {
+  border-color: var(--accent);
+  color: var(--accent);
+  cursor: default;
+}
+
+.hotkey-hint {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .path {
   color: var(--fg-dim);
   overflow-wrap: anywhere;

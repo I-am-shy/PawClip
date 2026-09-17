@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PawClip · 前端假绑定（只给 vite dev 用）</title>
+  </head>
+  <body>
+    <!--
+      这个页面是**临时调试资产**，不是应用的一部分：真机上绑定由 Wails 注入
+      （frontend/wailsjs），而 Vite dev 里没有 Wails，界面会因为"绑定未就绪"
+      直接报错。这里塞一份最小可用的假绑定，让设置页/面板能在浏览器里跑起来，
+      用于验证交互（本次是"热键录制"与"提示与设置绑定"）。
+
+      用法：npm --prefix frontend run dev，然后打开 /harness.html
+    -->
+    <div id="root"></div>
+    <script>
+      const settings = {
+        capture: {
+          enabled: true,
+          types: ['text', 'image', 'files'],
+          imageMaxBytes: 10485760,
+          textMaxChars: 262144,
+          pollIntervalActiveMs: 200,
+          pollIntervalIdleMs: 1000,
+          idleThresholdSec: 60,
+          debounceMs: 120,
+        },
+        exclude: { apps: ['com.1password.*'], privateTypes: true },
+        retention: {
+          defaultTtlSec: 2592000,
+          onExpire: 'trash',
+          trashTtlSec: 604800,
+          maxItems: 2000,
+          maxDiskBytes: 524288000,
+          gcIntervalSec: 60,
+        },
+        ui: {
+          hotkey: 'CmdOrCtrl+Shift+V',
+          pasteMode: 'clipboard',
+          restoreClipboard: true,
+          restoreDelayMs: 250,
+          windowIdleDestroySec: 300,
+          quickPasteCount: 9,
+          language: 'zh-CN',
+          theme: 'system',
+          closeOnBlur: true,
+          panelWidth: 560,
+          panelHeight: 760,
+        },
+        storage: { cleanShutdownMarker: true, walCheckpointEvery: 1000 },
+        backup: { manifestFormat: 'json', includeExpired: false },
+      }
+
+      // 记录最后一次 SetSetting，便于在浏览器控制台里核对"前端到底发了什么"。
+      window.__log = []
+      const overrides = {
+        Lang: async () => 'zh-CN',
+        Settings: async () => JSON.parse(JSON.stringify(settings)),
+        SetSetting: async (key, value) => {
+          window.__log.push([key, value])
+          if (key === 'ui.hotkey') settings.ui.hotkey = JSON.parse(value)
+          return null
+        },
+        TakeEvents: async () => [],
+        List: async () => ({
+          rows: [],
+          nextCursor: null,
+          total: 0,
+          totalValid: true,
+          hasMore: false,
+          tookMs: 0,
+          mode: 'none',
+          ftsAvailable: true,
+        }),
+        IsAutoStart: async () => false,
+        AutoStartDiag: async () => '',
+        Version: async () => '0.1.0-harness',
+        Health: async () => ({
+          version: '0.1.0-harness',
+          platform: 'darwin',
+          dbPath: '/tmp/paw.db',
+          schemaVersion: 3,
+          ftsAvailable: true,
+          aliveItems: 0,
+          initError: '',
+          bootWarning: '',
+        }),
+        DataDir: async () => '/tmp/paw',
+        ConfigPath: async () => '/tmp/paw/config.toml',
+        PanelVisible: async () => true,
+        AutoPasteAvailable: async () => true,
+        SequenceState: async () => ({ active: false, remaining: 0, total: 0 }),
+        LastImport: async () => null,
+      }
+      window.go = {
+        main: {
+          App: new Proxy(overrides, {
+            get: (t, p) => (p in t ? t[p] : async () => null),
+          }),
+        },
+      }
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

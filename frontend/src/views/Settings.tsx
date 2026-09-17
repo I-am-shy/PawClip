@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import type { T as TFn } from '../i18n'
+import { comboFromEvent, formatCombo, isClearKey } from '../hotkey'
 import { call, type SettingsShape } from '../api'
 
 export type SettingsProps = {
@@ -142,8 +143,11 @@ export function Settings(p: SettingsProps) {
           />
         </Row>
 
+        {/* 热键是"读键盘"的控件，不是文本框：见下面 HotkeyInput 的注释。 */}
         <Row label={t('settings.hotkey')} note={t('settings.hotkey.warn')} wide>
-          <TextInput
+          <HotkeyInput
+            t={t}
+            platform={p.platform}
             value={u.hotkey}
             disabled={busy}
             onCommit={(v) => void set('ui.hotkey', v)}
@@ -475,22 +479,105 @@ function NumberInput({ value, disabled, onCommit }: { value: number; disabled?: 
   )
 }
 
-function TextInput({ value, disabled, onCommit }: { value: string; disabled?: boolean; onCommit: (v: string) => void }) {
-  const [draft, setDraft] = useState(value)
-  useEffect(() => setDraft(value), [value])
+/**
+ * HotkeyInput 是"读键盘"的热键控件，**不是**文本框。
+ *
+ * 原来的做法是一个普通 TextInput，用户得自己把 "CmdOrCtrl+Shift+V" 敲进去：
+ * 键名写法（CmdOrCtrl 还是 CommandOrControl？分隔符要不要空格？）全靠猜，
+ * 猜错了后端解析失败、热键静默失效。键盘就在手边，不该让用户拼字符串。
+ *
+ * 交互约定（各家热键录制器的通行做法）：
+ *
+ *   点一下 → 进入录制，直接读键盘（Esc 取消、Backspace/Delete 清除）
+ *   按下带修饰键的组合 → 提交，控件立刻显示新绑定
+ *
+ * 录制期间**吞掉**所有按键（preventDefault + stopPropagation）：否则 ⌘,
+ * 会把界面切回历史页、Esc 会被 App 当成"返回"，用户录到一半界面自己跑了。
+ *
+ * 显示走 formatCombo（⌘⇧V / Ctrl+Shift+V），空值显式写成"未设置"而不是留空——
+ * 热键被清掉是一个**状态**，用户需要看得出来。
+ */
+function HotkeyInput({
+  t,
+  value,
+  platform,
+  disabled,
+  onCommit,
+}: {
+  t: TFn
+  value: string
+  platform: string
+  disabled?: boolean
+  onCommit: (v: string) => void
+}) {
+  const [recording, setRecording] = useState(false)
+  const label = formatCombo(value, platform)
+
+  const stop = () => setRecording(false)
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+
+    if (e.key === 'Escape') {
+      stop()
+      return
+    }
+    if (isClearKey(e.nativeEvent)) {
+      stop()
+      if (value !== '') onCommit('')
+      return
+    }
+    const combo = comboFromEvent(e.nativeEvent, platform)
+    // null = 只按了修饰键，或按了后端不认的键（标点之类）。
+    // 继续等，不报错：用户此刻正在按键，弹一句错误只会打断他。
+    if (!combo) return
+    stop()
+    if (combo !== value) onCommit(combo)
+  }
+
+  if (recording) {
+    // 录制时提示语单独占一行：它比字段本身长得多，挤在一行会把字段压成一条缝。
+    return (
+      <div className="hotkeyrow hotkeyrow-col">
+        <button
+          type="button"
+          className="input hotkey-field hotkey-field-recording"
+          autoFocus
+          onKeyDown={onKeyDown}
+          // keyup 也要吞：按钮在 keyup 时会发 click，而此刻它已经被
+          // 换成"未录制"的那个按钮了，一次太空格就会把录制又打开。
+          onKeyUp={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+          }}
+          // 点到别处就结束录制（不强加绑定，用户没按就什么都没变）。
+          onBlur={stop}
+        >
+          {t('settings.hotkey.recording')}
+        </button>
+        <small className="hotkey-hint">{t('settings.hotkey.hint')}</small>
+      </div>
+    )
+  }
+
   return (
-    <input
-      className="input"
-      type="text"
-      value={draft}
-      disabled={disabled}
-      spellCheck={false}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => draft !== value && onCommit(draft)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-      }}
-    />
+    <div className="hotkeyrow">
+      <button
+        type="button"
+        className="input hotkey-field"
+        disabled={disabled}
+        title={t('settings.hotkey.record')}
+        onClick={() => setRecording(true)}
+      >
+        {label || t('settings.hotkey.none')}
+      </button>
+      {label !== '' && (
+        <button type="button" className="btn btn-quiet" disabled={disabled} onClick={() => onCommit('')}>
+          {t('settings.hotkey.clear')}
+        </button>
+      )}
+    </div>
   )
 }
 

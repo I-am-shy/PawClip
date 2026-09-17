@@ -19,6 +19,7 @@ import {
   type StatsSummary,
 } from './api'
 import { makeT, normalizeLang, type Lang } from './i18n'
+import { formatCombo } from './hotkey'
 import { applyTheme, resolveTheme, useSystemDark, type ThemePref } from './theme'
 import { usePolledEvents } from './hooks'
 import { Panel } from './views/Panel'
@@ -144,9 +145,16 @@ export default function App() {
           switch (e.type) {
             case 'show':
               // 呼出：刷新列表 + 聚焦搜索框。
+              //
+              // note 也要弹：启动期"热键被别的应用占用"就是搭在这条事件上的
+              // （后端只知道面板要显示，前端才知道该说一句话）。原来这里
+              // 只取视图信号、把 note 丢掉，于是用户永远不知道热键是死的。
+              if (e.note) setToast(e.note)
               setFocusSearchNonce((n) => n + 1)
               break
             case 'settings':
+              // 同上：带 note 的"设置页"事件是后端在替这次跳转说一句话。
+              if (e.note) setToast(e.note)
               nextView = 'settings'
               break
             case 'stats':
@@ -227,6 +235,13 @@ export default function App() {
 
   const modLabel = platform === 'darwin' ? '⌘' : 'Ctrl+'
 
+  // 呼出热键的显示形式（⌘⇧V / Ctrl+Shift+V），空串表示没设热键。
+  //
+  // 它是**算出来的**，不是存下来的：唯一真源是 settings.ui.hotkey，
+  // 设置页改完 → onReload 回读设置 → 这里跟着变。之前界面上的
+  // "（⌘⇧V 呼出）"是写在词条里的常量，改设置它也不会动。
+  const hotkeyLabel = formatCombo(settings?.ui.hotkey ?? '', platform)
+
   return (
     <div className="app">
       <header className="titlebar" onMouseDown={startDrag}>
@@ -281,6 +296,7 @@ export default function App() {
             t={t}
             settings={settings}
             modLabel={modLabel}
+            hotkeyLabel={hotkeyLabel}
             trashed={trashed}
             onTrashed={setTrashed}
             onHide={hidePanel}

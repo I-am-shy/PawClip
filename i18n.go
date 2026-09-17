@@ -38,20 +38,24 @@ const (
 type msgKey string
 
 const (
-	msgTrayShow            msgKey = "tray.show"
-	msgTrayResume          msgKey = "tray.resume"
-	msgTrayPause           msgKey = "tray.pause"
-	msgTraySettings        msgKey = "tray.settings"
-	msgTrayStats           msgKey = "tray.stats"
-	msgTrayBackup          msgKey = "tray.backup"
-	msgTrayAbout           msgKey = "tray.about"
-	msgTrayQuit            msgKey = "tray.quit"
-	msgTrayTooltip         msgKey = "tray.tooltip"
-	msgNotifyCaptureOff    msgKey = "notify.captureOff"
-	msgNotifyCaptureOn     msgKey = "notify.captureOn"
-	msgNotifyExportDone    msgKey = "notify.exportDone"
-	msgNotifyImportDone    msgKey = "notify.importDone"
-	msgNotifyHotkeyTaken   msgKey = "notify.hotkeyTaken"
+	msgTrayShow          msgKey = "tray.show"
+	msgTrayResume        msgKey = "tray.resume"
+	msgTrayPause         msgKey = "tray.pause"
+	msgTraySettings      msgKey = "tray.settings"
+	msgTrayStats         msgKey = "tray.stats"
+	msgTrayBackup        msgKey = "tray.backup"
+	msgTrayAbout         msgKey = "tray.about"
+	msgTrayQuit          msgKey = "tray.quit"
+	msgTrayTooltip       msgKey = "tray.tooltip"
+	msgNotifyCaptureOff  msgKey = "notify.captureOff"
+	msgNotifyCaptureOn   msgKey = "notify.captureOn"
+	msgNotifyExportDone  msgKey = "notify.exportDone"
+	msgNotifyImportDone  msgKey = "notify.importDone"
+	msgNotifyHotkeyTaken msgKey = "notify.hotkeyTaken"
+	// msgNotifyHotkeyInvalid 与 msgNotifyHotkeyTaken 是两件事：
+	// 一个说"这个组合被别人占了"，一个说"这个组合根本不是合法的热键"。
+	// 混成一句会让用户去关别的程序，而真正的问题是他填错了键名。
+	msgNotifyHotkeyInvalid msgKey = "notify.hotkeyInvalid"
 	msgReportItems         msgKey = "report.items"
 	msgReportBlobs         msgKey = "report.blobs"
 	msgReportTook          msgKey = "report.took"
@@ -203,6 +207,7 @@ var allMsgKeys = []msgKey{
 	msgNotifyExportDone,
 	msgNotifyImportDone,
 	msgNotifyHotkeyTaken,
+	msgNotifyHotkeyInvalid,
 	msgReportItems,
 	msgReportBlobs,
 	msgReportTook,
@@ -300,6 +305,7 @@ var catalog = map[Lang]map[msgKey]string{
 		msgNotifyExportDone:     "导出完成",
 		msgNotifyImportDone:     "导入完成",
 		msgNotifyHotkeyTaken:    "全局热键已被其他应用占用",
+		msgNotifyHotkeyInvalid:  "「%s」不能当作全局热键（至少要有一个修饰键，主键得是字母、数字、F1-F12 或方向/功能键）",
 		msgReportItems:          "条目",
 		msgReportBlobs:          "图片 / 附件",
 		msgReportTook:           "耗时",
@@ -390,6 +396,7 @@ var catalog = map[Lang]map[msgKey]string{
 		msgNotifyExportDone:     "Export finished",
 		msgNotifyImportDone:     "Import finished",
 		msgNotifyHotkeyTaken:    "Global hotkey is taken by another app",
+		msgNotifyHotkeyInvalid:  "\"%s\" cannot be a global hotkey (it needs at least one modifier, and the main key must be a letter, a digit, F1-F12, or a navigation key)",
 		msgReportItems:          "Items",
 		msgReportBlobs:          "Images / attachments",
 		msgReportTook:           "Took",

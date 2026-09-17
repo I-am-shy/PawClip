@@ -21,6 +21,14 @@ export type SearchBarProps = {
   total: number
   totalValid: boolean
   loading: boolean
+  /**
+   * 呼出面板的热键，**已经按平台渲染好**（macOS 是 ⌘⇧V，其余是 Ctrl+Shift+V）。
+   *
+   * 由 App 从 ui.hotkey 现算出来传进来，空串表示用户把热键清掉了。
+   * 这里刻意只接受"渲染好的字符串"而不是原始组合：占位符是给人读的，
+   * 不该在组件里再拼一次 ⌘/Ctrl 的映射（那正是提示与设置对不上的老毛病）。
+   */
+  hotkeyLabel: string
   /** 检索走的哪条路（fts / like / …），用于诊断提示 */
   mode: string
   ftsAvailable: boolean
@@ -60,7 +68,15 @@ export function SearchBar(p: SearchBarProps) {
     t, text, onText, kind, onKind,
     pinnedOnly, onPinnedOnly, trashed, onTrashed,
     total, totalValid, loading, mode, ftsAvailable, showHint, onToggleHint, inputRef,
+    hotkeyLabel,
   } = p
+
+  // 提示与设置绑定：有热键才提热键，清掉了就只说"搜索历史"。
+  // 之前这里是写死的 "搜索历史…（⌘⇧V 呼出）"：用户把热键换成 ⌥Space、
+  // 或者干脆清空，提示都还在说 ⌘⇧V —— 一句永远不对的话。
+  const placeholder = hotkeyLabel
+    ? t('search.placeholder.summon', { key: hotkeyLabel })
+    : t('search.placeholder')
 
   // 单选：点中的那一个成为唯一选中项。再点一次已选中的等于取消，回到「全部」
   // ——与点「全部」同义，但符合"点一下切换"的直觉，也顺手修掉"选了之后
@@ -76,7 +92,7 @@ export function SearchBar(p: SearchBarProps) {
           className="searchbar-input"
           type="search"
           value={text}
-          placeholder={t('search.placeholder')}
+          placeholder={placeholder}
           spellCheck={false}
           autoComplete="off"
           onChange={(e) => onText(e.target.value)}

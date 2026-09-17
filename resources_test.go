@@ -23,14 +23,21 @@ import (
 type fakePanel struct {
 	mu sync.Mutex
 
-	attached bool
-	visible  bool
-	traySet  bool
-	trayIcon int
-	menu     []panel.TrayItem
+	attached  bool
+	attachCfg panel.Config
+	visible   bool
+	traySet   bool
+	trayIcon  int
+	menu      []panel.TrayItem
 
-	hotkey       string
-	hotkeyErr    error
+	hotkey    string
+	hotkeyErr error
+	// hotkeyErrFor 把失败限定在某个组合上（"" = 设了 hotkeyErr 就任何组合都失败）。
+	//
+	// 需要这一层是因为真实的失败是**针对一个组合**的：那个键被别的程序
+	// 占了，所以"装新键失败、把旧键装回去成功"是完全正常的路径，
+	// 而"任何注册都失败"的替身会把这条路径堵死，测不出该测的东西。
+	hotkeyErrFor string
 	hotkeyCalls  int
 	unregistered int
 
@@ -45,10 +52,13 @@ type fakePanel struct {
 	accessory int
 }
 
-func (f *fakePanel) Attach(panel.Config) error {
+func (f *fakePanel) Attach(cfg panel.Config) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.attached = true
+	// 记下配置：App 交给面板的那份参数（尺寸、热键、托盘提示语）也要能被断言，
+	// 否则"启动时热键没传下去"这种事只能靠肉眼在真机上看。
+	f.attachCfg = cfg
 	return nil
 }
 
@@ -85,7 +95,7 @@ func (f *fakePanel) RegisterHotkey(combo string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.hotkeyCalls++
-	if f.hotkeyErr != nil {
+	if f.hotkeyErr != nil && (f.hotkeyErrFor == "" || f.hotkeyErrFor == combo) {
 		// 真实实现的契约是"先卸后装"：失败之后旧热键也没了。
 		f.hotkey = ""
 		return f.hotkeyErr

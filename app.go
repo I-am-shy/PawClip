@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -315,8 +316,25 @@ func (a *App) attachPanel(ctrl panel.Controller, s *store.Settings) {
 	if w == 0 || h == 0 {
 		w, h = panelDefaultWidth, panelDefaultHeight
 	}
+	// 库里那个热键要先过一遍解析再交给面板。
+	//
+	// Attach 内部是 ParseHotkey → 注册，解析失败返回的是一个**普通错误**，
+	// 会被下面 default 分支直接 return —— 于是连托盘都装不上。
+	// 托盘是"没有 Dock 图标"（Accessory 策略）时唯一的退出入口，
+	// 不该因为一条坏掉的热键设置而整体不装。所以这里降级成
+	// "本次不注册热键"，并把原因说给用户听（提示与设置对不上时，
+	// 用户至少要知道是哪一边的问题）。
+	hotkey := strings.TrimSpace(s.UI.Hotkey)
+	if hotkey != "" {
+		if _, err := panel.ParseHotkey(hotkey); err != nil {
+			a.log.Warn("设置里的全局热键不可用，本次不注册", "hotkey", hotkey, "err", err)
+			pushEvent(EventShow, a.render(msgNotifyHotkeyInvalid, hotkey))
+			hotkey = ""
+		}
+	}
+
 	cfg := panel.Config{
-		Hotkey:  s.UI.Hotkey,
+		Hotkey:  hotkey,
 		Width:   w,
 		Height:  h,
 		Tooltip: a.T(msgTrayTooltip),
@@ -634,7 +652,7 @@ func (a *App) Settings() *store.Settings {
 // 改完**立刻生效**（M2 的热重载）。三条各不相同的作用路径，别搞混：
 //
 //	capture.* / exclude.*  → 重建过滤器推给捕获链路（Capture.ApplyFilter）
-//	ui.hotkey              → 注销旧热键、注册新的（可能失败：被占用）
+//	ui.hotkey              → 先注册、成功了才落库（setHotkey，唯一会失败的键）
 //	其它 ui.* / retention.* → 天然生效，因为它们本来就是"每次读一次"的
 //	                        （回写器走 uiSettings()，GC 走 gcConfig()）
 func (a *App) SetSetting(key, value string) error {
@@ -643,11 +661,30 @@ func (a *App) SetSetting(key, value string) error {
 		// 开发者定位问题的，不是给用户的提示——用户改不了这个。
 		return fmt.Errorf("pawclip: 未知设置键 %q", key)
 	}
+	// 热键是唯一**写之前就有可能装不上**的设置项：它要占住系统里一个全局
+	// 组合键。所以它不走下面那条"先落库、再让变化生效"的通用流程，而是
+	// 先注册、成功了才落库（见 setHotkey 的长注释）。
+	if key == store.KeyUIHotkey {
+		return a.setHotkey(value)
+	}
+	if err := a.writeSetting(a.baseCtx(), key, value); err != nil {
+		return err
+	}
+
+	a.applySettingChange(key)
+	return nil
+}
+
+// writeSetting 落库 + 让内存里的设置视图跟上。
+//
+// 抽出来是因为"热键"那条路径要在**注册成功之后**才做这两步，
+// 而通用路径一进来就做。两处必须一模一样（漏掉 reload 会让界面上的值
+// 与库里的值不一致），所以只留一份实现。
+func (a *App) writeSetting(ctx context.Context, key, value string) error {
 	db, _, _, err := a.ready()
 	if err != nil {
 		return err
 	}
-	ctx := a.baseCtx()
 	if err := db.SetRaw(ctx, key, value); err != nil {
 		return err
 	}
@@ -666,9 +703,84 @@ func (a *App) SetSetting(key, value string) error {
 		// 如实报错，而不是"看起来成功但内存里还是旧值"。
 		return msgf(msgErrSettingsLoad, reloadErr, reloadErr)
 	}
-
-	a.applySettingChange(key)
 	return nil
+}
+
+// jsonString 解开设置值里的 JSON 字符串字面量（"CmdOrCtrl+Shift+V" → CmdOrCtrl+Shift+V）。
+//
+// 设置值一律是 JSON（前端 SetSetting 的第二参就是 JSON.stringify 的结果），
+// 别的键都是原样存库、由 LoadSettingsInto 去解，所以这是第一处**写入前**
+// 需要看懂它的地方。
+func jsonString(raw string) (string, error) {
+	var s string
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		// diag: 前端契约违约（SetSetting 的第二参必须是 JSON 字面量）。
+		// 界面上永远走不到这里——真正的用户输入（热键录制）本来就会被
+		// JSON.stringify 包一层。为一句不可达的话加词条，
+		// 只会往目录里塞一个死键。
+		return "", fmt.Errorf("pawclip: 设置值不是合法的 JSON 字符串：%s", raw)
+	}
+	return s, nil
+}
+
+// setHotkey 换绑全局热键：**先注册、后落库**。
+//
+// # 为什么不能走通用流程
+//
+// RegisterHotkey 的契约是"先卸后装"，所以换绑失败时**旧热键也一起没了**。
+// 通用流程是"先写库、再到 applySettingChange 里注册"，于是失败的结果是：
+// 库里写着新组合、系统里一个热键都没注册、下次启动还会照着一个装不上的
+// 组合去注册。设置说的与实际生效的是两回事，而用户完全看不出来。
+//
+// # 三条路径必须分开
+//
+//	清空（""）     → 注销热键。这是**合法状态**：用户就是不要全局热键了。
+//	                 以前它会直接掉进 RegisterHotkey("") 并被报成
+//	                 "已被其他应用占用" —— 一句与他做的事毫不相干的话，
+//	                 而且那条错还会让他以为设置没保存。
+//	组合不合法     → 直接拒绝、不落库，并说清楚哪里不合法。
+//	被别的程序占用 → 尽力把旧热键装回去，返回错误交给界面提示。
+//
+// 最后一条的顺序很关键：**先恢复旧键，再返回错误**。否则用户为了换个热键
+// 点了一下，结果是"新的没成、旧的也没了"。
+func (a *App) setHotkey(value string) error {
+	combo, err := jsonString(value)
+	if err != nil {
+		return err
+	}
+	combo = strings.TrimSpace(combo)
+
+	if combo != "" {
+		// 写库之前校验：坏值一旦落库，下次启动会静默没有热键
+		// （attachPanel 只能降级处理），用户完全无法理解为什么按了没反应。
+		if _, err := panel.ParseHotkey(combo); err != nil {
+			return a.localizeErr(msgf(msgNotifyHotkeyInvalid, err, combo))
+		}
+	}
+
+	old := ""
+	if s := a.Settings(); s != nil {
+		old = strings.TrimSpace(s.UI.Hotkey)
+	}
+
+	if ctrl := a.panelController(); ctrl != nil {
+		if combo == "" {
+			ctrl.UnregisterHotkey()
+		} else if err := ctrl.RegisterHotkey(combo); err != nil {
+			if old != "" && old != combo {
+				if rerr := ctrl.RegisterHotkey(old); rerr != nil {
+					a.log.Warn("换绑失败后恢复旧热键也失败", "old", old, "err", rerr)
+				}
+			}
+			a.log.Error("换绑全局热键失败", "hotkey", combo, "err", err)
+			// ErrHotkeyTaken 会被 localizeErr 翻成用户语言；其余原样透出
+			// （那时那是诊断信息，翻译它没有意义）。
+			return a.localizeErr(err)
+		}
+	}
+
+	// 走到这里才说明"系统里真的换上了"，现在写库。
+	return a.writeSetting(a.baseCtx(), store.KeyUIHotkey, value)
 }
 
 // applySettingChange 把"设置变了"这件事推到真正受影响的组件上。
@@ -685,26 +797,14 @@ func (a *App) applySettingChange(key string) {
 		}
 		// 暂停/恢复会改变托盘的勾选态。
 		a.refreshTray()
-	case key == "ui.hotkey":
-		ctrl := a.panelController()
-		if ctrl == nil {
-			return
-		}
-		s := a.Settings()
-		if s == nil {
-			return
-		}
-		if err := ctrl.RegisterHotkey(s.UI.Hotkey); err != nil {
-			// 换绑失败时**旧热键已经注销了**（RegisterHotkey 的契约是"先卸后装"），
-			// 所以这是一个用户可感知的失败：必须显式提示，不能只记日志。
-			a.log.Error("换绑全局热键失败", "hotkey", s.UI.Hotkey, "err", err)
-			a.notify(a.T(msgTrayTooltip), a.T(msgNotifyHotkeyTaken))
-			pushEvent(EventSettings, a.T(msgNotifyHotkeyTaken))
-		}
 	case key == "ui.language":
 		// 语言变了要重刷托盘文案（它是唯一"后端自己渲染的文字"）。
 		a.refreshTray()
 	}
+
+	// ui.hotkey **不在这里**：它写库之前就得先注册成功（见 setHotkey）。
+	// 放在这里的话，注册失败时设置已经落库了，于是"界面显示的组合"
+	// 与"实际注册的组合"不一致——正是这一版要修掉的那类问题。
 }
 
 // Flush 强制把写入队列排空并提交。拍验收证据、或用户手动导出前用得上。

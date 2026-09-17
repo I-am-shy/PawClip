@@ -29,6 +29,11 @@ export type PanelProps = {
   settings: SettingsShape | null
   /** 平台修饰键记号（⌘ / Ctrl+），由 App 按后端上报的平台决定。 */
   modLabel: string
+  /**
+   * 呼出热键的显示形式（⌘⇧V / Ctrl+Shift+V），空串 = 没设热键。
+   * 由 App 从 ui.hotkey 现算，供搜索框的占位提示使用。
+   */
+  hotkeyLabel: string
   trashed: boolean
   onTrashed: (v: boolean) => void
   /** 面板要求隐藏（Esc 的兜底行为）。 */
@@ -449,6 +454,7 @@ export function Panel(p: PanelProps) {
           total={total}
           totalValid={totalValid}
           loading={loading}
+          hotkeyLabel={p.hotkeyLabel}
           mode={mode}
           ftsAvailable={ftsAvailable}
           showHint={showHint}
