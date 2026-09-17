@@ -25,7 +25,8 @@
  * 输入法影响：中文输入法开着的时候，key 可能给出 "Process"，
  * 而 code 仍然是 "KeyV"。捕获热键必须按**物理键**来。
  *
- * ⚠️ Backspace / Delete 刻意**不在**这张表里：录制中它俩是"清除"。
+ * ⚠️ Backspace / Delete 刻意**不在**这张表里：输入态里它俩是"清空草稿"
+ * （清空之后再点"确认"，就是取消全局热键——这是"留空即取消"的实现方式）。
  * 把清除做成一个要记忆的按钮，不如让用户按他当下最想按的那个键。
  */
 const CODE_TO_TOKEN: Record<string, string> = {
@@ -86,6 +87,46 @@ function keyToken(e: KeyboardEvent): string | null {
 }
 
 /**
+ * modifierParts 列出这次按键带着的修饰键（规范记号）。
+ *
+ * 顺序与后端 Hotkey.String() 一致（CmdOrCtrl → Cmd → Ctrl → Alt → Shift），
+ * 免得"同一个热键、两次输入、两种写法"。
+ *
+ * 只按修饰键、还没按主键时它也能给出结果——界面靠它实时回显"我正在听"，
+ * 这是用户判断键盘通不通的唯一线索。
+ *
+ * 平台差异只体现在**修饰键的落法**上：macOS 按 ⌘ 记成 CmdOrCtrl、
+ * 按 ⌃ 记成 Ctrl；Windows 按 Ctrl 记成 CmdOrCtrl、按 Win 记成 Cmd。
+ * 这样一份设置跨平台都是同一个意思（DESIGN §9 的默认值就是这么写的）。
+ */
+function modifierParts(e: KeyboardEvent, platform: string): string[] {
+  const isMac = platform === 'darwin'
+  const parts: string[] = []
+  if (isMac ? e.metaKey : e.ctrlKey) parts.push('CmdOrCtrl')
+  if (!isMac && e.metaKey) parts.push('Cmd')
+  if (isMac && e.ctrlKey) parts.push('Ctrl')
+  if (e.altKey) parts.push('Alt')
+  if (e.shiftKey) parts.push('Shift')
+  return parts
+}
+
+/**
+ * heldModifiers 返回"此刻按住了哪些修饰键"，供界面实时回显（如 `⌘⇧`）。
+ *
+ * 为什么值得单列一个导出：输入态里按下 ⌘ 而界面纹丝不动，用户没法区分
+ * "键盘没被听见"和"还差一个主键"。前者是 bug，后者是正常流程，
+ * 而两种情况下界面长得一模一样。
+ */
+export function heldModifiers(e: KeyboardEvent, platform: string): string {
+  return modifierParts(e, platform).join('+')
+}
+
+/** hasAnyModifier 报告这次按键是否带着修饰键（用来把 Esc / Enter / 裸键挑出来）。 */
+export function hasAnyModifier(e: KeyboardEvent, platform: string): boolean {
+  return modifierParts(e, platform).length > 0
+}
+
+/**
  * comboFromEvent 把一次 Keydown 翻成规范组合串；还不构成一个热键时返回 null。
  *
  * 三种情况返回 null，调用方应当**继续等待**而不是报错：
@@ -94,37 +135,23 @@ function keyToken(e: KeyboardEvent): string | null {
  *   · 按了不支持的键（标点、小键盘运算符……后端在全局热键上不认识它们）；
  *   · 一个修饰键都没有 —— 后端同样拒绝（裸键的全局热键等于把那个键
  *     从整个系统吃掉，见 panel.ParseHotkey 的长注释）。
- *
- * 平台差异只体现在**修饰键的落法**上：macOS 按 ⌘ 记成 CmdOrCtrl、
- * 按 ⌃ 记成 Ctrl；Windows 按 Ctrl 记成 CmdOrCtrl、按 Win 记成 Cmd。
- * 这样一份设置跨平台都是同一个意思（DESIGN §9 的默认值就是这么写的）。
  */
 export function comboFromEvent(e: KeyboardEvent, platform: string): string | null {
   const key = keyToken(e)
   if (!key) return null
 
-  const isMac = platform === 'darwin'
-  const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey
-  const cmd = !isMac && e.metaKey
-  const ctrl = isMac && e.ctrlKey
-  const alt = e.altKey
-  const shift = e.shiftKey
-
-  if (!cmdOrCtrl && !cmd && !ctrl && !alt && !shift) return null
-
-  // 顺序与后端 Hotkey.String() 一致（CmdOrCtrl → Cmd → Ctrl → Alt → Shift → 键），
-  // 免得"同一个热键、两次录制、两种写法"。
-  const parts: string[] = []
-  if (cmdOrCtrl) parts.push('CmdOrCtrl')
-  if (cmd) parts.push('Cmd')
-  if (ctrl) parts.push('Ctrl')
-  if (alt) parts.push('Alt')
-  if (shift) parts.push('Shift')
+  const parts = modifierParts(e, platform)
+  if (parts.length === 0) return null
   parts.push(key)
   return parts.join('+')
 }
 
-/** 录制中的"按键是否是清除/取消"判据（两个键都算，符合各家的习惯）。 */
+/** hasBindableKey 报告这次按键的**主键**是不是后端认识的那种（字母/数字/具名键）。 */
+export function hasBindableKey(e: KeyboardEvent): boolean {
+  return keyToken(e) !== null
+}
+
+/** 输入态里"清空草稿"的判据（两个键都算，符合各家的习惯）。 */
 export function isClearKey(e: KeyboardEvent): boolean {
   return e.code === 'Backspace' || e.code === 'Delete' || e.key === 'Backspace' || e.key === 'Delete'
 }

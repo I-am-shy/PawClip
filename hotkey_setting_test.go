@@ -9,6 +9,10 @@
 //	被占用 → 库里写着新组合，系统里一个都没装（设置与事实脱钩）
 //
 // 这三种都不会崩、不会报错日志，只会让用户"按了没反应"，所以必须钉住。
+//
+// 文件下半部分是另一半故事：**让出 / 收回**。设置页的热键控件在"输入态"里
+// 要读键盘，而系统级热键会在事件分发之前把按键吃掉，所以那几秒必须先把热键
+// 从系统里摘下来——真机上"这个控件输入不了"就是这么来的。
 
 package main
 
@@ -232,5 +236,103 @@ func TestHotkeyContract_FrontendTokensAreParsable(t *testing.T) {
 		if _, err := panel.ParseHotkey("Ctrl+" + tok); err != nil {
 			t.Errorf("前端会产出键名 %q，而后端解析不了：%v", tok, err)
 		}
+	}
+}
+
+// ── 输入态：让出 / 收回热键 ──────────────────────────────────────
+//
+// 设置页的热键控件是"先输入、再确认"的：进入输入态时要读键盘，而**系统级
+// 热键在事件分发之前就把按键吃掉了**（Carbon 的 RegisterEventHotKey、
+// Win32 的 RegisterHotKey 都收在窗口消息之前），WebView 根本收不到那一次
+// keydown。真机上的表现就是"这个控件输入不了"。
+//
+// 所以输入态开始让出、结束收回。这三条测试分别钉住：让出是真的、
+// 收回是按设置值装的、以及**收起面板时不依赖前端**也要收回。
+
+// TestSuspendHotkey_HoldsTheHotkeyOpenWhileInputting 钉住让出与收回。
+func TestSuspendHotkey_HoldsTheHotkeyOpenWhileInputting(t *testing.T) {
+	a, fp := newHotkeyApp(t)
+
+	const combo = "Ctrl+Alt+P"
+	if err := a.SetSetting(store.KeyUIHotkey, `"Ctrl+Alt+P"`); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	fp.unregistered = 0
+
+	a.SuspendHotkey()
+	if fp.hotkey != "" {
+		t.Errorf("让出之后系统里还留着热键 %q", fp.hotkey)
+	}
+	if fp.unregistered != 1 {
+		t.Errorf("注销被调用 %d 次，想要 1 次", fp.unregistered)
+	}
+
+	// 幂等：输入态的 effect 重挂时可能连着调两次，不该反复注销。
+	a.SuspendHotkey()
+	if fp.unregistered != 1 {
+		t.Errorf("重复让出又注销了一次（共 %d 次）", fp.unregistered)
+	}
+
+	if err := a.ResumeHotkey(); err != nil {
+		t.Fatalf("ResumeHotkey: %v", err)
+	}
+	if fp.hotkey != combo {
+		t.Errorf("收回之后系统里的热键 = %q，想要 %q", fp.hotkey, combo)
+	}
+	// 让出/收回只动**注册**，不动设置：用户什么都没提交，库里那行原样不动。
+	if got := a.Settings().UI.Hotkey; got != combo {
+		t.Errorf("让出/收回改动了设置里的热键：%q", got)
+	}
+}
+
+// TestResumeHotkey_IsIdempotentAndRespectsEmptySetting 钉住收回的两条边界。
+func TestResumeHotkey_IsIdempotentAndRespectsEmptySetting(t *testing.T) {
+	a, fp := newHotkeyApp(t)
+
+	// 没让出过就收回：什么都不该发生。设置页每挂载一次都会调一次收回，
+	// 若无条件注册，用户每次进设置页都会重装一遍热键。
+	before := fp.hotkeyCalls
+	if err := a.ResumeHotkey(); err != nil {
+		t.Fatalf("ResumeHotkey: %v", err)
+	}
+	if fp.hotkeyCalls != before {
+		t.Errorf("没让出过也注册了热键（调用 %d 次）", fp.hotkeyCalls)
+	}
+
+	// 用户本来就没设热键（清空是合法状态）：收回之后仍然没有，且不该报错。
+	if err := a.SetSetting(store.KeyUIHotkey, `""`); err != nil {
+		t.Fatalf("清空热键：%v", err)
+	}
+	a.SuspendHotkey()
+	if err := a.ResumeHotkey(); err != nil {
+		t.Fatalf("没有热键时收回应当无害，却报错：%v", err)
+	}
+	if fp.hotkey != "" {
+		t.Errorf("用户已经清空热键，收回却又装上了 %q", fp.hotkey)
+	}
+}
+
+// TestHidePanel_ResumesHotkeyWithoutHelpFromFrontend 钉住不依赖前端的兜底。
+//
+// 输入态里点一下面板外面（ui.closeOnBlur）或等空闲超时，面板就收起了，
+// 而**设置页组件不会卸载**——前端那个"卸载时收回"的兜底不会跑。
+// 收起这条路径不兜住的话，用户的全局热键会一直停在"已让出"状态：
+// 热键没了，而设置页里还显示着那个组合，他完全看不出来。
+func TestHidePanel_ResumesHotkeyWithoutHelpFromFrontend(t *testing.T) {
+	a, fp := newHotkeyApp(t)
+
+	const combo = "Ctrl+Alt+P"
+	if err := a.SetSetting(store.KeyUIHotkey, `"Ctrl+Alt+P"`); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+
+	a.SuspendHotkey()
+	if fp.hotkey != "" {
+		t.Fatalf("前置条件不成立：让出之后系统里还有 %q", fp.hotkey)
+	}
+
+	a.HidePanel()
+	if fp.hotkey != combo {
+		t.Errorf("收起面板后系统里的热键 = %q，想要 %q（热键被留在让出态了）", fp.hotkey, combo)
 	}
 }

@@ -457,6 +457,15 @@ export type Bindings = {
 
   ShowPanel(): Promise<void>
   HidePanel(): Promise<void>
+  /**
+   * 热键输入态：让出 / 收回全局热键。
+   *
+   * 系统级热键在事件分发之前就把按键吃掉了，WebView 收不到那一次 keydown——
+   * 录制热键时必须先让出，否则"按下当前组合"在界面上毫无反应。
+   * 两者都是幂等的，且只动注册、不动设置。
+   */
+  SuspendHotkey(): Promise<void>
+  ResumeHotkey(): Promise<void>
   /** 在标题栏空白处按下鼠标时调用：交给原生拖动循环移动窗口。 */
   DragPanel(): Promise<void>
   PanelVisible(): Promise<boolean>

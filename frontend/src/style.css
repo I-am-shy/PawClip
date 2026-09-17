@@ -1135,13 +1135,18 @@ select.input {
   flex: 1 1 auto;
   min-width: 0;
   /* .settings-row-wide .input 给了 width:100%——那是给"真正的输入框"的；
-     这里会把它撑成整行、把旁边的"清除"挤成竖排，所以抵消掉，
+     这里会把它撑成整行、把旁边的按钮挤成竖排，所以抵消掉，
      让 flex-grow 去分剩余空间。 */
   width: auto;
   /* 按钮默认居中且不是等宽字体，热键记号用等宽字更整齐（⌘⇧V / Ctrl+Shift+V）。 */
   text-align: left;
   font-family: var(--mono);
   cursor: pointer;
+  /* 它长得像输入框，但**不是**输入框：这上面没有可选中的内容。
+     （面板上只有剪贴板内容可选中，见 §11；成对写 -webkit- 是因为
+     Wails 用的是系统 WebView，老 WebKit 只认前缀。） */
+  user-select: none;
+  -webkit-user-select: none;
   /* .input 的 height/padding/圆角/底色已经有了，这里不重复。 */
 }
 
@@ -1167,6 +1172,12 @@ select.input {
   color: var(--fg-muted);
   font-size: 11px;
   line-height: 1.4;
+}
+
+/* 提示语在"说问题"时（缺修饰键 / 这个键不支持）换成警示色。
+   与默认那句操作说明区分开：用户按下键之后扫一眼就知道那一下有没有被接受。 */
+.hotkey-hint-warn {
+  color: var(--warn);
 }
 
 .path {

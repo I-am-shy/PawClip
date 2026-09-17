@@ -54,6 +54,8 @@
       }
 
       // 记录最后一次 SetSetting，便于在浏览器控制台里核对"前端到底发了什么"。
+      // Suspend/ResumeHotkey 也记一条：输入态那几秒热键必须处于"已让出"状态，
+      // 而这件事在浏览器里看不见（真实效果要系统级热键才体现），只能核对调用。
       window.__log = []
       const overrides = {
         Lang: async () => 'zh-CN',
@@ -61,6 +63,14 @@
         SetSetting: async (key, value) => {
           window.__log.push([key, value])
           if (key === 'ui.hotkey') settings.ui.hotkey = JSON.parse(value)
+          return null
+        },
+        SuspendHotkey: async () => {
+          window.__log.push(['SuspendHotkey'])
+          return null
+        },
+        ResumeHotkey: async () => {
+          window.__log.push(['ResumeHotkey'])
           return null
         },
         TakeEvents: async () => [],

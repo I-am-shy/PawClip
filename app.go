@@ -93,6 +93,15 @@ type App struct {
 
 	settingsMu sync.RWMutex
 	stopOnce   sync.Once
+
+	// hotkeyMu 保护 hotkeySuspended。
+	//
+	// 独立一把锁而不是复用 settingsMu：这两个状态的生命周期完全不同——
+	// settingsMu 护的是"设置视图"，而 hotkeySuspended 是几秒钟的瞬时状态
+	// （设置页打开着热键输入态的那几秒），不该和读设置互相排队。
+	hotkeyMu sync.Mutex
+	// hotkeySuspended 为真表示全局热键被**输入态**临时让出了（见 SuspendHotkey）。
+	hotkeySuspended bool
 }
 
 // NewApp 只保存配置。不做任何 IO、不碰磁盘、不启 goroutine。

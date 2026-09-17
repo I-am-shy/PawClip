@@ -691,12 +691,83 @@ func (a *App) ShowPanel() error {
 // 还带着一件容易被漏掉的事——**把面板尺寸落盘**。之前只有 ✕ 那条路会落盘，
 // 于是"拖大面板 → 按热键收起 → 重启"就又回到了旧尺寸。
 func (a *App) HidePanel() {
+	// 输入态中途被收起（失焦 / 空闲超时 / 热键 toggle）时不能把热键留在
+	// "已让出"的状态：那个状态只该活在设置页开着输入的那几秒里。
+	// 前端在输入态结束时也会收回，这里是不依赖前端的兜底。
+	if err := a.ResumeHotkey(); err != nil {
+		a.log.Warn("收起面板时恢复全局热键失败", "err", err)
+	}
 	if ctrl := a.panelController(); ctrl != nil {
 		// 先落盘尺寸再收起：用户可能刚拖过边缘，这次收起之后就不再打开
 		// （比如直接退出），尺寸不能丢。
 		a.persistPanelSize()
 		ctrl.Hide()
 	}
+}
+
+// SuspendHotkey 让出全局热键（设置页的热键控件进入输入态时调用）。幂等。
+//
+// # 为什么必须让出
+//
+// 系统级热键（macOS 的 Carbon RegisterEventHotKey、Windows 的 RegisterHotKey）
+// 是在**事件分发给窗口之前**把按键吃掉的，WebView 永远收不到那一次 keydown。
+// 于是"点开热键框、按下当前组合"这件事在界面上毫无反应——看起来像控件坏了，
+// 实际是系统把它拦走了。让出之后，用户按什么都能被听见。
+//
+// ⚠️ 让出的是**注册**，不是设置：库里那一行原样不动，收回时（ResumeHotkey）
+// 按当前设置装回去——用户什么都没提交，拿回的就是旧热键。
+func (a *App) SuspendHotkey() {
+	a.hotkeyMu.Lock()
+	already := a.hotkeySuspended
+	a.hotkeySuspended = true
+	a.hotkeyMu.Unlock()
+	if already {
+		return
+	}
+	if ctrl := a.panelController(); ctrl != nil {
+		ctrl.UnregisterHotkey()
+	}
+}
+
+// ResumeHotkey 结束让出态，按当前设置把热键装回去。幂等：没让出过就什么都不做。
+//
+// 返回的错误只在"恢复失败"时出现（组合在这几秒里被别的程序抢走）。调用方
+// 按场景决定要不要说话：设置页会提示，收起面板那条路只记日志。
+func (a *App) ResumeHotkey() error {
+	a.hotkeyMu.Lock()
+	was := a.hotkeySuspended
+	a.hotkeySuspended = false
+	a.hotkeyMu.Unlock()
+	if !was {
+		return nil
+	}
+	return a.applyHotkeyFromSettings()
+}
+
+// applyHotkeyFromSettings 按**当前设置**重新注册热键（空值 = 保持注销）。
+//
+// 与 setHotkey 的分工：那条路径负责"用户改了什么"，先注册后落库；
+// 这条只负责"把设置里已经写着的值装回系统"，一行都不写库。
+func (a *App) applyHotkeyFromSettings() error {
+	ctrl := a.panelController()
+	if ctrl == nil {
+		return nil
+	}
+	s := a.Settings()
+	if s == nil {
+		return nil
+	}
+	combo := strings.TrimSpace(s.UI.Hotkey)
+	if combo == "" {
+		// 用户本来就没设热键：让出和收回都是"保持没有"。
+		ctrl.UnregisterHotkey()
+		return nil
+	}
+	if err := ctrl.RegisterHotkey(combo); err != nil {
+		a.log.Error("恢复全局热键失败", "hotkey", combo, "err", err)
+		return a.localizeErr(err)
+	}
+	return nil
 }
 
 // DragPanel 开始一次原生窗口拖动。
