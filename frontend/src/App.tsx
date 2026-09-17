@@ -1,7 +1,7 @@
 // 应用外壳：语言 / 主题 / 设置 / 视图切换 / 原生事件。
 //
 // 状态都集中在这里（没有状态库，§0.4 的冻结栈）：
-// 语言、主题、设置、当前视图、分类与标签的缓存、toast。
+// 语言、主题、设置、当前视图、toast。
 // 面板自己的列表状态在 views/Panel.tsx 里，切视图即卸载。
 //
 // 一个必须说清的取舍：**面板窗口是整个应用唯一那个窗口**。
@@ -12,13 +12,11 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   call,
-  type Category,
   type Health,
   type ImportRow,
   type PanelLifecycleReport,
   type SettingsShape,
   type StatsSummary,
-  type Tag,
 } from './api'
 import { makeT, normalizeLang, type Lang } from './i18n'
 import { applyTheme, resolveTheme, useSystemDark, type ThemePref } from './theme'
@@ -27,11 +25,9 @@ import { Panel } from './views/Panel'
 import { Settings } from './views/Settings'
 import { Stats } from './views/Stats'
 import { Backup } from './views/Backup'
-import { Categories } from './views/Categories'
-import { Tags } from './views/Tags'
 import { IconAlert, IconArchive, IconChart, IconSettings, IconX } from './components/Icons'
 
-type View = 'panel' | 'settings' | 'stats' | 'backup' | 'categories' | 'tags'
+type View = 'panel' | 'settings' | 'stats' | 'backup'
 
 export default function App() {
   // ── 基础状态 ──────────────────────────────────────────────────
@@ -40,8 +36,6 @@ export default function App() {
   const [view, setView] = useState<View>('panel')
   const [settings, setSettings] = useState<SettingsShape | null>(null)
   const [health, setHealth] = useState<Health | null>(null)
-  const [categories, setCategories] = useState<Category[]>([])
-  const [tags, setTags] = useState<Tag[]>([])
   const [stats, setStats] = useState<StatsSummary | null>(null)
   const [lifecycle, setLifecycle] = useState<PanelLifecycleReport | null>(null)
   const [trashed, setTrashed] = useState(false)
@@ -103,7 +97,7 @@ export default function App() {
         setDataDir(d)
         setConfigPath(c)
 
-        await refreshSidebar()
+        await refreshLastImport()
       } catch (e: unknown) {
         if (alive) setBootError(e instanceof Error ? e.message : String(e))
       }
@@ -115,15 +109,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const refreshSidebar = useCallback(async () => {
-    const [cs, ts, li] = await Promise.all([
-      call('Categories').catch(() => null),
-      call('Tags').catch(() => null),
-      call('LastImport').catch(() => null),
-    ])
-    setCategories(cs ?? [])
-    setTags(ts ?? [])
-    setLastImport(li)
+  // 只服务"导出/导入"页上那条"上次导入"的提示。
+  // 分类/标签管理已下线（见 docs/DESIGN.md §10），这里不再需要拉那两个列表。
+  const refreshLastImport = useCallback(async () => {
+    setLastImport(await call('LastImport').catch(() => null))
   }, [])
 
   const refreshStats = useCallback(async () => {
@@ -291,8 +280,6 @@ export default function App() {
           <Panel
             t={t}
             settings={settings}
-            categories={categories}
-            tags={tags}
             modLabel={modLabel}
             trashed={trashed}
             onTrashed={setTrashed}
@@ -340,27 +327,7 @@ export default function App() {
           <Backup
             t={t}
             lastImport={lastImport}
-            onReload={() => void refreshSidebar()}
-            onToast={onToast}
-            onBack={() => setView('panel')}
-          />
-        )}
-
-        {view === 'categories' && (
-          <Categories
-            t={t}
-            categories={categories}
-            onReload={() => void refreshSidebar()}
-            onToast={onToast}
-            onBack={() => setView('panel')}
-          />
-        )}
-
-        {view === 'tags' && (
-          <Tags
-            t={t}
-            tags={tags}
-            onReload={() => void refreshSidebar()}
+            onReload={() => void refreshLastImport()}
             onToast={onToast}
             onBack={() => setView('panel')}
           />

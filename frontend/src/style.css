@@ -92,10 +92,43 @@ body {
   color: var(--fg);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
-  /* 面板整体不可选中：这是一堆列表项，拖拽选中只会带来"看起来花了"的观感。
-     需要复制的正文由 .preview-text 单独放开（见下）。 */
-  user-select: none;
   overflow: hidden;
+  /* ── 可选中 = "内容"，不可选中 = "控件" ──────────────────────────
+   *
+   * 默认全部关掉，只把**剪贴板内容**显式放开，目前就三处：
+   *   .item-preview   列表行里的正文摘要
+   *   .preview-text   预览浮层里的正文
+   *   .filelink       预览里的文件路径（也是内容）
+   * 其余一律保持不可选中：徽标（"过期于 3d"）、快捷键提示（⌘1）、
+   * 应用名 / 相对时间 / 大小这类元信息，以及按钮、导航、搜索栏、底部链接——
+   * 它们不是拿来复制的，拖拽选中只会让面板看起来花了。
+   * 新增组件时不要随手写 user-select: text，先问它是不是正文。
+   *
+   * 两套前缀都写：Wails 用的是系统 WebView，macOS 12 及更早的 WebKit
+   * 只认 -webkit-，少了它这里会整条失效（表现为"什么都能选中"）。
+   */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 控件显式关掉选择。上面 body 的 none 已经能靠继承盖住它们，这里再写一遍
+   是为了让"控件不可选中"成为一条**不依赖继承**的硬约束：将来谁在 .item
+   这类容器上放开选择，徽标与快捷键提示也不会跟着变成可选中。 */
+.titlebar,
+.nav,
+.searchbar-row,
+.searchbar-filters,
+.item-meta,
+.item-trailing,
+.badge,
+.quickkey,
+.batchbar,
+.statcard,
+.btn,
+.iconbtn,
+.linkbtn {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 code.path,
@@ -397,82 +430,6 @@ code.path,
   color: var(--accent);
 }
 
-/* ── 分类树 ────────────────────────────────────────────────────── */
-
-.tree {
-  width: 148px;
-  flex: none;
-  border-right: 1px solid var(--border);
-  padding: 6px 4px;
-  overflow-y: auto;
-}
-
-.tree-section + .tree-section {
-  margin-top: 8px;
-}
-
-.tree-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 2px 6px;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--fg-muted);
-}
-
-.treeitem {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 3px 6px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--fg-dim);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.treeitem:hover:not(.treeitem-on) {
-  background: var(--bg-hover);
-  color: var(--fg);
-}
-
-.treeitem-on {
-  background: var(--bg-active);
-  color: var(--accent);
-}
-
-.treedot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  border: 1px solid var(--border-strong);
-  flex: none;
-}
-
-.treename {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.treecount {
-  color: var(--fg-muted);
-  font-size: 10.5px;
-}
-
-.tree-empty {
-  padding: 2px 6px;
-  color: var(--fg-muted);
-}
-
 /* ── 列表 ──────────────────────────────────────────────────────── */
 
 .itemlist {
@@ -542,6 +499,10 @@ code.path,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 这一行显示的就是剪贴板正文（截断的）。列表里唯一该被选中的东西——
+     想整段抠走请开预览，但"我想复制这几个字"是真实需求，不该拦。 */
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .item-meta {
@@ -720,6 +681,7 @@ code.path,
   word-break: break-word;
   /* 这里放开选择：用户打开预览十有八九是为了手动抠一段文字。 */
   user-select: text;
+  -webkit-user-select: text;
   cursor: text;
 }
 
@@ -744,7 +706,9 @@ code.path,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 文件路径也是内容：用户会想复制出去在别的地方打开。 */
   user-select: text;
+  -webkit-user-select: text;
 }
 
 .filelink:hover {
@@ -1364,67 +1328,6 @@ select.input {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-}
-
-/* ── 分类 / 标签管理 ───────────────────────────────────────────── */
-
-.creator {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.creator .input {
-  flex: 1 1 auto;
-  max-width: 260px;
-}
-
-.adminlist {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.adminrow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 5px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.adminrow .input {
-  flex: 1 1 auto;
-  max-width: 240px;
-}
-
-.admincount {
-  color: var(--fg-muted);
-  font-family: var(--mono);
-  font-size: 11px;
-  min-width: 34px;
-  text-align: right;
-}
-
-.adminempty {
-  padding: 12px;
-  color: var(--fg-muted);
-  list-style: none;
-}
-
-.swatches {
-  display: flex;
-  gap: 3px;
-  flex: none;
-}
-
-.swatch {
-  width: 15px;
-  height: 15px;
-  border-radius: 50%;
-  border: 1px solid var(--border-strong);
-  cursor: pointer;
-  padding: 0;
 }
 
 .swatch-on {

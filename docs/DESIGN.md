@@ -623,9 +623,9 @@ TOML 解析用 `github.com/BurntSushi/toml`（约 100 KB、无传递依赖）。
 pawclip/
 ├─ frontend/                            # React + Vite + TypeScript
 │  ├─ src/
-│  │  ├─ views/        panel · settings · categories · tags · backup · stats
-│  │  ├─ components/   list · searchbar · preview · ttl-badge · category-tree
-│  │  ├─ i18n/         zh-CN.ts · en.ts
+│  │  ├─ views/        panel · settings · stats · backup
+│  │  ├─ components/   itemlist · searchbar · preview · ttl-badge · icons
+│  │  ├─ i18n.ts       zh-CN / en 两份字典
 │  │  └─ main.tsx
 │  └─ vite.config.ts
 ├─ clipboard/                           # 平台原生剪贴板层
@@ -727,6 +727,12 @@ pawclip/
 - 批量操作：多选删除 / 改分类 / 改过期
 - `.clipbak` 导出导入（JSON/YAML 可选、选择性导出、一键回滚）
 - 存储统计面板（条数 / 占用 / Top 来源应用）
+
+> **分类与标签的界面已下线（2026-09-17）**：面板不再有左侧分类侧栏，
+> 「分类」「标签」两个管理页也已删除。数据表、Go 绑定（`Categories` /
+> `SaveCategory` / `Tags` / `SaveTag` …）与 `.clipbak` 清单里的分类 / 标签
+> 字段**全部保留**——已有数据不丢，导出包仍能带分类，将来要恢复界面
+> 也不必动后端。面板因此只剩一件事：**展示剪贴板历史**。
 
 ### P2 · 效率增强
 

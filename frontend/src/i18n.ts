@@ -21,8 +21,6 @@ const zh: Dict = {
   'nav.settings': '设置',
   'nav.stats': '统计',
   'nav.backup': '导出 / 导入',
-  'nav.categories': '分类',
-  'nav.tags': '标签',
 
   'search.placeholder': '搜索历史…（⌘⇧V 呼出）',
   'search.clear': '清空',
@@ -39,7 +37,6 @@ const zh: Dict = {
   'list.end': '到底了',
   'list.count': '共 {n} 条',
   'list.all': '全部',
-  'list.uncategorized': '未分类',
   'list.countApprox': '{n}+ 条',
   'list.trash': '回收站',
 
@@ -73,7 +70,6 @@ const zh: Dict = {
   'action.delete': '删除',
   'action.restore': '恢复',
   'action.purge': '彻底删除',
-  'action.more': '更多',
 
   'trash.empty': '清空回收站',
   'trash.emptyConfirm': '清空回收站？其中的条目将被彻底删除，无法恢复。',
@@ -251,7 +247,6 @@ const zh: Dict = {
 
   'common.close': '关闭',
   'common.cancel': '取消',
-  'common.confirm': '确定',
   'common.none': '（无）',
   'common.warnings': '警告',
   'common.errors': '错误',
@@ -265,8 +260,6 @@ const en: Dict = {
   'nav.settings': 'Settings',
   'nav.stats': 'Stats',
   'nav.backup': 'Export / Import',
-  'nav.categories': 'Categories',
-  'nav.tags': 'Tags',
 
   'search.placeholder': 'Search history…  (⌘⇧V to summon)',
   'search.clear': 'Clear',
@@ -283,7 +276,6 @@ const en: Dict = {
   'list.end': 'End',
   'list.count': '{n} items',
   'list.all': 'All',
-  'list.uncategorized': 'Uncategorized',
   'list.countApprox': '{n}+ items',
   'list.trash': 'Trash',
 
@@ -313,7 +305,6 @@ const en: Dict = {
   'action.delete': 'Delete',
   'action.restore': 'Restore',
   'action.purge': 'Delete permanently',
-  'action.more': 'More',
 
   'trash.empty': 'Empty trash',
   'trash.emptyConfirm': 'Empty the trash? Those items will be permanently deleted.',
@@ -489,7 +480,6 @@ const en: Dict = {
 
   'common.close': 'Close',
   'common.cancel': 'Cancel',
-  'common.confirm': 'OK',
   'common.none': '(none)',
   'common.warnings': 'Warnings',
   'common.errors': 'Errors',

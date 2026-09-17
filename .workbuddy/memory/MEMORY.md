@@ -45,6 +45,26 @@
 - 已知不达标项：空闲内存 54 MB vs 目标 30 MB（面板"闲置销毁"在 Wails v2.16 单窗口模型下
   做不了，当前是**闲置收起**）。这条要如实写在 README 与 `docs/ACCEPTANCE.md`，不粉饰。
 
+## 面板 UI 现状（2026-09-17）
+
+- **分类与标签的前端界面已整体下线**：面板没有左侧分类侧栏，`views/` 里也
+  没有 Categories/Tags 了。数据表、Go 绑定（`Categories`/`SaveCategory`/
+  `Tags`/`SaveTag`/…）与 `.clipbak` 的分类/标签字段**全部保留**——恢复界面
+  不必动后端。`api.ts` 的 ListOptions 仍镜像 categoryId/uncategorized/tagId
+  三个筛选字段（始终默认值），**别顺手清理**。
+- **文本可选中策略**：只有剪贴板内容可选（`.item-preview` / `.preview-text` /
+  `.filelink`），其余控件一律 none；`user-select` 与 `-webkit-user-select`
+  必须成对写（老 WebKit 只认前缀，少了会"什么都能选中"）。策略全文在
+  style.css body 规则的注释里。
+
+## 工具纪律（AI 执行时必守）
+
+- **对同一文件的多次 Edit 必须逐条串行**：一个消息里并行发多个 Edit 会互相
+  覆盖且全部"报成功"——本仓库已实际丢过 6+ 处编辑。批量编辑后必须读盘核对
+  关键改动真的落盘了。
+- 复杂文本匹配用 Grep 工具；BSD grep 不支持 `\|` 交替（静默返回空结果）。
+- 常驻 dev server 必须用 run_in_background，`(... &)` 会随工具 shell 退出被杀。
+
 ## 用户偏好（沿用）
 
 - 一次把剩余步骤跑完再统一复核，不要逐步征求同意；但每批/每 PR 要给出可核对的实测输出

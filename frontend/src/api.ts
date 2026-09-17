@@ -37,6 +37,9 @@ export type Cursor = { createdAt: number; id: number }
 export type ListOptions = {
   text: string
   kinds: string[] | null
+  // 分类 / 标签筛选：前端界面已下线（docs/DESIGN.md §11 P1），但 Go 绑定
+  // 的 ListOptions 仍带这三个字段——跨进程契约保持镜像，所以这里保留，
+  // 值始终是默认值（null / false）。
   categoryId: number | null
   uncategorized: boolean
   tagId: number | null

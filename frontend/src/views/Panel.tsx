@@ -12,16 +12,13 @@ import type { T as TFn } from '../i18n'
 import {
   call,
   defaultListOptions,
-  type Category,
   type Cursor,
   type ListRow,
   type PasteResult,
   type SequenceState,
   type SettingsShape,
-  type Tag,
 } from '../api'
 import { useDebounce, useInterval } from '../hooks'
-import { CategoryTree } from '../components/CategoryTree'
 import { ItemList } from '../components/ItemList'
 import { Preview } from '../components/Preview'
 import { SearchBar, buildOpts } from '../components/SearchBar'
@@ -30,15 +27,13 @@ import { IconChevron, IconRestore, IconTrash } from '../components/Icons'
 export type PanelProps = {
   t: TFn
   settings: SettingsShape | null
-  categories: Category[]
-  tags: Tag[]
   /** 平台修饰键记号（⌘ / Ctrl+），由 App 按后端上报的平台决定。 */
   modLabel: string
   trashed: boolean
   onTrashed: (v: boolean) => void
   /** 面板要求隐藏（Esc 的兜底行为）。 */
   onHide: () => void
-  onOpenView: (v: 'settings' | 'stats' | 'backup' | 'categories' | 'tags') => void
+  onOpenView: (v: 'settings' | 'stats' | 'backup') => void
   onToast: (msg: string) => void
   /** 后端推来的"强制聚焦搜索框"信号，用递增的 nonce 表达。 */
   focusSearchNonce: number
@@ -48,7 +43,7 @@ const PAGE_LIMIT = 60
 const DEBOUNCE_MS = 120
 
 export function Panel(p: PanelProps) {
-  const { t, settings, categories, tags, trashed } = p
+  const { t, settings, trashed } = p
 
   // ── 检索与列表状态 ─────────────────────────────────────────────
   const [text, setText] = useState('')
@@ -57,9 +52,6 @@ export function Panel(p: PanelProps) {
   // 就不可能出现——它是界面上的非法状态，不该靠约定去避免。
   const [kind, setKind] = useState<string | null>(null)
   const [pinnedOnly, setPinnedOnly] = useState(false)
-  const [categoryId, setCategoryId] = useState<number | null>(null)
-  const [uncategorized, setUncategorized] = useState(false)
-  const [tagId, setTagId] = useState<number | null>(null)
 
   const [rows, setRows] = useState<ListRow[]>([])
   const [cursor, setCursor] = useState<Cursor | null>(null)
@@ -99,9 +91,8 @@ export function Panel(p: PanelProps) {
   // 每次列表在"筛选条件"变化时重置到第一页。
   // nonce 也在里面：它表达"条件没变，但请再查一次"。
   const filterKey = useMemo(
-    () =>
-      JSON.stringify({ debouncedText, kind, pinnedOnly, trashed, categoryId, uncategorized, tagId, nonce }),
-    [debouncedText, kind, pinnedOnly, trashed, categoryId, uncategorized, tagId, nonce],
+    () => JSON.stringify({ debouncedText, kind, pinnedOnly, trashed, nonce }),
+    [debouncedText, kind, pinnedOnly, trashed, nonce],
   )
 
   useEffect(() => {
@@ -110,9 +101,6 @@ export function Panel(p: PanelProps) {
     const base = defaultListOptions()
     base.limit = PAGE_LIMIT
     base.includeTotal = true
-    base.categoryId = categoryId
-    base.uncategorized = uncategorized
-    base.tagId = tagId
     const opts = buildOpts(base, debouncedText, kind, pinnedOnly, trashed)
 
     call('List', opts)
@@ -143,7 +131,7 @@ export function Panel(p: PanelProps) {
       .finally(() => {
         if (seq === reqSeq.current) setLoading(false)
       })
-    // filterKey 已经把上面七项打包成一个字符串，这里刻意只依赖它。
+    // filterKey 已经把上面四项打包成一个字符串，这里刻意只依赖它。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterKey])
 
@@ -154,9 +142,6 @@ export function Panel(p: PanelProps) {
     const base = defaultListOptions()
     base.limit = PAGE_LIMIT
     base.includeTotal = false
-    base.categoryId = categoryId
-    base.uncategorized = uncategorized
-    base.tagId = tagId
     base.cursor = cursor
     const opts = buildOpts(base, debouncedText, kind, pinnedOnly, trashed)
     call('List', opts)
@@ -167,7 +152,7 @@ export function Panel(p: PanelProps) {
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false))
-  }, [cursor, loading, debouncedText, kind, pinnedOnly, trashed, categoryId, uncategorized, tagId])
+  }, [cursor, loading, debouncedText, kind, pinnedOnly, trashed])
 
   // ── 连续粘贴（§11 P2）─────────────────────────────────────────
   //
@@ -474,22 +459,6 @@ export function Panel(p: PanelProps) {
         {error && <div className="errbox">{t('err.generic', { err: error })}</div>}
 
         <div className="panel-grid">
-          <CategoryTree
-            t={t}
-            categories={categories}
-            tags={tags}
-            selectedCategoryId={categoryId}
-            uncategorized={uncategorized}
-            selectedTagId={tagId}
-            onSelectCategory={(id, unc) => {
-              setCategoryId(id)
-              setUncategorized(unc)
-            }}
-            onSelectTag={setTagId}
-            onManageCategories={() => p.onOpenView('categories')}
-            onManageTags={() => p.onOpenView('tags')}
-          />
-
           <div className="panel-listwrap">
             <ItemList
               t={t}
