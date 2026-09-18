@@ -3,6 +3,7 @@
 #import <Carbon/Carbon.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <QuartzCore/QuartzCore.h>
+#import <WebKit/WebKit.h>
 #import <objc/runtime.h>
 #import <string.h>
 #import <stdlib.h>
@@ -20,6 +21,12 @@ extern void pawGoPanelBlur(void);
 static NSWindow  *g_panel       = nil;
 static NSWindow  *g_wailsWindow = nil; // 保留原窗口引用，避免被释放
 static NSView    *g_webView     = nil; // 面板当前承载的 WebView（= Wails 的 contentView）
+static CALayer   *g_cardLayer   = nil; // 不透明圆角底座（见 PawClip_AttachOnMain）
+// 底座颜色，来自前端 body 的 --bg（由 PawClip_SyncBackdropFromDom 从 DOM 取）。
+// 0.94,0.94,0.94 只是"前端还没说话之前"的占位，取不到也不至于全黑。
+// 底座颜色，来自前端 body 的 --bg（由 PawClip_SyncBackdropFromDom 从 DOM 取）。
+// 初值按系统外观猜（首个呼出前 DOM 的回答还没回来），取不到也不至于全黑。
+static CGFloat    g_backdropRGB[3] = {0.94, 0.94, 0.94};
 static Class      g_panelCls    = Nil;
 static NSStatusItem *g_statusItem = nil;
 static NSMenu    *g_statusMenu  = nil;
@@ -72,10 +79,25 @@ static void PawClip_Diag(const char *tag) {
     BOOL modal  = ([NSApp modalWindow] != nil ||
                    (g_panel != nil && [g_panel attachedSheet] != nil)) ? YES : NO;
     NSRect f    = g_panel ? [g_panel frame] : NSZeroRect;
+    // 屏幕与坐标系信息：这类问题（"面板去哪了""是不是透明的"）十有八九
+    // 和多显示器与坐标系换算纠缠在一起，光有 frame 不够——AppKit 的
+    // frame 是"主屏左下原点"，而人看到的位置、截图工具的 -R 参数都是
+    // "主屏左上原点"。alpha 一并列出是为了区分"窗口级透明"与"内容未合成"。
+    NSArray<NSScreen *> *screens = [NSScreen screens];
+    NSScreen *prim = screens.firstObject;
+    NSScreen *ps   = [g_panel screen];
+    NSRect pf = prim ? prim.frame : NSZeroRect;
+    NSRect wf = ps ? ps.frame : NSZeroRect;
+    double tlx = f.origin.x;
+    double tly = (prim ? NSMaxY(pf) : 0) - (f.origin.y + f.size.height);
     PawClip_Log("diag %-18s visible=%d key=%d appActive=%d modal=%d webInPanel=%d "
-                "frame=%.0fx%.0f@%.0f,%.0f",
+                "frame=%.0fx%.0f@%.0f,%.0f screens=%lu panelScreen=%.0fx%.0f@%.0f,%.0f "
+                "primary=%.0fx%.0f topleft=%.0f,%.0f alpha=%.2f",
                 tag, (int)vis, (int)key, (int)[NSApp isActive], (int)modal,
-                (int)inWin, f.size.width, f.size.height, f.origin.x, f.origin.y);
+                (int)inWin, f.size.width, f.size.height, f.origin.x, f.origin.y,
+                (unsigned long)screens.count, wf.size.width, wf.size.height, wf.origin.x, wf.origin.y,
+                pf.size.width, pf.size.height, tlx, tly,
+                g_panel ? [g_panel alphaValue] : -1.0);
 }
 
 // 把一段 block 放到主线程同步执行。
@@ -197,8 +219,6 @@ static int PawClip_AttachOnMain(int width, int height,
     g_wailsWindow = [w retain];
     [cv retain];
     [w setContentView:[[[NSView alloc] initWithFrame:frame] autorelease]];
-    [cv setFrame:frame];
-    [cv setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
 
     // ── 圆角卡片 + 投影（对齐喵剪贴图标的"扁平 + 柔和阴影"风格）────────
     // 窗口本身透明、由内容层裁出圆角：非不透明窗口的系统投影取自内容的
@@ -206,23 +226,55 @@ static int PawClip_AttachOnMain(int width, int height,
     // 注意这与 Wails 的 WebviewIsTransparent 是两回事：WebView 自己仍然
     // 不透明地画底色，只是被内容层的 cornerRadius 裁掉四个角，文字抗锯齿
     // 不受影响（M0 的结论针对的是 WebView 画在透明底上的情形）。
+    //
+    // ⚠️ 内容层必须垫一块**不透明的圆角底座**（g_cardLayer），这不是装饰：
+    //
+    //   这个窗口自己一个像素都不画（setOpaque:NO + clearColor），可见性
+    //   完全依赖 WKWebView 合成内容。真机复现（2026-09-18，CGWindowList +
+    //   screencapture 定点取证）证实：WebView 没有合成内容的那段时间，
+    //   AppKit 的 isVisible=1、WindowServer 的 alpha=1.0 都拦不住它——
+    //   屏幕上那块就是一扇能看穿到壁纸的透明空壳（"打开文件管理器后
+    //   出现一个透明窗口/遮罩"的成因）。垫上底座之后，这个失效模式从
+    //   构造上消失：最坏情况是一块底色的卡片，不再有透明的洞。
+    //
+    // 底座颜色从 DOM 的 body 背景色同步（PawClip_SyncBackdropFromDom），
+    // 主题切换后由 hide/show 时机刷新；取不到时用占位灰，不会更糟。
+    // 初值先按系统外观猜：DOM 的准确回答要等第一次 JS 求值回来。
+    if ([[NSApp effectiveAppearance].name isEqualToString:NSAppearanceNameDarkAqua]) {
+        g_backdropRGB[0] = g_backdropRGB[1] = g_backdropRGB[2] = 0.12;
+    } else {
+        g_backdropRGB[0] = g_backdropRGB[1] = g_backdropRGB[2] = 0.94;
+    }
+    NSView *host = [[NSView alloc] initWithFrame:frame];
+    [host setWantsLayer:YES];
+    CALayer *card = [host layer];
+    if (!card) { card = [CALayer layer]; [host setLayer:card]; }
+    [card setCornerRadius:16.0];
+    [card setMasksToBounds:YES];
+    [card setBackgroundColor:[NSColor colorWithSRGBRed:g_backdropRGB[0]
+                                                 green:g_backdropRGB[1]
+                                                  blue:g_backdropRGB[2]
+                                                 alpha:1.0].CGColor];
+    [card retain];
+    g_cardLayer = card;
+    [host setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
+
+    [cv setFrame:host.bounds];
+    [cv setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
+    [cv setWantsLayer:YES];
+    [host addSubview:cv];
+
     [(NSWindow *)panel setOpaque:NO];
     [(NSWindow *)panel setBackgroundColor:[NSColor clearColor]];
     [(NSWindow *)panel setHasShadow:YES];
-    [cv setWantsLayer:YES];
-    CALayer *cvLayer = [cv layer];
-    if (cvLayer) {
-        [cvLayer setCornerRadius:16.0];
-        [cvLayer setMasksToBounds:YES];
-    }
 
     // 缩放边界：太小布局会挤碎，太大就失去了"轻量面板"的形态。
     // 数值由 Go 侧传入（panel.go 是唯一定义处），避免两处常量各自漂移。
     [(NSWindow *)panel setContentMinSize:NSMakeSize(minw, minh)];
     [(NSWindow *)panel setContentMaxSize:NSMakeSize(maxw, maxh)];
 
-    [(NSWindow *)panel setContentView:cv];
-    [cv release];
+    [(NSWindow *)panel setContentView:host];
+    [host release];
     g_webView = cv;
 
     [(NSPanel *)panel setBecomesKeyOnlyIfNeeded:NO]; // 一显示就收键盘，不等点击
@@ -274,13 +326,82 @@ int paw_attach(int width, int height, int minw, int minh, int maxw, int maxh,
     return rc;
 }
 
+// ── 底座颜色同步 ────────────────────────────────────────────────
+// 底座必须跟前端卡片同色，否则"WebView 还没画出来的头几帧"会闪一块异色。
+// 颜色的唯一真源是 DOM（body 的 --bg），从 WebView 里取回来就行，不必给
+// Go/前端加任何接口。取不到时保持上一次的颜色（占位灰起步）。
+static WKWebView *PawClip_FindWKWebView(NSView *root) {
+    if ([root isKindOfClass:[WKWebView class]]) return (WKWebView *)root;
+    for (NSView *sub in root.subviews) {
+        WKWebView *found = PawClip_FindWKWebView(sub);
+        if (found) return found;
+    }
+    return nil;
+}
+
+// cv 是 Wails 的 contentView（容器），真正的 WKWebView 在它下面。
+// ⚠️ 不缓存引用：对 Wails 的 WailsWebView 调 isDescendantOfView: 会在运行时
+// 抛 unrecognized selector（实测 SIGABRT，2026-09-18），所以任何"验证引用
+// 还在视图树上"的手段都不能用——每次现找，浅层遍历，成本可忽略。
+static WKWebView *PawClip_WKWebView(void) {
+    if (!g_webView) return nil;
+    return PawClip_FindWKWebView(g_webView);
+}
+
+static void PawClip_ApplyBackdropFromDOM(id res) {
+    if (![res isKindOfClass:[NSString class]]) return;
+    NSString *s = res;
+    // 形如 "rgb(24, 24, 26)" / "rgba(24, 24, 26, 0.8)" / "#181a1a" 之外的
+    // 颜色写法（webkit 的 getComputedStyle 对 backgroundColor 恒返回 rgb 形式）。
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"[0-9.]+"
+                                                                        options:0 error:nil];
+    NSArray<NSTextCheckingResult *> *ms = [re matchesInString:s options:0
+                                                        range:NSMakeRange(0, s.length)];
+    if (ms.count < 3) return;
+    CGFloat rgb[3];
+    for (int i = 0; i < 3; i++) {
+        double v = [[s substringWithRange:[ms[i] range]] doubleValue];
+        rgb[i] = v > 1.0 ? v / 255.0 : v;   // 0..255 与 0..1 两种写法都兼容
+    }
+    g_backdropRGB[0] = rgb[0];
+    g_backdropRGB[1] = rgb[1];
+    g_backdropRGB[2] = rgb[2];
+    if (g_cardLayer) {
+        [g_cardLayer setBackgroundColor:[NSColor colorWithSRGBRed:rgb[0]
+                                                            green:rgb[1]
+                                                             blue:rgb[2]
+                                                            alpha:1.0].CGColor];
+    }
+}
+
+// 异步一次 JS 求值。顺带的好处：这会强制 WebContent 进程醒来应答一次，
+// 对"面板重新呼出后内容没跟上"是最温和的一记催促。
+//
+// 整个函数包在 @try 里：这里是 hide/show 路径上的旁路逻辑，WebView 对象
+// 出现任何意外（类不受信、selector 缺失）都不允许带崩收起/呼出本身。
+static void PawClip_SyncBackdropFromDom(void) {
+    WKWebView *wv = PawClip_WKWebView();
+    if (!wv) return;
+    @try {
+        if (![(id)wv respondsToSelector:@selector(evaluateJavaScript:completionHandler:)]) return;
+        [wv evaluateJavaScript:@"getComputedStyle(document.body).backgroundColor"
+             completionHandler:^(id res, NSError *__unused err) {
+                 PawClip_ApplyBackdropFromDOM(res);
+             }];
+    } @catch (NSException *__unused e) {
+        // 拿不到就不拿：底座保持上一次的颜色，不会更糟。
+    }
+}
+
 // ── 显示 / 隐藏 ─────────────────────────────────────────────────
 // 顺序不能反：orderFrontRegardless 只把窗口提到其层级最前、不激活 App；
 // 但窗口不在屏幕上时 makeKeyWindow 是**空操作**，所以必须先让它可见。
 static int PawClip_ShowOnMain(void) {
     if (!g_panel) return 0;
+    PawClip_SyncBackdropFromDom();   // 先取最新主题色（异步，落地在显示之后）
     [g_panel orderFrontRegardless];
     if ([g_panel canBecomeKeyWindow]) [g_panel makeKeyWindow];
+    [g_panel invalidateShadow];      // 非不透明窗口的投影取自内容 alpha，别用残影
     return [g_panel isKeyWindow] ? 1 : 0;
 }
 
@@ -302,6 +423,9 @@ void paw_hide(void) {
         // 收起之后再看一眼：这里 webInPanel 若变成 0，说明 WebView 已经不在
         // 面板的视图树里，下次呼出必然是空壳（而不是"内容没来得及合成"）。
         PawClip_Diag("hide-after");
+        // 收起时顺手同步一次底座色：下次呼出的头几帧就用得上，
+        // 也把"主题刚切过、呼出时才第一次取"的竞态压掉。
+        PawClip_SyncBackdropFromDom();
     });
 }
 
