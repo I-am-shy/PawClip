@@ -192,7 +192,11 @@ jobs:
       # 同时它也是个断言：产物缺失时用 `::error::` 明确失败，把
       # "静默假绿" 变成 "在正确的位置报错"。
       #
-      # 定位完成后这个步骤可以删掉。
+      # 这一步是**保留**的，不是用完即弃的临时脚手架：它同时是个断言，把
+      # "产物缺失"从假绿变成在正确的位置失败。2026-09-18 定位 Windows 构建
+      # 假绿时正是靠它——在不登录的情况下拿到了 makensis 的 PATH 情况
+      # （在 PATH 里，证伪了前一轮"makensis 没找到"的判断）与 build/bin 的
+      # 实际内容（installer 已生成），从而把真因收敛到 Build 步骤的 shell 上。
       - name: Diagnose (Windows)
         if: always() && runner.os == 'Windows'
         shell: pwsh
