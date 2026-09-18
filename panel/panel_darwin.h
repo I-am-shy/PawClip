@@ -71,6 +71,22 @@ int paw_autopaste(char *err, int errlen);
 char *paw_diag_json(void);
 void paw_free(char *p);
 
+// ── 原生文件对话框 ──────────────────────────────────────────────
+// 弹一个 NSOpenPanel 供"选导出目录 / 选备份文件"用。
+//
+// 为什么不用 Wails 的 OpenFile*Dialog：那些把面板以 sheet 挂在 Wails 宿主
+// 窗口上，而宿主窗口的 contentView 早已被面板接管掏空——macOS 弹 sheet
+// 会把父窗口强制显示到屏幕上，用户看到的就是一块被掏空的半透明窗口一直
+// 占位。这里挂到面板窗口自己身上（面板此刻必然可见：入口就在面板里的
+// 备份页）；面板不可见时退化为无父窗口的浮动模态。
+//
+// cexts 是逗号分隔的扩展名白名单（"clipbak"），空串/NULL = 不限类型。
+// 阻塞至对话框关闭；返回选中路径（malloc，调用方需 paw_free），
+// 用户取消返回 NULL。
+char *paw_open_dialog(const char *ctitle, const char *cdir,
+                      int canFiles, int canDirs, int canCreate,
+                      const char *cexts);
+
 // 开关窗口状态探针（默认关闭，零成本）。
 //
 // 排查"面板变成一块透明空壳"这类问题时打开：面板窗口是非不透明的

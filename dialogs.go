@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 
 	wailsrt "github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/zego/pawclip/panel"
 	"github.com/zego/pawclip/store"
 )
 
@@ -17,6 +19,39 @@ import (
 // 三个绑定都返回空串表示**用户取消了**，而不是报错：取消是正常操作，
 // 前端据此静默返回即可，不该弹一个"操作失败"。
 
+// openNativeDialog 留成变量只为单测：真跑起来它会弹系统面板并阻塞。
+//
+// 为什么 macOS 必须走 panel.RunOpenDialog 而不是 Wails 的对话框：
+// Wails 把 NSOpenPanel 以 sheet 挂在**宿主窗口**上，而宿主窗口的
+// contentView 早已被面板接管掏空——macOS 弹 sheet 会把父窗口强制显示
+// 到屏幕上，用户看到的就是一块被掏空的半透明窗口一直占位（备份页点
+// "···"后弹访达、界面变透明，2026-09-18 真机截图定位）。原生实现把
+// sheet 挂到面板窗口自己身上，压暗的是有内容的面板。
+var openNativeDialog = panel.RunOpenDialog
+
+// openWailsDialog 同样留成变量：回退路径也要能被单测钉住。
+// 真实现要求 a.ctx 就绪（Wails 运行时没起来时对话框无处安放）。
+var openWailsDialog = func(a *App, opts panel.DialogOptions) (string, error) {
+	if a.ctx == nil {
+		return "", msgf(msgErrUINotReady, nil)
+	}
+	if opts.CanDirs {
+		return wailsrt.OpenDirectoryDialog(a.ctx, wailsrt.OpenDialogOptions{
+			Title:            opts.Title,
+			DefaultDirectory: opts.Dir,
+		})
+	}
+	filters := make([]wailsrt.FileFilter, 0, len(opts.Extensions))
+	for _, e := range opts.Extensions {
+		filters = append(filters, wailsrt.FileFilter{DisplayName: e, Pattern: "*." + e})
+	}
+	return wailsrt.OpenFileDialog(a.ctx, wailsrt.OpenDialogOptions{
+		Title:            opts.Title,
+		DefaultDirectory: opts.Dir,
+		Filters:          filters,
+	})
+}
+
 // PickExportDir 让用户选导出目录。返回空串 = 用户取消。
 func (a *App) PickExportDir() (string, error) {
 	if a.ctx == nil {
@@ -24,17 +59,25 @@ func (a *App) PickExportDir() (string, error) {
 	}
 	// 默认落在数据目录下的 exports（与 Export 的空 OutputDir 行为一致），
 	// 这样"不选目录直接导出"和"选了默认目录"落到同一个地方。
-	// 目录可能还不存在（首次导出），OpenDirectoryDialog 会做存在性检查，
-	// 所以先确保它在。
+	// 目录可能还不存在（首次导出），对话框会做存在性检查，所以先确保它在。
 	def := ""
 	if db := a.dbHandle(); db != nil {
 		def = filepath.Join(db.Dir(), "exports")
 		_ = ensureDir(def)
 	}
-	return wailsrt.OpenDirectoryDialog(a.ctx, wailsrt.OpenDialogOptions{
-		Title:            a.T(msgPickExportDir),
-		DefaultDirectory: def,
-	})
+	opts := panel.DialogOptions{
+		Title:     a.T(msgPickExportDir),
+		Dir:       def,
+		CanDirs:   true,
+		CanCreate: true,
+	}
+	p, err := openNativeDialog(opts)
+	if errors.Is(err, panel.ErrUnsupported) {
+		// 平台没有原生对话框：退回 Wails。那里的宿主窗口是正常窗口，
+		// sheet 挂上去不会出现"被掏空的窗口"。
+		return openWailsDialog(a, opts)
+	}
+	return p, err
 }
 
 // PickBackupFile 让用户选一个 .clipbak。返回空串 = 用户取消。
@@ -43,16 +86,49 @@ func (a *App) PickBackupFile() (string, error) {
 		return "", msgf(msgErrUINotReady, nil)
 	}
 	def := a.lastBackupDir()
-	return wailsrt.OpenFileDialog(a.ctx, wailsrt.OpenDialogOptions{
-		Title:            a.T(msgPickBackupFile),
-		DefaultDirectory: def,
-		Filters: []wailsrt.FileFilter{
-			// 同时给"只看 .clipbak"和"所有文件"两档：
-			// 用户把包改名成 .zip 之后仍然需要能选中它（导出的包本就是 ZIP）。
+	opts := panel.DialogOptions{
+		Title:    a.T(msgPickBackupFile),
+		Dir:      def,
+		CanFiles: true,
+		// 同时给"只看 .clipbak"和"所有文件"两档的意图由 nativeExts 折算：
+		// macOS 的 NSOpenPanel 没有"格式下拉"，含"所有文件"档时干脆不限
+		// 类型——用户把包改名成 .zip 之后仍然需要能选中它（导出的包本就
+		// 是 ZIP），限死扩展名等于把这条路堵掉。
+		Extensions: nativeExts([]wailsrt.FileFilter{
 			{DisplayName: a.T(msgDialogBackupFilter), Pattern: "*.clipbak"},
 			{DisplayName: a.T(msgDialogAllFilesFilter), Pattern: "*"},
-		},
-	})
+		}),
+	}
+	p, err := openNativeDialog(opts)
+	if errors.Is(err, panel.ErrUnsupported) {
+		return openWailsDialog(a, opts)
+	}
+	return p, err
+}
+
+// nativeExts 把 Wails 风格的过滤器模式折成原生对话框的裸扩展名列表。
+//
+// 规则：任何一档是 "*"（所有文件）就直接返回 nil（不限类型）——
+// macOS 的打开面板没有格式下拉，两种意图无法并存，取宽不取窄，
+// 理由见 PickBackupFile。模式形如 "*.clipbak" 或 "*.png;*.jpg"。
+func nativeExts(fs []wailsrt.FileFilter) []string {
+	var out []string
+	for _, f := range fs {
+		for _, p := range strings.Split(f.Pattern, ";") {
+			p = strings.TrimSpace(p)
+			switch {
+			case p == "" || p == "*":
+				return nil
+			case strings.HasPrefix(p, "*."):
+				if e := strings.TrimPrefix(p, "*."); e != "" {
+					out = append(out, e)
+				}
+			case strings.HasPrefix(p, "."):
+				out = append(out, strings.TrimPrefix(p, "."))
+			}
+		}
+	}
+	return out
 }
 
 // lastBackupDir 猜一个合适的"上次用过的地方"。

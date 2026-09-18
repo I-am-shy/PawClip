@@ -317,6 +317,20 @@ func normalizeKey(up string) (string, error) {
 	}
 }
 
+// DialogOptions 是 RunOpenDialog 的参数（平台无关）。
+//
+// Extensions 是**裸扩展名**列表（"clipbak"，不带 "*." 前缀）；
+// 为空 = 不限类型。CanDirs/CanFiles 控制可选目录还是文件，
+// CanCreate 只对选目录有意义（面板上的"新建文件夹"按钮）。
+type DialogOptions struct {
+	Title      string
+	Dir        string   // 初始目录；空 = 系统记住的位置
+	Extensions []string // 裸扩展名白名单；空 = 不限
+	CanFiles   bool
+	CanDirs    bool
+	CanCreate  bool
+}
+
 // Controller 是面板的跨平台接口。
 //
 // 关于 Attach 的时序：Wails 在 OnStartup 回调**返回之后**才创建窗口，

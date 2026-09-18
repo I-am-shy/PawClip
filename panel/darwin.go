@@ -3,7 +3,7 @@
 package panel
 
 /*
-#cgo LDFLAGS: -framework Cocoa -framework Carbon -framework ApplicationServices -framework QuartzCore -framework WebKit
+#cgo LDFLAGS: -framework Cocoa -framework Carbon -framework ApplicationServices -framework QuartzCore -framework WebKit -framework UniformTypeIdentifiers
 #include <stdlib.h>
 #include "panel_darwin.h"
 */

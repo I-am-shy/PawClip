@@ -4,6 +4,7 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <QuartzCore/QuartzCore.h>
 #import <WebKit/WebKit.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
 #import <string.h>
 #import <stdlib.h>
@@ -786,3 +787,84 @@ char *paw_diag_json(void) {
 }
 
 void paw_free(char *p) { if (p) free(p); }
+
+// ── 原生文件对话框 ──────────────────────────────────────────────
+// 结构上的要点：sheet 的 completionHandler 也跑在主线程，所以**不能**在
+// PawClip_OnMain 的块里等信号量——那等于在主线程上等主线程，立刻死锁。
+// 正确形态是：OnMain 里只负责"把 sheet 启动起来"就返回，等待发生在
+// Go 侧调用线程（OnMain 返回之后）。runModal 分支无所谓：嵌套事件循环
+// 自己会把主线程跑回来。
+char *paw_open_dialog(const char *ctitle, const char *cdir,
+                      int canFiles, int canDirs, int canCreate,
+                      const char *cexts) {
+    if (!g_panel) return NULL;
+
+    __block char *result    = NULL;
+    __block BOOL  asSheet   = NO;
+    __block dispatch_semaphore_t sem =
+        dispatch_semaphore_create(0);
+
+    PawClip_OnMain(^{
+        NSOpenPanel *dlg = [NSOpenPanel openPanel];
+        if (ctitle && *ctitle) [dlg setTitle:@(ctitle)];
+        [dlg setCanChooseFiles:canFiles ? YES : NO];
+        [dlg setCanChooseDirectories:canDirs ? YES : NO];
+        [dlg setCanCreateDirectories:canCreate ? YES : NO];
+        if (cdir && *cdir) [dlg setDirectoryURL:[NSURL fileURLWithPath:@(cdir)]];
+
+        // 扩展名白名单。macOS 11+ 用 UTType 新 API；更老的系统退回
+        // setAllowedFileTypes（12.0 起废弃但仍可用）——面板最低支持的
+        // 系统版本不需要为这条旁路功能抬高。
+        if (cexts && *cexts) {
+            NSMutableArray *types = [NSMutableArray array];
+            for (NSString *e in [@(cexts) componentsSeparatedByString:@","]) {
+                NSString *t = [e stringByTrimmingCharactersInSet:
+                                   [NSCharacterSet whitespaceCharacterSet]];
+                if (t.length > 0) [types addObject:t];
+            }
+            if (@available(macOS 11.0, *)) {
+                if (types.count > 0) {
+                    NSMutableArray *contentTypes = [NSMutableArray array];
+                    for (NSString *t in types) {
+                        UTType *ty = [UTType typeWithFilenameExtension:t];
+                        if (ty != nil) [contentTypes addObject:ty];
+                    }
+                    if (contentTypes.count > 0) [dlg setAllowedContentTypes:contentTypes];
+                }
+            } else {
+                // 遗留分支只为 macOS 10.13~10.15 保留；新 API 在 12.0 又把
+                // 这条标成废弃，工具链会告警，这里就地压掉。
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                if (types.count > 0) [dlg setAllowedFileTypes:types];
+#pragma clang diagnostic pop
+            }
+        }
+
+        if ([g_panel isVisible]) {
+            asSheet = YES;
+            PawClip_Log("dlg: attach as sheet (panel visible)");
+            [dlg beginSheetModalForWindow:g_panel
+                        completionHandler:^(NSModalResponse rc) {
+                PawClip_Log("dlg: sheet completion rc=%ld", (long)rc);
+                if (rc == NSModalResponseOK && dlg.URLs.firstObject != nil) {
+                    result = strdup([dlg.URLs.firstObject.path UTF8String]);
+                }
+                dispatch_semaphore_signal(sem);
+            }];
+        } else {
+            PawClip_Log("dlg: panel NOT visible -> runModal");
+            // 面板没显示（理论到不了：入口在面板里）：退化为浮动模态，
+            // 不挂 sheet——挂到任何"被掏空"的窗口上都会复现透明占位。
+            if ([dlg runModal] == NSModalResponseOK && dlg.URLs.firstObject != nil) {
+                result = strdup([dlg.URLs.firstObject.path UTF8String]);
+            }
+        }
+    });
+
+    if (asSheet) dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+#if !__has_feature(objc_arc)
+    dispatch_release(sem);
+#endif
+    return result;
+}
