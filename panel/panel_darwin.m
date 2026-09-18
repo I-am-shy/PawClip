@@ -49,6 +49,35 @@ static void PawClip_Log(const char *fmt, ...) {
     fflush(stderr);
 }
 
+// ── 窗口状态探针（默认关闭）─────────────────────────────────────
+// 面板窗口是**非不透明**的（setOpaque:NO + clearColor，为的是让系统投影
+// 跟着圆角卡片走），它自己一个像素都不画，可见性完全依赖 WKWebView 合成
+// 内容。于是所有"面板看起来是透明的"这一类问题，都只可能出在
+// **"窗口可见"与"内容已合成"这两件事没对齐**上：要么窗口本来就不该可见
+// （收起没生效），要么窗口可见但内容没跟上（App 不活跃 / 重新呼出）。
+//
+// 光读代码分不清是哪一种，所以留一个默认关闭的探针：打开之后每次显隐、
+// 每次失焦判定都打一行状态。webInPanel 是最关键的那一列——它为 0 就说明
+// WebView 根本不在面板的视图树里，窗口必然是一块空壳。
+static int g_diag = 0;
+
+void paw_set_diag(int on) { g_diag = on ? 1 : 0; }
+
+static void PawClip_Diag(const char *tag) {
+    if (!g_diag) return;
+    if (![NSThread isMainThread]) return; // 窗口状态只有主线程读到的才算数
+    BOOL vis    = g_panel ? [g_panel isVisible]   : NO;
+    BOOL key    = g_panel ? [g_panel isKeyWindow] : NO;
+    BOOL inWin  = (g_webView != nil && [g_webView window] == g_panel) ? YES : NO;
+    BOOL modal  = ([NSApp modalWindow] != nil ||
+                   (g_panel != nil && [g_panel attachedSheet] != nil)) ? YES : NO;
+    NSRect f    = g_panel ? [g_panel frame] : NSZeroRect;
+    PawClip_Log("diag %-18s visible=%d key=%d appActive=%d modal=%d webInPanel=%d "
+                "frame=%.0fx%.0f@%.0f,%.0f",
+                tag, (int)vis, (int)key, (int)[NSApp isActive], (int)modal,
+                (int)inWin, f.size.width, f.size.height, f.origin.x, f.origin.y);
+}
+
 // 把一段 block 放到主线程同步执行。
 // 所有 AppKit 操作都必须走它：Wails 的 OnStartup 回调不在主线程上。
 static void PawClip_OnMain(dispatch_block_t blk) {
@@ -258,15 +287,21 @@ static int PawClip_ShowOnMain(void) {
 int paw_show(void) {
     __block int r = 0;
     PawClip_OnMain(^{
+        PawClip_Diag("show-before");
         PawClip_ShowOnMain();
         r = [g_panel isKeyWindow] ? 1 : 0;
+        PawClip_Diag(r ? "show-after(key)" : "show-after(no-key)");
     });
     return r;
 }
 
 void paw_hide(void) {
     PawClip_OnMain(^{
+        PawClip_Diag("hide-before");
         if (g_panel) [g_panel orderOut:nil];
+        // 收起之后再看一眼：这里 webInPanel 若变成 0，说明 WebView 已经不在
+        // 面板的视图树里，下次呼出必然是空壳（而不是"内容没来得及合成"）。
+        PawClip_Diag("hide-after");
     });
 }
 
@@ -351,22 +386,33 @@ void paw_panel_drag(void) {
 static BOOL g_blurPending = NO;
 
 static void PawClip_ReportBlur(void) {
-    if (g_panel == nil) return;
-    if (![g_panel isVisible]) return;   // 已经收起了，没什么可报的
-    if ([g_panel isKeyWindow]) return;  // 复核：key 又回来了（抖动）
+    if (g_panel == nil) { PawClip_Diag("blur-drop(no-panel)"); return; }
+    if (![g_panel isVisible]) { PawClip_Diag("blur-drop(hidden)"); return; }   // 已经收起了，没什么可报的
+    if ([g_panel isKeyWindow]) { PawClip_Diag("blur-drop(still-key)"); return; }  // 复核：key 又回来了（抖动）
     // 有模态窗口时不算"用户点走了"：导出/导入要弹系统的文件面板，它会把
     // key 从面板手里拿走，那一刻顺手收起面板等于把用户的操作上下文弄丢。
     //
     // 两种形态都要挡：runModal 式的（NSApp.modalWindow）与 sheet 式的
     // （附在某个窗口上的 attachedSheet —— 它不注册成 modalWindow）。
-    if ([NSApp modalWindow] != nil || [g_panel attachedSheet] != nil) return;
+    if ([NSApp modalWindow] != nil || [g_panel attachedSheet] != nil) {
+        PawClip_Diag("blur-drop(modal)");
+        return;
+    }
+    PawClip_Diag("blur-REPORT");
     pawGoPanelBlur();
 }
 
 static void PawClip_ScheduleBlurCheck(void) {
     if (g_blurPending) return;
-    if (g_panel == nil || ![g_panel isVisible]) return;
-    if ([g_panel isKeyWindow]) return;
+    if (g_panel == nil || ![g_panel isVisible]) {
+        PawClip_Diag("blur-skip(hidden)");
+        return;
+    }
+    if ([g_panel isKeyWindow]) {
+        PawClip_Diag("blur-skip(still-key)");
+        return;
+    }
+    PawClip_Diag("blur-scheduled");
     g_blurPending = YES;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(80 * NSEC_PER_MSEC)),
                    dispatch_get_main_queue(), ^{

@@ -11,6 +11,7 @@ import "C"
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"time"
 	"unsafe"
@@ -131,6 +132,20 @@ func (c *darwinController) Attach(cfg Config) error {
 		c.mu.Lock()
 		c.attached = true
 		c.mu.Unlock()
+
+		// 窗口状态探针：PAWCLIP_PANEL_DIAG 非空即打开（值本身不参与判断）。
+		//
+		// 面板是非不透明窗口，自己一个像素都不画，可见性完全靠 WKWebView
+		// 合成内容——所以"面板变成一块透明空壳"这类问题，只能靠"窗口可见性
+		// 与内容合成状态"的时间线来定位，光读代码分不清是"没收起"还是
+		// "收起了又被呼出、内容没跟上"（见 panel_darwin.h 的说明）。
+		//
+		// 从终端起 App 才能看到这几行 stderr：
+		//	PAWCLIP_PANEL_DIAG=1 ./build/bin/pawclip.app/Contents/MacOS/PawClip
+		if os.Getenv("PAWCLIP_PANEL_DIAG") != "" {
+			C.paw_set_diag(1)
+			fmt.Fprintln(os.Stderr, "[pawclip/panel] 窗口状态探针已打开（PAWCLIP_PANEL_DIAG）")
+		}
 
 		if cfg.Hotkey != "" {
 			if err := c.RegisterHotkey(cfg.Hotkey); err != nil {

@@ -71,6 +71,17 @@ int paw_autopaste(char *err, int errlen);
 char *paw_diag_json(void);
 void paw_free(char *p);
 
+// 开关窗口状态探针（默认关闭，零成本）。
+//
+// 排查"面板变成一块透明空壳"这类问题时打开：面板窗口是非不透明的
+// （setOpaque:NO + clearColor），一个像素都不自己画，可见性完全依赖
+// WKWebView 合成内容——所以问题只可能出在"窗口可见"与"内容已合成"
+// 这两件事没对齐。探针在每次显隐、每次失焦判定处打一行
+// visible/key/appActive/modal/webInPanel/frame，一次复现就能分清是
+// "没收起"、"收起了又被呼出、内容没跟上"，还是别的原因。
+// Go 侧读环境变量 PAWCLIP_PANEL_DIAG 调用它（见 panel/darwin.go）。
+void paw_set_diag(int on);
+
 // 当前面板尺寸（供 WebView 自适应）。
 double paw_panel_width(void);
 double paw_panel_height(void);

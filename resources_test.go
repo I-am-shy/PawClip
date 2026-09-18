@@ -438,6 +438,85 @@ func TestPanelBlur_ClosesOnlyWhenEnabled(t *testing.T) {
 	b.onPanelBlur()
 }
 
+// TestReveal_StepsBackBeforeHandingOffToTheFileManager 钉住**时序**：
+// 交给系统文件管理器的那一刻，面板必须已经收起了。
+//
+// 为什么断言的是时序而不是"最后收起了没有"：面板是非不透明窗口
+// （panel_darwin.m: setOpaque:NO + clearColor），一个像素都不自己画，
+// 可见性全靠 WKWebView 画内容。如果让"失焦自动收起"去收，orderOut 会落在
+// **App 已经不活跃**（访达被 open 激活）之后，窗口再被呼出时 WebKit 未必
+// 马上重新合成 → 用户看到一块透明的空壳窗口悬在访达上面。
+// 先收再交就没有这个中间状态。这条是那个 bug 的回归网。
+func TestReveal_StepsBackBeforeHandingOffToTheFileManager(t *testing.T) {
+	orig := revealInFileManager
+	t.Cleanup(func() { revealInFileManager = orig })
+
+	a, fp := newTrayApp(t, true, "zh-CN")
+
+	var visibleAtHandoff bool
+	var handed string
+	revealInFileManager = func(p string) error {
+		// 就在"交给系统"这一瞬间取样——正是 orderOut 该已经发生过的时刻。
+		visibleAtHandoff = fp.Visible()
+		handed = p
+		return nil
+	}
+
+	a.showPanel()
+	a.TakeEvents()
+
+	if err := a.revealAndStepBack("/tmp/pawclip-target"); err != nil {
+		t.Fatalf("revealAndStepBack: %v", err)
+	}
+	if visibleAtHandoff {
+		t.Error("交给文件管理器时面板仍然可见——orderOut 会落在 App 不活跃之后，正是透明窗口的成因")
+	}
+	if fp.Visible() {
+		t.Error("交出去之后面板应当已经收起")
+	}
+	if !hasEvent(a.TakeEvents(), EventHide) {
+		t.Error("主动收起应当留下 hide 事件（与其余三条收起路径一致）")
+	}
+	if handed != "/tmp/pawclip-target" {
+		t.Errorf("交给文件管理器的路径 = %q，想要原样透传", handed)
+	}
+}
+
+// TestReveal_KeepsPanelWhenCloseOnBlurIsOff 钉住另一头：
+// 关掉 ui.closeOnBlur 的用户要的就是"面板钉在屏幕上"，打开文件管理器
+// 不该把它收走——否则那个设置等于失效。
+func TestReveal_KeepsPanelWhenCloseOnBlurIsOff(t *testing.T) {
+	orig := revealInFileManager
+	t.Cleanup(func() { revealInFileManager = orig })
+	revealInFileManager = func(string) error { return nil }
+
+	a, fp := newTrayApp(t, true, "zh-CN")
+	a.settings.UI.CloseOnBlur = false
+	a.showPanel()
+	a.TakeEvents()
+
+	if err := a.revealAndStepBack("/tmp/pawclip-target"); err != nil {
+		t.Fatalf("revealAndStepBack: %v", err)
+	}
+	if !fp.Visible() {
+		t.Error("closeOnBlur = false 时不该替用户收起面板")
+	}
+	if evs := a.TakeEvents(); len(evs) != 0 {
+		t.Errorf("没有收起就不该有 hide 事件，得到 %+v", evs)
+	}
+
+	// 面板本来就不可见时：幂等，不产生事件（这条真机上会走到——
+	// 从托盘菜单打开数据目录时面板根本没显示）。
+	fp.Hide()
+	a.settings.UI.CloseOnBlur = true
+	if err := a.revealAndStepBack("/tmp/pawclip-target"); err != nil {
+		t.Fatalf("revealAndStepBack: %v", err)
+	}
+	if evs := a.TakeEvents(); len(evs) != 0 {
+		t.Errorf("面板不可见时不该产生事件，得到 %+v", evs)
+	}
+}
+
 // TestIdleTick_HidesOnlyWhenOverThreshold 检查空闲收起的边界。
 //
 // 三个必须成立的分支：
