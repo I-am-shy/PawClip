@@ -27,9 +27,25 @@ permissions:
 
 jobs:
   # ── 后端：全量测试 ────────────────────────────────────────────
+  #
+  # ⚠️ 这个 job 必须跑在 **macOS** 上，不要省事改回 ubuntu-latest。
+  #
+  # 理由：本仓库是 macOS 应用，DESIGN.md §12 的延迟指标（文本捕获 p95 < 30ms、
+  # 5MB 图片 < 200ms、10 万条检索 < 50ms @10 万条）都是**目标平台**的指标。
+  # 把它们放到共享的 Linux runner 上量，量到的不是产品性能，而是"这台共享
+  # 机器有多慢"：ubuntu-latest 是 2 vCPU，相对 Apple Silicon 约慢 2 倍，而
+  # 三条里余量最小的是图片那条（本机中位数 115ms / 预算 200ms，只有 1.7 倍），
+  # 必然被击穿——2026-09-18 首次推送时就是这么红的（job 耗时 2m0s，
+  # 本地同一条命令 53s）。判据不是"能不能跑"，是"在哪儿量才有意义"。
+  #
+  # 这不算放松要求：Linux/Windows 分支代码的看护由下面的 compile-check
+  # 继续承担（那条只证明"能编过"，与运行性能无关），并没有失去覆盖。
+  #
+  # 复现/排查这类"本地绿、CI 红"时，先对齐口径：CI 跑的是不带 `-short` 的
+  # 全量，而 `test/run.sh --short` 会跳过 3 个规模测试——两者的范围不一样。
   go-test:
     name: Go tests
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
