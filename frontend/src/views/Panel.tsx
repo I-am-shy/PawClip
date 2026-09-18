@@ -21,6 +21,8 @@ import {
 import { useDebounce, useInterval } from '../hooks'
 import { ItemList } from '../components/ItemList'
 import { Preview } from '../components/Preview'
+import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu'
+import { ContentViewer } from '../components/ContentViewer'
 import { SearchBar, buildOpts } from '../components/SearchBar'
 import { IconChevron, IconRestore, IconTrash } from '../components/Icons'
 
@@ -40,8 +42,15 @@ export type PanelProps = {
   onHide: () => void
   onOpenView: (v: 'settings' | 'stats' | 'backup') => void
   onToast: (msg: string) => void
-  /** 后端推来的"强制聚焦搜索框"信号，用递增的 nonce 表达。 */
-  focusSearchNonce: number
+  /**
+   * 面板被呼出的次数（App 在收到 show 事件时递增）。
+   *
+   * 用它表达"这是又一次呼出"：既要把焦点给搜索框（呼出即可打字），
+   * 也要把面板重置回默认状态——搜索词、类型筛选、预览、多选全部清掉。
+   * 不这么做的话，用户上次搜到一半收起面板、下次呼出会看到"半截的搜索结果"，
+   * 而不是他期待的全部历史。
+   */
+  showNonce: number
 }
 
 const PAGE_LIMIT = 60
@@ -72,6 +81,12 @@ export function Panel(p: PanelProps) {
   const [activeId, setActiveId] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [previewId, setPreviewId] = useState<number | null>(null)
+  // 右键菜单的坐标与目标行。坐标是**视口坐标**（clientX/Y），菜单用 fixed
+  // 定位——面板本身可以被用户拖到屏幕任何位置，用文档坐标会在不同位置飘。
+  const [menu, setMenu] = useState<{ x: number; y: number; id: number } | null>(null)
+  // 查看浮层（只读预览）的目标条目。它与 previewId（右侧预览栏）是两件事：
+  // 那个是"选中这条时顺便看看"，这个是"专门弹出来看清楚"。
+  const [viewerId, setViewerId] = useState<number | null>(null)
   const [showHint, setShowHint] = useState(false)
 
   const inputRef = useRef<HTMLInputElement>(null)
@@ -175,7 +190,7 @@ export function Panel(p: PanelProps) {
   // （用户在我们的面板之外连着贴了几条）。
   useEffect(() => {
     refreshSeq()
-  }, [refreshSeq, p.focusSearchNonce])
+  }, [refreshSeq, p.showNonce])
 
   const startSequence = useCallback(
     async (ids: number[]) => {
@@ -424,11 +439,27 @@ export function Panel(p: PanelProps) {
     seq, nextInSequence,
   ])
 
-  // 面板被呼出时把焦点给搜索框：这是"呼出即可打字"的关键。
+  // 面板被呼出时：**回到默认状态**，并把焦点给搜索框。
+  //
+  // 两件事一起做，理由不同但都指向"呼出就该是干净的历史列表"：
+  //  · 重置——上次可能是搜到一半收起的、可能停在回收站、可能开着浮层。
+  //    再亮起来时用户想看的是刚复制的东西，不是上次的残留状态。
+  //  · 聚焦——"呼出即可打字"是这个面板最高频的用法。
+  //
+  // 另外顺手重查一次：面板收起期间用户可能又复制了东西，而列表数据来自
+  // 上一次 List 调用，不重查就看不到刚到的那条。
   useEffect(() => {
+    setText('')
+    setKind(null)
+    setPinnedOnly(false)
+    setPreviewId(null)
+    setViewerId(null)
+    setMenu(null)
+    setSelectedIds(new Set())
+    refresh()
     inputRef.current?.focus()
     inputRef.current?.select()
-  }, [p.focusSearchNonce])
+  }, [p.showNonce, refresh])
 
   // 每 30 秒重算一次相对时间与过期徽标。
   // 只在"面板可见且没有预览打开"时跑（有预览时用户在看具体内容，
@@ -437,6 +468,18 @@ export function Panel(p: PanelProps) {
   useInterval(() => setNow(Math.floor(Date.now() / 1000)), previewId == null ? 30_000 : null)
 
   const selected = [...selectedIds]
+
+  // 右键菜单的内容。
+  //
+  // 目标行按 id 现取，而不是把 ListRow 快照进 menu 状态：菜单开着的这几百
+  // 毫秒里那条可能已经被删掉或过期清理了，存快照会点到一个不存在的条目上。
+  const menuRow = menu ? rows.find((r) => r.id === menu.id) : undefined
+  const menuItems: ContextMenuItem[] = menuRow
+    ? [
+        { key: 'copy', label: t('menu.copy'), onSelect: () => void copyOnly(menuRow.id) },
+        { key: 'view', label: t('menu.view'), onSelect: () => setViewerId(menuRow.id) },
+      ]
+    : []
 
   return (
     <div className="panel">
@@ -479,6 +522,7 @@ export function Panel(p: PanelProps) {
               hasMore={hasMore}
               onActivate={setActiveId}
               onSelectionChange={setSelectedIds}
+              onContextMenu={(id, x, y) => setMenu({ id, x, y })}
               onPaste={paste}
               onTogglePin={togglePin}
               onDelete={remove}
@@ -584,9 +628,24 @@ export function Panel(p: PanelProps) {
           </button>
         </div>
       </footer>
+
+      {/* 菜单与查看浮层都画在**页面里**（不是原生菜单、不是新窗口）：
+          它们的内容依赖前端才知道的状态（这条是什么类型、能不能查看），
+          而且用户不需要离开这个面板。 */}
+      {menu && menuRow && (
+        <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
+      )}
+
+      <ContentViewer
+        t={t}
+        id={viewerId}
+        now={now}
+        onClose={() => setViewerId(null)}
+        onCopy={(id) => void copyOnly(id)}
+        onRevealFile={(path) => void revealFile(path)}
+      />
     </div>
   )
-
 }
 
 /**

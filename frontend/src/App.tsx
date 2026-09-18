@@ -47,7 +47,12 @@ export default function App() {
   // 单独一个状态而不是复用 bootError，是因为两者的呈现不该一样：
   // 红条会让人以为程序坏了，去卸载重装；而它其实在正常工作。
   const [bootWarn, setBootWarn] = useState('')
-  const [focusSearchNonce, setFocusSearchNonce] = useState(0)
+  // showNonce 是"面板被呼出的次数"。
+  //
+  // 它同时驱动两件事：把焦点给搜索框（"呼出即可打字"），以及把面板重置回
+  // 默认状态（回到历史页、清掉搜索/筛选/预览）。两件事都是"每次呼出都要做"
+  // 的，所以共用一个计数器，而不是各来一个。
+  const [showNonce, setShowNonce] = useState(0)
   const [lastImport, setLastImport] = useState<ImportRow | null>(null)
   const [version, setVersion] = useState('')
   const [platform, setPlatform] = useState('')
@@ -132,10 +137,18 @@ export default function App() {
 
   // ── 原生事件 ──────────────────────────────────────────────────
   //
-  // 只在面板视图轮询：这些事件几乎全部是"切视图/刷新列表"，
-  // 而用户待在设置页时不需要它们。省下来的是一份持续的 IPC。
+  // ⚠️ **常开，不按视图开关。**
+  //
+  // 原来这里是 `view === 'panel'`，理由是"设置页/统计页用不到这些事件，省一份
+  // 持续的 IPC"。但恰恰有一类事件**只有非面板视图才需要**：面板被重新呼出
+  // （show）时要把视图切回剪贴板历史。用户上次是在设置页收起面板的，这次按
+  // 热键呼出时前端正停在设置页——按旧条件根本不轮询，那条"切回历史页"的
+  // 命令就永远收不到，界面就停在上次的页面上。
+  //
+  // 代价是设置页/统计页上每 400ms 多一次 TakeEvents（取走一个通常是空的切片），
+  // 换来的是"每次亮起来都是历史页"这个不依赖用户上次停在哪里的保证。
   usePolledEvents(
-    view === 'panel',
+    true,
     useCallback(
       (evs) => {
         // 同一批里可能有多个事件，取最后一个"视图类"的即可
@@ -144,13 +157,19 @@ export default function App() {
         for (const e of evs) {
           switch (e.type) {
             case 'show':
-              // 呼出：刷新列表 + 聚焦搜索框。
+              // 呼出：**回到剪贴板历史**，并清掉回收站这个临时态。
+              //
+              // 不记"上次停在哪个视图"是有意的：按热键呼出时用户想要的是
+              // "看看我刚复制的东西"，而不是"接着上次的设置页看"。回收站同理
+              // ——它是为了找一条删掉的东西而临时进去的，不该是下次的默认。
               //
               // note 也要弹：启动期"热键被别的应用占用"就是搭在这条事件上的
               // （后端只知道面板要显示，前端才知道该说一句话）。原来这里
               // 只取视图信号、把 note 丢掉，于是用户永远不知道热键是死的。
               if (e.note) setToast(e.note)
-              setFocusSearchNonce((n) => n + 1)
+              setTrashed(false)
+              nextView = 'panel'
+              setShowNonce((n) => n + 1)
               break
             case 'settings':
               // 同上：带 note 的"设置页"事件是后端在替这次跳转说一句话。
@@ -302,7 +321,7 @@ export default function App() {
             onHide={hidePanel}
             onOpenView={(v) => setView(v)}
             onToast={onToast}
-            focusSearchNonce={focusSearchNonce}
+            showNonce={showNonce}
           />
         )}
 

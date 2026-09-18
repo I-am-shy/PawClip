@@ -74,6 +74,17 @@ const zh: Dict = {
   'action.restore': '恢复',
   'action.purge': '彻底删除',
 
+  // 列表项的右键菜单，以及"查看"浮层。
+  'menu.copy': '复制',
+  'menu.view': '查看',
+  'viewer.title': '查看',
+  'viewer.zoomIn': '放大',
+  'viewer.zoomOut': '缩小',
+  'viewer.zoomReset': '回到 100%',
+  'viewer.fit': '适应窗口',
+  'viewer.hintImage': '滚轮缩放 · 拖动平移 · 双击复位 · Esc 关闭',
+  'viewer.hintText': '⌘ 滚轮缩放字号 · 可直接选中文本 · Esc 关闭',
+
   'trash.empty': '清空回收站',
   'trash.emptyConfirm': '清空回收站？其中的条目将被彻底删除，无法恢复。',
   'trash.restored': '已恢复 {n} 条',
@@ -321,6 +332,17 @@ const en: Dict = {
   'action.delete': 'Delete',
   'action.restore': 'Restore',
   'action.purge': 'Delete permanently',
+
+  // Right-click menu on a list item, and the "view" overlay.
+  'menu.copy': 'Copy',
+  'menu.view': 'View',
+  'viewer.title': 'View',
+  'viewer.zoomIn': 'Zoom in',
+  'viewer.zoomOut': 'Zoom out',
+  'viewer.zoomReset': 'Reset to 100%',
+  'viewer.fit': 'Fit to window',
+  'viewer.hintImage': 'Scroll to zoom · drag to pan · double-click to reset · Esc to close',
+  'viewer.hintText': '⌘-scroll to zoom the text · selectable · Esc to close',
 
   'trash.empty': 'Empty trash',
   'trash.emptyConfirm': 'Empty the trash? Those items will be permanently deleted.',

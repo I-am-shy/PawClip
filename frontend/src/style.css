@@ -1401,3 +1401,210 @@ select.input {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* ── 右键菜单（ContextMenu.tsx）─────────────────────────────────
+   画在页面里的浮动色块，不是系统菜单：菜单项的内容依赖前端才知道的
+   状态（这条是什么类型、能不能查看）。 */
+.menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 136px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-pop);
+  /* 菜单上的字是控件文案，不是内容——面板上只有剪贴板内容可选中。 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.menu-item {
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.menu-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.menu-item-danger {
+  color: var(--danger);
+}
+
+/* ── 查看浮层（ContentViewer.tsx）───────────────────────────────
+   盖住整个面板窗口。为什么是全屏而不是一张居中卡片：面板本身就不大
+   （默认 560×760），查看恰恰是"列表那一行塞不下"的时候才需要——
+   再留一圈遮罩边，等于把最缺的空间又还回去。 */
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.viewer-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: 6px 10px;
+}
+
+.viewer-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.viewer-dims {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+/* 缩放条：三个控件贴在一个色块里，看得出它们说的是一件事。 */
+.zoombar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 1px 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-card);
+}
+
+.zoomval {
+  min-width: 46px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.zoomval:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.viewer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  overflow: hidden;
+}
+
+/* 文本与文件列表要能滚；图片靠拖拽平移，所以默认是 hidden。 */
+.viewer-body-text,
+.viewer-body-files {
+  overflow: auto;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.viewer-img {
+  /* 缩放全交给 transform：max-width 之类的约束会和它打架，
+     结果是"缩放到某个倍数之后就不动了"。 */
+  max-width: none;
+  max-height: none;
+  /* transform-origin 居中：缩放与平移都相对中心算，与 ContentViewer
+     里那个"以指针为锚点"的算法对应。 */
+  transform-origin: center center;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+
+.viewer-body-image:active .viewer-img {
+  cursor: grabbing;
+}
+
+.viewer-text {
+  margin: 0;
+  width: 100%;
+  /* 字号由内联 style 按倍数给；这里是不缩放的基准。 */
+  font-size: 13px;
+  line-height: 1.55;
+  font-family: var(--mono);
+  color: var(--fg);
+  /* pre 不软换行：查看代码时保留原始排版比"塞进窗口宽度"重要，
+     一行很长时横向滚动即可。 */
+  white-space: pre;
+  /* 这里的内容**就是**剪贴板内容，必须能选中（复制它的原文是刚需）。 */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.viewer-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viewer-files .filelink {
+  text-align: left;
+}
+
+.viewer-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.viewer-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.viewer-hint {
+  flex: none;
+  color: var(--fg-muted);
+}

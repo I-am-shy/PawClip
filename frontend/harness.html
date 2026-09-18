@@ -53,6 +53,93 @@
         backup: { manifestFormat: 'json', includeExpired: false },
       }
 
+      // 三条假数据：文本 / 图片 / 文件。列表、右键菜单、查看浮层都靠它们
+      // 才能跑起来（真数据在数据库里，dev 环境没有）。
+      // 图片用 SVG data URI：不需要后端文件，而且给了确定的 640×400，
+      // 便于核对"适应窗口"算出来的倍率。
+      const IMG =
+        "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='400'%3E" +
+        "%3Crect width='640' height='400' fill='%23ffd166'/%3E" +
+        "%3Ccircle cx='320' cy='200' r='120' fill='%23ef476f'/%3E" +
+        "%3Ctext x='320' y='215' font-size='40' text-anchor='middle' fill='white'%3E640%C3%97400%3C/text%3E%3C/svg%3E"
+
+      const nowSec = Math.floor(Date.now() / 1000)
+      const base = {
+        fingerprint: 'fp',
+        sourceAppId: 'com.apple.Safari',
+        sourceAppName: 'Safari',
+        sourceUrl: '',
+        categoryId: null,
+        pinned: false,
+        firstSeenAt: nowSec - 600,
+        expiresAt: nowSec + 86400,
+        ttlSource: 'default',
+        createdAt: nowSec - 120,
+        lastUsedAt: null,
+        useCount: 1,
+        deletedAt: null,
+        tagIds: null,
+        thumbUrl: '',
+        imageUrl: '',
+        hasHtml: false,
+      }
+
+      const rows = [
+        {
+          ...base,
+          id: 1,
+          kind: 'text',
+          preview: '{\n  "name": "PawClip",\n  "why": "留一条很长的假文本，用来验证查看浮层里的滚动与字号缩放",\n  "lines": 40\n}',
+          byteSize: 4096,
+          textLen: 1234,
+          fileCount: 0,
+        },
+        {
+          ...base,
+          id: 2,
+          kind: 'image',
+          preview: 'shot.png',
+          byteSize: 583168,
+          textLen: 0,
+          fileCount: 0,
+          thumbUrl: IMG,
+          imageUrl: IMG,
+        },
+        {
+          ...base,
+          id: 3,
+          kind: 'files',
+          preview: '/Users/me/Desktop/报告.pdf',
+          byteSize: 20480,
+          textLen: 0,
+          fileCount: 2,
+        },
+      ]
+
+      const LONG_TEXT = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 行：这一行是假的正文，用来把滚动条撑出来。`).join('\n')
+
+      const detailFor = (id) => {
+        const r = rows.find((x) => x.id === id)
+        if (!r) return null
+        return {
+          ...r,
+          text: r.kind === 'text' ? LONG_TEXT : '',
+          html: '',
+          rtf: '',
+          filePaths: r.kind === 'files' ? ['/Users/me/Desktop/报告.pdf', '/Users/me/Desktop/附录.xlsx'] : null,
+          imageWidth: r.kind === 'image' ? 640 : 0,
+          imageHeight: r.kind === 'image' ? 400 : 0,
+        }
+      }
+
+      // 原生事件队列：TakeEvents 取走并清空。真实后端的事件来自托盘/热键，
+      // 浏览器里没有，所以留一个 window.__emit 供实测时手动投一条
+      // （例如 __emit('show') 验证"呼出时回到历史页"）。
+      const events = []
+      window.__emit = (type, note) => {
+        events.push({ type, at: Math.floor(Date.now() / 1000), note })
+      }
+
       // 记录最后一次 SetSetting，便于在浏览器控制台里核对"前端到底发了什么"。
       // Suspend/ResumeHotkey 也记一条：输入态那几秒热键必须处于"已让出"状态，
       // 而这件事在浏览器里看不见（真实效果要系统级热键才体现），只能核对调用。
@@ -73,17 +160,22 @@
           window.__log.push(['ResumeHotkey'])
           return null
         },
-        TakeEvents: async () => [],
+        TakeEvents: async () => events.splice(0, events.length),
         List: async () => ({
-          rows: [],
+          rows,
           nextCursor: null,
-          total: 0,
+          total: rows.length,
           totalValid: true,
           hasMore: false,
           tookMs: 0,
           mode: 'none',
           ftsAvailable: true,
         }),
+        Get: async (id) => detailFor(id),
+        CopyOnly: async (id) => {
+          window.__log.push(['CopyOnly', id])
+          return { mode: 'clipboard', pasted: false, note: '', restored: false }
+        },
         IsAutoStart: async () => false,
         AutoStartDiag: async () => '',
         Version: async () => '0.1.0-harness',
@@ -100,6 +192,12 @@
         DataDir: async () => '/tmp/paw',
         ConfigPath: async () => '/tmp/paw/config.toml',
         PanelVisible: async () => true,
+        // 记录下来：查看浮层开着的时候按 Esc 应当**只**关浮层，
+        // 不能顺手把面板也收起来（那是面板自己那级 Esc 的行为）。
+        HidePanel: async () => {
+          window.__log.push(['HidePanel'])
+          return null
+        },
         AutoPasteAvailable: async () => true,
         SequenceState: async () => ({ active: false, remaining: 0, total: 0 }),
         LastImport: async () => null,

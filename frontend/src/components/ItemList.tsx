@@ -40,6 +40,13 @@ export type ItemListProps = {
   hasMore: boolean
   onActivate: (id: number) => void
   onSelectionChange: (ids: Set<number>) => void
+  /**
+   * 在某一项上按下了右键。
+   *
+   * 坐标是**视口坐标**（clientX/Y）：菜单用 fixed 定位画在页面里，
+   * 而面板本身可以被拖到屏幕任何位置，用文档坐标会飘。
+   */
+  onContextMenu: (id: number, x: number, y: number) => void
   onPaste: (id: number) => void
   onTogglePin: (id: number, pinned: boolean) => void
   onDelete: (id: number) => void
@@ -96,6 +103,15 @@ export function ItemList(p: ItemListProps) {
             data-id={r.id}
             onClick={(e) => handleClick(e, r.id)}
             onDoubleClick={() => p.onPaste(r.id)}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              // 右键把光标落到这一行：菜单里的动作作用在它身上，光标停在别处
+              // 会让"我点的那条"和"要操作的那条"看起来不是一回事。
+              // 多选在这里被收成单选，同样是为了这个一致性。
+              p.onSelectionChange(new Set([r.id]))
+              p.onActivate(r.id)
+              p.onContextMenu(r.id, e.clientX, e.clientY)
+            }}
           >
             <div className="item-leading">
               <KindIcon t={t} kind={r.kind} thumbUrl={r.thumbUrl} />
