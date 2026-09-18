@@ -68,11 +68,30 @@ jobs:
       - name: Install wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
 
-      # wails 的 `-nsis` 走 makensis。不预装的话它找不到命令就失败。
+      # wails 的 `-nsis` 走 makensis。
+      #
+      # ⚠️ 装完必须自己把它加进 PATH。`choco install` 只改注册表里的环境变量，
+      # **不会**传播给已经启动的 runner 进程，于是本 job 后续步骤的 PATH 里
+      # 仍然没有 NSIS；而 wails 是用 `exec.LookPath("makensis")` 找它的
+      # （internal/shell/shell.go:95），找不到时**只打一行 Warning 就 return nil**
+      # （pkg/commands/build/nsis_installer.go:53）——Build 步骤照样绿，
+      # 安装包却压根没生成，直到打包步骤才以一句 "exit code 1" 炸出来。
+      # 2026-09-18 首次发 v0.1.0 就是这么失败的（macOS 全绿，只有 Windows 红）。
+      #
+      # 下面那句 `makensis -VERSION` 是**故意**留的：宁可在这里明确失败，
+      # 也不要把问题推迟到打包步骤那个看不出所以然的地方。
       - name: Install NSIS
         if: matrix.nsis == 'true'
-        run: choco install nsis --no-progress -y
         shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          $nsisDir = "C:\Program Files (x86)\NSIS"
+          if (-not (Test-Path "$nsisDir\makensis.exe")) {
+            Write-Error "NSIS 没有装到预期位置：$nsisDir"
+            exit 1
+          }
+          echo $nsisDir >> $env:GITHUB_PATH
+          & "$nsisDir\makensis.exe" -VERSION
 
       - name: Build
         # 走 scripts/build.sh 而不是直接调 wails：那个脚本是"唯一正确的构建
@@ -129,10 +148,26 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # NSIS 安装包（wails 的输出名形如 pawclip-amd64-installer.exe）
+          # NSIS 安装包（wails 的输出名形如 PawClip-amd64-installer.exe）
           # 与免安装的 exe 一起发。有人就是不想装东西。
+          #
+          # 失败时的诊断信息要够用：这条路径上最常见的坏法是 makensis 不在
+          # PATH，而 wails 对此**是静默的**（只打 Warning），所以只报一句
+          # "没生成"没法定位。把 build/bin 的实际内容打出来，一眼就能分辨
+          # "完全没有 exe"还是"只有裸 exe、缺 installer"——两者根因不同。
           $installer = Get-ChildItem build/bin -Filter "*-installer.exe" -ErrorAction SilentlyContinue
-          if (-not $installer) { Write-Error "没有生成 NSIS 安装包"; exit 1 }
+          if (-not $installer) {
+            Write-Host "build/bin 的实际内容："
+            Get-ChildItem build/bin -Recurse | Select-Object FullName, Length
+            Write-Error "没有生成 NSIS 安装包（先确认 makensis 真的可用）"
+            exit 1
+          }
+          if (-not (Test-Path build/bin/PawClip.exe)) {
+            Write-Host "build/bin 的实际内容："
+            Get-ChildItem build/bin -Recurse | Select-Object FullName, Length
+            Write-Error "没有找到 build/bin/PawClip.exe"
+            exit 1
+          }
           Copy-Item $installer.FullName "${{ matrix.artifact }}-installer.exe"
           Copy-Item build/bin/PawClip.exe "${{ matrix.artifact }}.exe"
           Get-ChildItem "${{ matrix.artifact }}*" | Select-Object Name, Length
