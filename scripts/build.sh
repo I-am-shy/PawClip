@@ -1,5 +1,10 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 # PawClip 构建入口 —— 唯一正确的构建方式。
+#
+# 用 bash 而不是 zsh：脚本内容本来就只有 POSIX/bash 的构造，但 shebang 写 zsh
+# 会让它在**任何没有 zsh 的环境**里直接不可执行——Windows runner 就是这种情况
+# （2026-09-18 发 v0.1.0 时 Windows 的构建以"步骤报绿、产物不存在"的假绿形态失败）。
+# bash 在 macOS / Linux / Windows(Git Bash) 上都存在，是这里唯一安全的选择。
 #
 # 为什么需要这个包装脚本，而不能直接 `wails build`：
 #
@@ -28,9 +33,28 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-WAILS="${WAILS:-$HOME/go/bin/wails}"
-if ! command -v "$WAILS" >/dev/null 2>&1; then
-  echo "找不到 wails：$WAILS" >&2
+# wails 的位置：先查 PATH（`go install` 的落地目录一般在 PATH 里，
+# GitHub Actions 的 runner 也会把 $(go env GOPATH)/bin 放进 PATH），
+# 再回退到默认 GOPATH/bin。
+#
+# 为什么不能只写死 `$HOME/go/bin/wails`：Windows 上 `go install` 的产物
+# 是 wails.exe，而 Git Bash 的 `command -v` 对**带路径**的形式不会自动补
+# 后缀（只对 PATH 查找补），于是写死的路径在那里恒为"不存在"。
+# 显式把两个候选都列出来，三个平台才能用同一份脚本。
+WAILS="${WAILS:-}"
+if [ -z "$WAILS" ]; then
+  WAILS="$(command -v wails 2>/dev/null || true)"
+fi
+_resolved=""
+for cand in "$WAILS" "$HOME/go/bin/wails" "$HOME/go/bin/wails.exe"; do
+  if [ -n "$cand" ] && [ -x "$cand" ]; then
+    _resolved="$cand"
+    break
+  fi
+done
+WAILS="$_resolved"
+if [ -z "$WAILS" ]; then
+  echo "找不到 wails（已试：PATH、\$HOME/go/bin/wails、\$HOME/go/bin/wails.exe）" >&2
   echo "安装：go install github.com/wailsapp/wails/v2/cmd/wails@latest" >&2
   exit 1
 fi

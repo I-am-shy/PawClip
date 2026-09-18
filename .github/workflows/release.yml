@@ -111,6 +111,16 @@ jobs:
         env:
           CGO_ENABLED: "1"
           VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        # shell 必须显式写成 bash。
+        #
+        # Windows runner 的默认 shell 是 pwsh，而 pwsh 遇到 `.sh` 会经由文件关联
+        # **异步**启动解释器，退出码不会回到 pwsh（`$LASTEXITCODE` 不被设置），
+        # 于是 GitHub 认为这一步成功——**构建失败时 Build 步骤照样报绿**，
+        # 问题被推迟到打包步骤，以一句没有上下文的 "exit code 1" 出现。
+        # 2026-09-18 发 v0.1.0 时 Windows 就是这个形态（macOS 一直正常，
+        # 因为它的默认 shell 本来就是 bash，退出码能正确传播）。
+        # bash 在三个平台上都有，写死它这个歧义就消失了。
+        shell: bash
         run: scripts/build.sh -platform ${{ matrix.platform }} ${{ matrix.nsis == 'true' && '-nsis' || '' }}
 
       # ── macOS：ad-hoc 签名 ────────────────────────────────────
@@ -171,6 +181,32 @@ jobs:
           Copy-Item $installer.FullName "${{ matrix.artifact }}-installer.exe"
           Copy-Item build/bin/PawClip.exe "${{ matrix.artifact }}.exe"
           Get-ChildItem "${{ matrix.artifact }}*" | Select-Object Name, Length
+
+      # ── 诊断（仅 Windows）─────────────────────────────────────
+      #
+      # 为什么要把事实做成 annotation、而不是留在日志里：失败步骤的日志需要
+      # 仓库 admin 权限才能取（API 与网页都拿不到），而 check-run 的
+      # annotations 是**公开可读**的。把定位所需的现场信息用 `::notice::`
+      # 发出去，就能在不登录的情况下看到"构建到底产出了什么"。
+      #
+      # 同时它也是个断言：产物缺失时用 `::error::` 明确失败，把
+      # "静默假绿" 变成 "在正确的位置报错"。
+      #
+      # 定位完成后这个步骤可以删掉。
+      - name: Diagnose (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $mk = (Get-Command makensis -EA SilentlyContinue).Source
+          $binDir = "build/bin"
+          $instDir = "build/windows/installer"
+          $bin = if (Test-Path $binDir) { ((Get-ChildItem $binDir -Recurse -File -EA SilentlyContinue | Select-Object -First 12 | ForEach-Object Name) -join ",") } else { "NO-DIR" }
+          $inst = if (Test-Path $instDir) { ((Get-ChildItem $instDir -Recurse -File -EA SilentlyContinue | Select-Object -First 12 | ForEach-Object Name) -join ",") } else { "NO-DIR" }
+          Write-Host "::notice title=NSIS-DIAG::makensis=[$mk]; buildbin=[$bin]; installer=[$inst]"
+          if (-not (Test-Path "$binDir/PawClip.exe")) {
+            Write-Host "::error title=NSIS-DIAG::build/bin 里没有 PawClip.exe —— Windows 构建没有真正产出"
+            exit 1
+          }
 
       - uses: actions/upload-artifact@v4
         with:
