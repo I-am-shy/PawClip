@@ -65,6 +65,9 @@ const (
 	msgReportMerged        msgKey = "report.merged"
 	msgReportOverwritten   msgKey = "report.overwritten"
 	msgReportInserted      msgKey = "report.inserted"
+	// msgReportDrafts 用在导出与导入两处报告里：两边都要报草稿条数，
+	// 否则用户导出后看到的"条目 12"里到底有没有算草稿，只能靠猜。
+	msgReportDrafts        msgKey = "report.drafts"
 	msgBackupReadmeTitle   msgKey = "backup.readme.title"
 	msgBackupReadmeHowTo   msgKey = "backup.readme.howTo"
 	msgBackupReadmeWarning msgKey = "backup.readme.warning"
@@ -175,6 +178,22 @@ const (
 	// 一句话，所以它既是提示、也是"程序还活着"的证据。
 	msgBootConfigBroken msgKey = "boot.configBroken"
 
+	// 草稿本（docs/DESIGN.md §4.4）。
+	//
+	// msgDraftDefaultName 是"新建草稿时的默认名"。它**在后端渲染、
+	// 只在创建那一刻**写进库：之后用户切语言，草稿名不会集体跳变——
+	// 名字是内容的一部分（用户可以改它），不是界面文案。
+	msgDraftDefaultName    msgKey = "draft.defaultName"
+	msgErrDraftGone        msgKey = "err.draftGone"
+	msgErrDraftImageTooBig msgKey = "err.draftImageTooBig"
+	// msgErrDraftImageType 与 msgErrDraftImageBroken 是两件事，不能合并：
+	// 前者是"解得开，但不是支持的图片格式"，后者是"base64 就没解开"。
+	// 用户贴了一段 HTML 或纯文本时走的是后者——那时说"格式不支持"会把
+	// 他引去查图片格式，而他压根没贴图片。
+	msgErrDraftImageType   msgKey = "err.draftImageType"
+	msgErrDraftImageBroken msgKey = "err.draftImageBroken"
+	msgErrLastView         msgKey = "err.lastView"
+
 	// 启动期读配置的三处失败。
 	//
 	// 它们不再是"开发者日志"了：main.go 现在把它们包进
@@ -217,6 +236,7 @@ var allMsgKeys = []msgKey{
 	msgReportMerged,
 	msgReportOverwritten,
 	msgReportInserted,
+	msgReportDrafts,
 	msgBackupReadmeTitle,
 	msgBackupReadmeHowTo,
 	msgBackupReadmeWarning,
@@ -282,6 +302,12 @@ var allMsgKeys = []msgKey{
 	msgErrConfigDir,
 	msgErrConfigRead,
 	msgErrConfigParse,
+	msgDraftDefaultName,
+	msgErrDraftGone,
+	msgErrDraftImageTooBig,
+	msgErrDraftImageType,
+	msgErrDraftImageBroken,
+	msgErrLastView,
 }
 
 // catalog 是全部后端字符串。结构是 map[Lang]map[msgKey]string。
@@ -315,6 +341,7 @@ var catalog = map[Lang]map[msgKey]string{
 		msgReportMerged:         "合并",
 		msgReportOverwritten:    "覆盖",
 		msgReportInserted:       "新增",
+		msgReportDrafts:         "草稿",
 		msgBackupReadmeTitle:    "PawClip 备份包",
 		msgBackupReadmeHowTo:    "在 PawClip 里用「导出 / 导入 → 导入」选择本文件即可恢复。",
 		msgBackupReadmeWarning:  "本包含有你复制过的内容（可能包括密码、验证码）。请妥善保管，不要随手分享。",
@@ -380,6 +407,12 @@ var catalog = map[Lang]map[msgKey]string{
 		msgErrConfigDir:         "确定不了用户配置目录：%v",
 		msgErrConfigRead:        "读不了配置文件 %s：%v",
 		msgErrConfigParse:       "配置文件 %s 语法有错：%v",
+		msgDraftDefaultName:     "草稿 %d",
+		msgErrDraftGone:         "这条草稿已经被删除了",
+		msgErrDraftImageTooBig:  "图片太大（上限 %s）",
+		msgErrDraftImageType:    "这个图片格式不支持",
+		msgErrDraftImageBroken:  "这段内容不是图片（读不出图片数据）",
+		msgErrLastView:          "记不住「上次打开的页面」：%v",
 	},
 	LangEn: {
 		msgTrayShow:             "Show PawClip",
@@ -406,6 +439,7 @@ var catalog = map[Lang]map[msgKey]string{
 		msgReportMerged:         "Merged",
 		msgReportOverwritten:    "Overwritten",
 		msgReportInserted:       "Inserted",
+		msgReportDrafts:         "Drafts",
 		msgBackupReadmeTitle:    "PawClip backup",
 		msgBackupReadmeHowTo:    "Open PawClip, choose Export / Import → Import, and pick this file to restore.",
 		msgBackupReadmeWarning:  "This archive contains things you have copied (possibly passwords or codes). Keep it private.",
@@ -471,6 +505,12 @@ var catalog = map[Lang]map[msgKey]string{
 		msgErrConfigDir:         "Could not determine your config folder: %v",
 		msgErrConfigRead:        "Could not read the config file %s: %v",
 		msgErrConfigParse:       "The config file %s has a syntax error: %v",
+		msgDraftDefaultName:     "Draft %d",
+		msgErrDraftGone:         "This draft has been deleted",
+		msgErrDraftImageTooBig:  "That image is too large (limit %s)",
+		msgErrDraftImageType:    "That image format is not supported",
+		msgErrDraftImageBroken:  "That content isn't an image (no image data could be read)",
+		msgErrLastView:          "Could not remember the last opened page: %v",
 	},
 }
 

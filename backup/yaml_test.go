@@ -103,13 +103,13 @@ func ptrI64(n int64) *int64 { return &n }
 
 // jsonManifest 用 JSON 走一遍，作为 YAML 的对照基准。
 func jsonManifest(t *testing.T, h Header, items []Item) *Manifest {
+	return jsonManifestFull(t, h, items, nil)
+}
+
+// jsonManifestFull 是带上草稿段的版本（草稿与 items 两条路径都要能对照）。
+func jsonManifestFull(t *testing.T, h Header, items []Item, drafts []Draft) *Manifest {
 	t.Helper()
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	if err := enc.Encode(h); err != nil {
-		t.Fatalf("encode header: %v", err)
-	}
-	b, err := json.Marshal(Manifest{Header: h, Items: items})
+	b, err := json.Marshal(Manifest{Header: h, Items: items, Drafts: drafts})
 	if err != nil {
 		t.Fatalf("marshal manifest: %v", err)
 	}
@@ -118,6 +118,45 @@ func jsonManifest(t *testing.T, h Header, items []Item) *Manifest {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	return &m
+}
+
+// writeYAMLManifest 用**产品代码里那个发射器**生成一份 YAML 清单。
+//
+// 第一版测试是手工调 writeYAMLHeader + writeYAMLItem 拼的，于是
+// "段的键名怎么写、空集合怎么写"这一层**完全没被覆盖**——而
+// `items:` 后面跟一个缩进的 `[]` 恰恰是非法 YAML（独立一行的 `[]`
+// 不是合法的节点续行）。测试必须走产品代码走的那条路，否则测的是
+// 一份没人会生成的文本。
+func writeYAMLManifest(t *testing.T, h Header, items []Item, drafts []Draft) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	out := &yamlManifestWriter{w: &buf}
+	if err := out.WriteHeader(h); err != nil {
+		t.Fatalf("WriteHeader: %v", err)
+	}
+	if err := out.BeginItems(); err != nil {
+		t.Fatalf("BeginItems: %v", err)
+	}
+	for i := range items {
+		if err := out.WriteItem(items[i]); err != nil {
+			t.Fatalf("WriteItem[%d]: %v", i, err)
+		}
+	}
+	if err := out.EndItems(); err != nil {
+		t.Fatalf("EndItems: %v", err)
+	}
+	if err := out.BeginDrafts(); err != nil {
+		t.Fatalf("BeginDrafts: %v", err)
+	}
+	for i := range drafts {
+		if err := out.WriteDraft(drafts[i]); err != nil {
+			t.Fatalf("WriteDraft[%d]: %v", i, err)
+		}
+	}
+	if err := out.EndDrafts(); err != nil {
+		t.Fatalf("EndDrafts: %v", err)
+	}
+	return buf.Bytes()
 }
 
 // YAML 与 JSON 两条路径必须产出**完全一致**的清单。
@@ -129,22 +168,13 @@ func TestYAML_RoundTripMatchesJSON(t *testing.T) {
 	h := sampleHeader()
 	items := sampleItems()
 
-	var buf bytes.Buffer
-	if err := writeYAMLHeader(&buf, h); err != nil {
-		t.Fatalf("writeYAMLHeader: %v", err)
-	}
-	// 流式写 items：第一条不加前缀、之后每条前加一个空行分隔（与导出器一致）。
-	for i := range items {
-		if err := writeYAMLItem(&buf, items[i], 1); err != nil {
-			t.Fatalf("writeYAMLItem[%d]: %v", i, err)
-		}
-	}
+	raw := writeYAMLManifest(t, h, items, nil)
 
-	got := yamlToManifest(t, buf.Bytes())
+	got := yamlToManifest(t, raw)
 	want := jsonManifest(t, h, items)
 
 	if len(got.Items) != len(want.Items) {
-		t.Fatalf("条目数 %d，想要 %d\nYAML:\n%s", len(got.Items), len(want.Items), buf.String())
+		t.Fatalf("条目数 %d，想要 %d\nYAML:\n%s", len(got.Items), len(want.Items), raw)
 	}
 	if !reflect.DeepEqual(normalizeCategories(got.Categories), normalizeCategories(want.Categories)) {
 		t.Errorf("categories 不一致\n got %+v\nwant %+v", got.Categories, want.Categories)
@@ -163,6 +193,80 @@ func TestYAML_RoundTripMatchesJSON(t *testing.T) {
 			w, _ := json.MarshalIndent(want.Items[i], "", "  ")
 			t.Errorf("items[%d] 不一致\nYAML→ %s\nJSON→ %s", i, g, w)
 		}
+	}
+}
+
+// 草稿段也要能无损往返：正文里的换行、缩进、`#`、引号、以及
+// `](blobs/…)` 形式的图片引用全都不能在路上被 YAML 的规则吃掉。
+//
+// 这一条最容易被"多引几个引号"的偷懒实现蒙过去：单引号里换行会被
+// **折叠成空格**，正文就那么静默地变了样——而草稿的正文就是全部内容，
+// 变样等于丢数据。
+func TestYAML_DraftsRoundTrip(t *testing.T) {
+	h := sampleHeader()
+	h.Stats.Drafts = 2
+	created := time.Date(2026, 9, 15, 11, 30, 11, 0, time.FixedZone("CST", 8*3600))
+	drafts := []Draft{
+		{
+			ID:        1,
+			Title:     "草稿 1",
+			MD:        "第一行\n第二行\n\n- 列表项\n- 另一个\n\n# 标题\n\n![图](blobs/9f/2a/9f2a.png)\n\n[链接](https://example.com/a?b=1&c=2)\n",
+			CreatedAt: created,
+			UpdatedAt: created.Add(90 * time.Second),
+		},
+		{
+			ID:    2,
+			Title: "", // 用户清空过标题，空标题是合法状态
+			// 会被 YAML 误读的字符：冒号、井号、引号、行首短横、纯数字。
+			MD:        "key: value\n# 这不是注释\n他说：\"行\"\n- 3\n\n2026\n",
+			CreatedAt: created,
+			UpdatedAt: created,
+		},
+	}
+
+	raw := writeYAMLManifest(t, h, nil, drafts)
+	got := yamlToManifest(t, raw)
+	want := jsonManifestFull(t, h, nil, drafts)
+
+	if len(got.Drafts) != len(want.Drafts) {
+		t.Fatalf("草稿数 %d，想要 %d\nYAML:\n%s", len(got.Drafts), len(want.Drafts), raw)
+	}
+	if !reflect.DeepEqual(got.Stats, want.Stats) {
+		t.Errorf("stats 不一致\n got %+v\nwant %+v", got.Stats, want.Stats)
+	}
+	for i := range want.Drafts {
+		if !reflect.DeepEqual(got.Drafts[i], want.Drafts[i]) {
+			t.Errorf("drafts[%d] 不一致\nYAML→ %+v\nJSON→ %+v", i, got.Drafts[i], want.Drafts[i])
+		}
+	}
+	// 反向也钉一下：正文必须逐字节相同，不能只是"DeepEqual 通过"。
+	// （DeepEqual 比的是 Go 字符串，所以这一条是冗余的——留着是因为
+	// 它把"换行被折叠"这件事的**后果**写在了断言里，读的人一眼能懂。）
+	if got.Drafts[0].MD != drafts[0].MD {
+		t.Errorf("草稿正文被改动了\n got %q\nwant %q", got.Drafts[0].MD, drafts[0].MD)
+	}
+}
+
+// 空集合的回归：`items:` 与 `drafts:` 在一条都没有时必须写成
+// **同一行**的 `items: []`。
+//
+// 写成两行（`items:` 换行再缩进一个 `[]`）产出的 YAML 我们自己的解析器
+// 都读不回来——旧代码正是这么写的，而旧测试因为手工拼 items 而
+// 完全没走到这条路径。这个用例是补上那个洞的。
+func TestYAML_EmptyCollectionsAreSingleLine(t *testing.T) {
+	h := sampleHeader()
+	raw := writeYAMLManifest(t, h, nil, nil)
+	s := string(raw)
+
+	if !strings.Contains(s, "\nitems: []\n") {
+		t.Errorf("空 items 应写成同一行的 `items: []`\n--- YAML ---\n%s", s)
+	}
+	if !strings.Contains(s, "\ndrafts: []\n") {
+		t.Errorf("空 drafts 应写成同一行的 `drafts: []`\n--- YAML ---\n%s", s)
+	}
+	got := yamlToManifest(t, raw)
+	if len(got.Items) != 0 || len(got.Drafts) != 0 {
+		t.Fatalf("空集合读回来应为空：items=%d drafts=%d", len(got.Items), len(got.Drafts))
 	}
 }
 
@@ -255,6 +359,9 @@ func TestYAML_NullAndEmptyCollections(t *testing.T) {
 	if err := writeYAMLHeader(&buf, h); err != nil {
 		t.Fatalf("writeYAMLHeader: %v", err)
 	}
+	// 键名由发射器惰性写出（见 writer.go）：这里手工补上，因为本用例要
+	// 单独测 writeYAMLItem 的字段形态，不经过 yamlManifestWriter。
+	buf.WriteString("items:\n")
 	if err := writeYAMLItem(&buf, it, 1); err != nil {
 		t.Fatalf("writeYAMLItem: %v", err)
 	}

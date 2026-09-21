@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -25,9 +26,10 @@ import (
 //
 //  1. **条目顺序必须是 README.txt → blobs/** → manifest.**（§2）。
 //     清单最后写，因为它里面的 stats 要等全部处理完才知道。
-//  2. **内存占用与条目数无关**（§7）。items 走两遍游标扫描：第一遍写 blob，
-//     第二遍流式写清单。绝不把 items collect 进切片，也绝不把 blob 内容
-//     整个读进内存（用 64 KB 块流式搬运）。
+//  2. **内存占用与条目数无关**（§7）。items 与 drafts 都走两遍游标扫描：
+//     第一遍写 blob，第二遍流式写清单。绝不把任一集合 collect 进切片，
+//     也绝不把 blob 内容整个读进内存（用 64 KB 块流式搬运）。
+//     草稿正文是用户手写的、单条就能很大，攒成切片是真的会吃掉内存。
 
 // Pauser 是"导出期间暂停 GC"的最小接口（§7 第 1 步）。
 //
@@ -118,8 +120,10 @@ type ExportResult struct {
 	Items      int64  `json:"items"`
 	Categories int64  `json:"categories"`
 	Tags       int64  `json:"tags"`
-	BlobBytes  int64  `json:"blobBytes"`
-	Blobs      int64  `json:"blobs"`
+	// Drafts 是写进包的草稿条数（不含已归档的）。
+	Drafts    int64 `json:"drafts"`
+	BlobBytes int64 `json:"blobBytes"`
+	Blobs     int64 `json:"blobs"`
 	// MissingBlobs 是"清单引用到了、但磁盘上找不到"的 blob 数（§7 第 9 步）。
 	// 大于 0 必须告诉用户：那个包是不完整的。
 	MissingBlobs int64    `json:"missingBlobs"`
@@ -222,6 +226,25 @@ func Export(
 	res.Categories = int64(len(cats))
 	res.Tags = int64(len(tags))
 
+	// 草稿条数先数一遍：stats.drafts 是**头部**字段，而头部在扫描之前就
+	// 写下去了。走 tx（不是 d.r）是为了让它与后面两遍扫描落在同一个
+	// 只读快照上——否则导出期间新建一条草稿，stats 与实际写出的条数
+	// 就会差 1，而那个数字正是导入侧的炸弹防护基准（§9）。
+	//
+	// ⚠️ 只在 scope=full 时导出草稿。pinned / category / range 选的是
+	// **条目**的子集，而草稿不可置顶、不属于分类、也没有 TTL（§3.7），
+	// 跟这三个条件是正交的：硬塞进去等于无视用户在导出向导里选的范围。
+	// 反过来（范围导出不含草稿）是可解释的，确认页上也会如实显示
+	// "将新增 0 条草稿"。
+	withDrafts := opt.Scope == ScopeFull
+	if withDrafts {
+		draftsAlive, _, err := db.CountDraftsTx(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		res.Drafts = draftsAlive
+	}
+
 	// 输出文件。
 	scopeLabel := opt.ScopeLabel
 	if scopeLabel == "" {
@@ -277,6 +300,19 @@ func Export(
 	res.Blobs, res.BlobBytes, res.MissingBlobs = n, bytes, missing
 	res.Warnings = append(res.Warnings, warns...)
 
+	// 草稿引用的 blob 走同一份 seen / sizes，所以"一张图既被复制过、
+	// 又被贴进草稿"时仍然只写一次。
+	if withDrafts {
+		dn, dbytes, dmissing, dwarns, err := writeDraftBlobsPass(ctx, zw, blobs, db, tx, seen, blobSizes)
+		if err != nil {
+			return nil, err
+		}
+		res.Blobs += dn
+		res.BlobBytes += dbytes
+		res.MissingBlobs += dmissing
+		res.Warnings = append(res.Warnings, dwarns...)
+	}
+
 	// ── ③ manifest.*（第二遍扫描，流式）─────────────────────────
 	header := Header{
 		Format:        FormatTag,
@@ -289,6 +325,7 @@ func Export(
 			Items:      res.Items,
 			Categories: res.Categories,
 			Tags:       res.Tags,
+			Drafts:     res.Drafts,
 			BlobBytes:  res.BlobBytes,
 		},
 		Settings:   opt.Settings,
@@ -310,7 +347,7 @@ func Export(
 		if opt.ManifestFormat == "yaml" {
 			out = &yamlManifestWriter{w: w}
 		} else {
-			out = &jsonManifestWriter{w: w, first: true}
+			out = &jsonManifestWriter{w: w}
 		}
 		if err := out.WriteHeader(header); err != nil {
 			return err
@@ -327,7 +364,30 @@ func Export(
 			// 报出来，因为清单里的 stats.items 会与真实条目数不符。
 			return fmt.Errorf("backup: 条目数在两遍扫描之间变化（%d → %d）", res.Items, written)
 		}
-		return out.EndItems()
+		if err := out.EndItems(); err != nil {
+			return err
+		}
+
+		// ③-b 草稿段。与 items 一样两遍扫描（blob 一遍、清单一遍），
+		// 同样比对条数：对不上就说明快照没生效。
+		//
+		// 非 full 范围时这里写出的是一个空数组（而不是省略掉这个键）：
+		// 清单里认得出"这次导出没带草稿"，比"这个字段不存在"更不含糊。
+		if err := out.BeginDrafts(); err != nil {
+			return err
+		}
+		var draftsWritten int64
+		if withDrafts {
+			var err error
+			draftsWritten, err = streamDrafts(ctx, tx, db, out.WriteDraft)
+			if err != nil {
+				return err
+			}
+		}
+		if draftsWritten != res.Drafts {
+			return fmt.Errorf("backup: 草稿数在两遍扫描之间变化（%d → %d）", res.Drafts, draftsWritten)
+		}
+		return out.EndDrafts()
 	})
 	if err != nil {
 		return nil, err
@@ -359,12 +419,24 @@ func Export(
 }
 
 // ── manifestWriter：JSON / YAML 两个出口 ────────────────────────
-
+//
+// 两个集合（items、drafts）都是**流式**写的：写下游不知道后面还有多少条，
+// 所以接口是"开始一段 / 逐条 / 结束一段"三段式。JSON 里就是
+// `"items":[…],"drafts":[…]`；YAML 里是顶层两个键 `items:` 与 `drafts:`。
+//
+// ⚠️ 顺序是 items 在前、drafts 在后。这不是随便定的：老读取方（只认
+// items 的实现）在 **JSON 里天然读不出问题**（多余字段忽略），但在 YAML
+// 里如果 drafts 在前，一个只认 `items` 的朴素解析器会在遇到 `drafts:` 时
+// 当作未知键跳过——也还好。真正的理由是 §3.4/§3.7 的文档顺序：
+// 清单的阅读顺序与文档一致，人才不用来回翻。
 type manifestWriter interface {
 	WriteHeader(h Header) error
 	BeginItems() error
 	WriteItem(it Item) error
 	EndItems() error
+	BeginDrafts() error
+	WriteDraft(d Draft) error
+	EndDrafts() error
 }
 
 // jsonManifestWriter 按 §7 的"流式 JSON 写法"逐条追加。
@@ -373,8 +445,10 @@ type manifestWriter interface {
 // "每条写完追加逗号"会让最后一条多出一个尾随逗号，整个清单就不是
 // 合法 JSON 了——而那时文件已经写了一半，用户拿到的是个坏包。
 type jsonManifestWriter struct {
-	w     io.Writer
-	first bool
+	w io.Writer
+	// sep 表示"下一条前面要加逗号"。两个集合各自从 false 起算，
+	// 所以在 BeginItems / BeginDrafts 里重置。
+	sep bool
 }
 
 func (j *jsonManifestWriter) WriteHeader(h Header) error {
@@ -384,22 +458,17 @@ func (j *jsonManifestWriter) WriteHeader(h Header) error {
 	}
 	// 头部编码成一个对象（末尾是 `}`），去掉它以便后面接着追加 items。
 	trimmed := strings.TrimRight(string(b), "}")
-	if _, err := io.WriteString(j.w, trimmed+`,"items":[`); err != nil {
-		return err
-	}
-	j.first = true
-	return nil
+	_, err = io.WriteString(j.w, trimmed+`,"items":[`)
+	j.sep = false
+	return err
 }
 
 func (j *jsonManifestWriter) BeginItems() error { return nil }
 
 func (j *jsonManifestWriter) WriteItem(it Item) error {
-	if !j.first {
-		if _, err := io.WriteString(j.w, ","); err != nil {
-			return err
-		}
+	if err := j.writeSep(); err != nil {
+		return err
 	}
-	j.first = false
 	b, err := json.Marshal(it)
 	if err != nil {
 		return fmt.Errorf("backup: 编码条目：%w", err)
@@ -408,31 +477,97 @@ func (j *jsonManifestWriter) WriteItem(it Item) error {
 	return err
 }
 
+// EndItems 只收掉数组方括号，**不闭合对象**：drafts 段还在后面。
 func (j *jsonManifestWriter) EndItems() error {
+	_, err := io.WriteString(j.w, "]")
+	return err
+}
+
+func (j *jsonManifestWriter) BeginDrafts() error {
+	_, err := io.WriteString(j.w, `,"drafts":[`)
+	j.sep = false
+	return err
+}
+
+func (j *jsonManifestWriter) WriteDraft(d Draft) error {
+	if err := j.writeSep(); err != nil {
+		return err
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		return fmt.Errorf("backup: 编码草稿：%w", err)
+	}
+	_, err = j.w.Write(b)
+	return err
+}
+
+// EndDrafts 收掉数组方括号与**整个对象**。这是清单最后写出的字节。
+func (j *jsonManifestWriter) EndDrafts() error {
 	_, err := io.WriteString(j.w, "]}")
 	return err
 }
 
+func (j *jsonManifestWriter) writeSep() error {
+	if !j.sep {
+		j.sep = true
+		return nil
+	}
+	_, err := io.WriteString(j.w, ",")
+	return err
+}
+
+// yamlManifestWriter 写 YAML 清单。
+//
+// 段的**键名是惰性写出的**（第一次 WriteItem / EndItems 时才写 `items:`）：
+// 空集合必须写成 `items: []` 这一行，而 `items:\n  []\n` 是**非法 YAML**
+// ——独立一行的 `[]` 不是一个合法的节点续行，我们自己的解析器也会拒它
+// （parseYAMLMap 见到 `[]` 找不到 `key: value` 就报错）。流式写的时候
+// 只有写完才敢说"一条都没有"，所以判空放在 End 里、键名放在第一次写时。
 type yamlManifestWriter struct {
-	w       io.Writer
-	started bool
+	w             io.Writer
+	itemsStarted  bool
+	draftsStarted bool
 }
 
 func (y *yamlManifestWriter) WriteHeader(h Header) error { return writeYAMLHeader(y.w, h) }
 func (y *yamlManifestWriter) BeginItems() error          { return nil }
 
 func (y *yamlManifestWriter) WriteItem(it Item) error {
-	y.started = true
+	if !y.itemsStarted {
+		y.itemsStarted = true
+		if _, err := io.WriteString(y.w, "items:\n"); err != nil {
+			return err
+		}
+	}
 	return writeYAMLItem(y.w, it, 1)
 }
 
 func (y *yamlManifestWriter) EndItems() error {
-	if !y.started {
-		// 一条都没有：`items:` 后面必须跟个合法节点，否则清单读不出来。
-		_, err := io.WriteString(y.w, "  []\n")
-		return err
+	if y.itemsStarted {
+		return nil
 	}
-	return nil
+	_, err := io.WriteString(y.w, "items: []\n")
+	return err
+}
+
+func (y *yamlManifestWriter) BeginDrafts() error { return nil }
+
+func (y *yamlManifestWriter) WriteDraft(d Draft) error {
+	if !y.draftsStarted {
+		y.draftsStarted = true
+		if _, err := io.WriteString(y.w, "drafts:\n"); err != nil {
+			return err
+		}
+	}
+	return writeYAMLDraft(y.w, d, 1)
+}
+
+func (y *yamlManifestWriter) EndDrafts() error {
+	if y.draftsStarted {
+		return nil
+	}
+	_, err := io.WriteString(y.w, "drafts: []\n")
+	return err
 }
 
 // ── 第一遍：写 blobs ────────────────────────────────────────────
@@ -740,6 +875,92 @@ func attachBlobSizes(it *Item, sizes map[string]int64) {
 			it.Blobs[i].Bytes = n
 		}
 	}
+}
+
+// ── 第一遍（续）：写草稿引用的 blob ──────────────────────────────
+
+// writeDraftBlobsPass 扫草稿正文，把里面引用的 blob 写进包。
+//
+// 与 writeBlobsPass 分开而不是合成一个大循环：两者的行来源不同
+// （items 表 vs drafts 表），硬合会让两边的列名在同一组局部变量里打架，
+// 而它们共享的东西（seen / sizes / 缺文件告警的措辞）本来就可以共用。
+//
+// 三处与 items 侧不同的地方：
+//
+//   - **扩展名/ mime 不能写死。** items 的图片一律转 PNG 后入库，所以那边
+//     可以硬编码 image/png；草稿贴图是原样存的（ImportDraftImage 按魔数
+//     定扩展名），png/jpg/gif/webp 都可能出现，必须按扩展名推。
+//   - **引用从 md 里抽**（DraftBlobRefsInMD），没有第二张表可查。
+//   - **告警文案带草稿 id 与标题无关**：标题可能为空（用户清空过输入框），
+//     空标题会印出 `草稿 ""`，所以只用 id。
+func writeDraftBlobsPass(
+	ctx context.Context,
+	zw *zip.Writer,
+	blobs *store.BlobStore,
+	db *store.DB,
+	q store.RowsQuerier,
+	seen map[string]struct{},
+	sizes map[string]int64,
+) (count int64, totalBytes int64, missing int64, warnings []string, err error) {
+	_, err = db.StreamAliveDrafts(ctx, q, func(d *store.Draft) error {
+		for _, rel := range store.DraftBlobRefsInMD(d.MD) {
+			inPkg := BlobDirPrefix + rel
+			if _, ok := seen[inPkg]; ok {
+				continue
+			}
+			seen[inPkg] = struct{}{}
+
+			abs := blobs.Abs(rel)
+			n, sum, e := writeFileBlob(zw, inPkg, MimeForExt(path.Ext(rel)), abs)
+			if e != nil {
+				if os.IsNotExist(unwrapAll(e)) {
+					missing++
+					warnings = append(warnings,
+						fmt.Sprintf("草稿 %d 的图片 %s 不在磁盘上", d.ID, rel))
+					continue
+				}
+				return e
+			}
+			totalBytes += n
+			count++
+			sizes[inPkg] = n
+			if want := shaFromShardPath(rel); want != "" && sum != want {
+				warnings = append(warnings,
+					fmt.Sprintf("草稿 %d 的图片 %s 的内容与其 sha256 不符（期望 %s，实际 %s）",
+						d.ID, rel, want, sum))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return count, totalBytes, missing, warnings,
+			fmt.Errorf("backup: 扫描草稿 blob 引用：%w", err)
+	}
+	return count, totalBytes, missing, warnings, nil
+}
+
+// ── 第二遍（续）：流式写 drafts ─────────────────────────────────
+
+// streamDrafts 逐条读草稿并回调，**不把结果收集进切片**。
+//
+// 正文在写进清单前要过一次改写：库里的 `](blob/x)` 要变成包内的
+// `](blobs/x)`（§2 是两套前缀）。这个转换放在这里而不是 store 里——
+// "包内长什么样"是**格式层的知识**，store 只该知道库内长什么样。
+func streamDrafts(
+	ctx context.Context,
+	q store.RowsQuerier,
+	db *store.DB,
+	emit func(Draft) error,
+) (int64, error) {
+	return db.StreamAliveDrafts(ctx, q, func(d *store.Draft) error {
+		return emit(Draft{
+			ID:        d.ID,
+			Title:     d.Title,
+			MD:        store.DraftBlobRefsToPackage(d.MD),
+			CreatedAt: time.Unix(d.CreatedAt, 0),
+			UpdatedAt: time.Unix(d.UpdatedAt, 0),
+		})
+	})
 }
 
 // ── 辅助 ────────────────────────────────────────────────────────

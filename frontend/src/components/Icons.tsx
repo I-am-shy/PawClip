@@ -176,3 +176,36 @@ export function IconPlus(p: IconProps) {
     </Svg>
   )
 }
+
+export function IconLink(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M10 13.6a3.6 3.6 0 0 0 5.1 0l2.9-2.9a3.6 3.6 0 1 0-5.1-5.1l-1 1" />
+      <path d="M14 10.4a3.6 3.6 0 0 0-5.1 0l-2.9 2.9a3.6 3.6 0 1 0 5.1 5.1l1-1" />
+    </Svg>
+  )
+}
+
+/** IconSidebar 是"目录可收起"那个开关：一个带分栏的方框。 */
+export function IconSidebar(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2" />
+      <path d="M9.5 4.5v15" />
+    </Svg>
+  )
+}
+
+/** IconGrip 是拖拽手柄：两列圆点。 */
+export function IconGrip(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="9.5" cy="7" r="0.9" />
+      <circle cx="9.5" cy="12" r="0.9" />
+      <circle cx="9.5" cy="17" r="0.9" />
+      <circle cx="14.5" cy="7" r="0.9" />
+      <circle cx="14.5" cy="12" r="0.9" />
+      <circle cx="14.5" cy="17" r="0.9" />
+    </Svg>
+  )
+}

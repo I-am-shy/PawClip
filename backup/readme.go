@@ -80,12 +80,14 @@ blob 寻址规则 / blob addressing
   stats.items            条目数 / item count
   stats.categories       分类数 / category count
   stats.tags             标签数 / tag count
+  stats.drafts           草稿条数 / draft count
   stats.blobBytes        全部 blob 的未压缩字节数 / total uncompressed blob bytes
   settings        **仅供参考**，导入默认不写入本机配置
                   informational only; importers should NOT apply it by default
   categories[]    { id, name, color, icon, sortOrder, ttlSeconds, rule }
   tags[]          { id, name, color }
   items[]         见下 / see below
+  drafts[]        见下 / see below
 
 items[]
   id              仅用于**包内交叉引用**（categoryId / tagIds）。
@@ -118,6 +120,19 @@ items[]
                   role = image | rtf | html
                   path 是**包内**路径 / in-package path
 
+drafts[]          # 草稿本笔记 / notebook drafts
+  id              仅用于**包内交叉引用** / NOT a global identity
+  title           标题（可能为空串）/ title, may be empty
+  md              Markdown 正文，**唯一真源** / Markdown body, single source of truth
+                  正文里的图片引用写成 ](blobs/<aa>/<bb>/<sha256>.<ext>) 形式，
+                  也就是与 blobs[] 同一套寻址；**没有**单独的 blobs 数组
+                  / images are referenced inline as in-package blob paths;
+                    there is no separate blobs array
+  createdAt       创建时刻 / creation time
+  updatedAt       最后修改时刻 / last edit time
+
+  已归档（软删除）的草稿不在包内 / archived (soft-deleted) drafts are excluded
+
 ----------------------------------------------------------------
 时间字段 / time fields
 ----------------------------------------------------------------
@@ -141,6 +156,7 @@ preserves the same *instant*, not the same wall-clock reading.
   z = zipfile.ZipFile("pawclip-backup-full-YYYYMMDD-HHMMSS.clipbak")
   m = json.loads(z.read("manifest.json"))
   texts = [i["text"] for i in m["items"] if i.get("text")]
+  notes = [d["md"] for d in m.get("drafts", [])]
 
 （清单是 manifest.yaml 时改用 PyYAML：
   import yaml; m = yaml.safe_load(z.read("manifest.yaml"))）
@@ -150,6 +166,9 @@ preserves the same *instant*, not the same wall-clock reading.
 ----------------------------------------------------------------
 
 * 回收站内容（已删除条目）不在包内 / trashed items are excluded
+* 已归档的草稿不在包内 / archived drafts are excluded
+* 草稿正文里的图片与条目共用 blobs/ 下的同一套寻址
+  / draft images share the same blobs/ addressing as items
 * 缩略图不在包内，导入后重新生成 / thumbnails are regenerated on import
 * 文件类条目只存路径，路径在目标机器上可能已失效
   / file entries store paths only; they may be invalid on the target machine

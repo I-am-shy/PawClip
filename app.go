@@ -732,6 +732,20 @@ func jsonString(raw string) (string, error) {
 	return s, nil
 }
 
+// jsonLiteral 是 jsonString 的反向操作：把一个 Go 字符串编成能进库的
+// JSON 字面量（`panel` → `"panel"`）。
+//
+// 后端主动写设置项的地方只有一处——SetLastView（草稿本的"记住上次停在
+// 哪一页"）。其余所有设置都是从界面来的，第二参本来就带着 JSON.stringify
+// 的结果。所以这个是给"后端自己写"那条路用的，和 jsonString 一起放，
+// 一读就知道这一对是怎么回事。
+//
+// 不需要返回 error：json.Marshal 对 string 永远不会失败。
+func jsonLiteral(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 // setHotkey 换绑全局热键：**先注册、后落库**。
 //
 // # 为什么不能走通用流程

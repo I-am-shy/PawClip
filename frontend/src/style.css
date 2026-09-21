@@ -95,10 +95,12 @@ body {
   overflow: hidden;
   /* ── 可选中 = "内容"，不可选中 = "控件" ──────────────────────────
    *
-   * 默认全部关掉，只把**剪贴板内容**显式放开，目前就三处：
+   * 默认全部关掉，只把**内容**显式放开，目前就这几处：
    *   .item-preview   列表行里的正文摘要
    *   .preview-text   预览浮层里的正文
    *   .filelink       预览里的文件路径（也是内容）
+   *   .draft-editor   草稿正文（一个可编辑区，不放开就完全没法用）
+   *   .draft-title    草稿标题（用户自己起的名字，是内容）
    * 其余一律保持不可选中：徽标（"过期于 3d"）、快捷键提示（⌘1）、
    * 应用名 / 相对时间 / 大小这类元信息，以及按钮、导航、搜索栏、底部链接——
    * 它们不是拿来复制的，拖拽选中只会让面板看起来花了。
@@ -1607,4 +1609,354 @@ select.input {
 .viewer-hint {
   flex: none;
   color: var(--fg-muted);
+}
+
+/* ── 草稿本（docs/DESIGN.md §4.4）───────────────────────────────── */
+
+/* 单页两栏：目录 + 编辑器。
+   高度用 flex 拉满而不是靠 padding 撑：正文区要自己滚（见 .draft-editor），
+   让外层跟着内容长高会让工具栏滚出视野。 */
+.drafts {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 10px;
+  /* 覆盖 .view-body 的 overflow-y: auto：这一页的滚动发生在内层
+     （目录一栏、正文一栏各自滚）。让外层也能滚的话，内层永远滚不动。 */
+  overflow: hidden;
+}
+
+/* 比 dim 再小一号的说明文字（归档区那句保留期提示、图片上限）。 */
+.draft-note {
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+/* 收起草稿目录时这一栏整体消失，编辑器自然铺满——不做"窄条 + 悬浮展开"，
+   因为 560 的宽度里再挤一条 28px 的窄条，正文那一侧就会开始频繁换行。 */
+.draft-split {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 10px;
+}
+
+.draft-toc {
+  flex: none;
+  width: 176px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.draft-toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.draft-toc-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 6px 5px 2px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  min-width: 0;
+}
+
+.draft-toc-item:hover {
+  background: var(--bg-hover);
+}
+
+.draft-toc-on {
+  background: var(--bg-active);
+}
+
+/* 拖拽插入位置：一条线比"整行高亮"更准确——用户需要知道会插到**哪一格之间**。 */
+.draft-toc-over {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.draft-grip {
+  flex: none;
+  display: inline-flex;
+  color: var(--fg-muted);
+  cursor: grab;
+  opacity: 0;
+}
+
+.draft-toc-item:hover .draft-grip {
+  opacity: 1;
+}
+
+.draft-toc-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.draft-toc-title {
+  font-size: 12px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-toc-sub {
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-toc-empty {
+  padding: 6px 2px;
+  font-size: 11.5px;
+}
+
+.draft-arch-head {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.draft-arch {
+  padding-top: 4px;
+}
+
+.draft-arch .chev-open {
+  transform: rotate(90deg);
+}
+
+.draft-arch-acts {
+  flex: none;
+  display: inline-flex;
+  gap: 1px;
+  opacity: 0;
+}
+
+.draft-toc-arch:hover .draft-arch-acts {
+  opacity: 1;
+}
+
+/* 第二步确认：把图标染成危险色，与"直接执行"区分开。 */
+.iconbtn-danger,
+.iconbtn-danger:hover {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.draft-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.draft-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.draft-empty-t {
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+
+.draft-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  min-width: 0;
+}
+
+.draft-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  outline: none;
+  /* 标题是用户自己起的内容，要能选中（body 上是关掉的）。 */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.draft-status {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+}
+
+.draft-status-err {
+  color: var(--danger);
+}
+
+/* 工具栏。按钮的 mousedown 都被 preventDefault 了（见 Drafts.tsx）：
+   否则点一下按钮，正文里的选区就没了。 */
+.draft-tools {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 0 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+
+.draft-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.draft-tool:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+/* 生效中的标记（光标落在粗体里时 B 该亮着）：与 hover 用同一种底色，
+   因为这两者的语义都是"这个按钮此刻与你有关"。 */
+.draft-tool-on,
+.iconbtn-on {
+  background: var(--bg-active);
+  color: var(--accent);
+}
+
+.draft-tool-b {
+  font-weight: 700;
+}
+
+.draft-tool-i {
+  font-style: italic;
+}
+
+.draft-tool-u {
+  text-decoration: underline;
+}
+
+.draft-tool-sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 5px;
+  background: var(--border-strong);
+}
+
+.draft-limit {
+  margin-left: auto;
+  font-size: 10.5px;
+}
+
+.draft-linkpop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 0 6px;
+}
+
+.draft-linkinput {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.draft-linkinput:focus {
+  border-color: var(--accent);
+}
+
+/* 隐藏的原生文件选择器：按钮外观自己控制，不想要系统的那个。 */
+.draft-file {
+  display: none;
+}
+
+/* 编辑区。它是**内容**，所以选择、光标、换行都要放开——body 上那把
+   user-select: none 在这里必须显式推翻，否则连光标都点不出来。 */
+.draft-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 4px 8px;
+  outline: none;
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 空正文的占位提示。用 data-empty 而不是 CSS 的 :empty——
+   WebKit 在空 contenteditable 里会塞一个 <br>，:empty 永远匹配不上。 */
+.draft-editor[data-empty='1']::before {
+  content: attr(data-placeholder);
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+
+.draft-editor p {
+  margin: 0 0 0.55em;
+}
+
+.draft-editor p:last-child {
+  margin-bottom: 0;
+}
+
+.draft-editor img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+  /* 图片是内容，不该被拖出去当文件拖走——拖拽在面板里已经用于目录排序，
+     两种拖拽混在一起会让人误操作。 */
+  -webkit-user-drag: none;
+}
+
+.draft-editor a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.draft-editor u {
+  text-decoration: underline;
+}
+
+.draft-foot {
+  flex: none;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
 }

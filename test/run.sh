@@ -26,7 +26,7 @@ usage() {
   ① 格式      gofmt -l .
   ② 静态检查  go vet -tags sqlite_fts5 ./...
   ③ 单元测试  go test -tags sqlite_fts5 -p 1 -count=1 ./...
-  ④ 前端检查  npm run check:i18n + check:types
+  ④ 前端检查  npm run check:i18n + check:md + check:types
 
 选项：
   --short     跳过规模测试（10 万条检索延迟、5 MB 图片落库）
@@ -119,11 +119,12 @@ layer_accept() {
   ./test/accept.sh
 }
 
-# ④ 前端检查。两项都挂在 frontend/package.json 上，各是一个可单独跑的入口
+# ④ 前端检查。三项都挂在 frontend/package.json 上，各是一个可单独跑的入口
 # （这样 test/ 不需要重复写路径，改目录结构时只动 package.json 一处）。
 # 层内是 fail-fast：i18n 键对不上时先报缺哪个键，不让 TS 的连锁报错盖过去。
 layer_frontend() {
   npm --prefix frontend run --silent check:i18n || return 1
+  npm --prefix frontend run --silent check:md || return 1
   npm --prefix frontend run --silent check:types
 }
 

@@ -18,6 +18,7 @@ const zh: Dict = {
   'app.tagline': '剪贴板历史',
 
   'nav.list': '历史',
+  'nav.drafts': '草稿本',
   'nav.settings': '设置',
   'nav.stats': '统计',
   'nav.backup': '导出 / 导入',
@@ -206,6 +207,11 @@ const zh: Dict = {
   'backup.overwritten': '覆盖',
   'backup.failed': '失败',
   'backup.invalid': '无法识别',
+  // 「草稿」两处都要说清楚：它是**新增**，不是「导入」——
+  // 草稿没有指纹可比，重导一次就多一批（见 backup.draftsNew 的用法）。
+  'backup.drafts': '草稿',
+  'backup.draftsNew': '新增草稿',
+  'backup.draftsFailed': '草稿失败',
   'backup.conflictPolicy': '遇到本机已有的内容',
   'backup.conflict.merge': '合并（累加使用次数，保留本机分类）',
   'backup.conflict.skip': '跳过',
@@ -261,6 +267,42 @@ const zh: Dict = {
   'seq.clear': '结束队列',
   'seq.keyHint': '{mod}⏎',
 
+  // ── 草稿本（§4.4）──
+  //
+  // 这一组里**没有**"草稿 N"这条默认名：它由后端渲染并写进库
+  // （后端 i18n.go 的 msgDraftDefaultName）。名字一旦写进库就是内容，
+  // 用户切语言不该让它集体跳变。
+  'draft.toc': '目录',
+  'draft.toc.expand': '展开目录',
+  'draft.toc.collapse': '收起目录',
+  'draft.new': '新建草稿',
+  'draft.untitled': '未命名',
+  'draft.empty': '还没有草稿',
+  'draft.emptyHint': '点「新建草稿」开始写。草稿会实时保存，不用手动存。',
+  'draft.titlePlaceholder': '标题',
+  'draft.bodyPlaceholder': '在这里写点什么…',
+  'draft.chars': '{n} 字',
+  'draft.reorderHint': '拖拽调整顺序',
+  'draft.archived': '归档',
+  'draft.archivedNote': '归档的草稿会在 {d} 天后被清理。',
+  'draft.archivedEmpty': '归档区是空的。',
+  'draft.purgeConfirm': '确认删除？',
+  'draft.saving': '保存中…',
+  'draft.saved': '已保存',
+  'draft.savedAt': '已保存 · {t}',
+  'draft.saveFailed': '保存失败：{err}',
+  'draft.gone': '这条草稿已被删除，你的改动没有保存',
+  'draft.bold': '粗体',
+  'draft.italic': '斜体',
+  'draft.underline': '下划线',
+  'draft.link': '超链接',
+  'draft.linkPrompt': '链接地址',
+  'draft.linkApply': '确定',
+  'draft.linkInvalid': '只支持 http / https / mailto 链接',
+  'draft.image': '插入图片',
+  'draft.imageLimit': '单张图片不超过 {limit}',
+  'draft.imageFailed': '插入图片失败：{err}',
+
   // 启动期警告的标题。与 err.init 并列但**语义不同**：
   // err.init 是"坏了"，这个是"能用，但有件事你得知道"。
   // 用同一个标题会让用户以为程序挂了，从而去卸载重装。
@@ -283,6 +325,7 @@ const en: Dict = {
   'app.tagline': 'Clipboard history',
 
   'nav.list': 'History',
+  'nav.drafts': 'Notebook',
   'nav.settings': 'Settings',
   'nav.stats': 'Stats',
   'nav.backup': 'Export / Import',
@@ -467,6 +510,9 @@ const en: Dict = {
   'backup.overwritten': 'Overwritten',
   'backup.failed': 'Failed',
   'backup.invalid': 'Unrecognised',
+  'backup.drafts': 'Drafts',
+  'backup.draftsNew': 'New drafts',
+  'backup.draftsFailed': 'Failed drafts',
   'backup.conflictPolicy': 'When an item already exists here',
   'backup.conflict.merge': 'Merge (add use counts, keep local category)',
   'backup.conflict.skip': 'Skip',
@@ -521,6 +567,43 @@ const en: Dict = {
   'seq.next': 'Paste next',
   'seq.clear': 'End queue',
   'seq.keyHint': '{mod}⏎',
+
+  // ── Notebook (§4.4) ──
+  //
+  // No "Draft N" entry here on purpose: the default name is rendered by the
+  // backend and written into the database (msgDraftDefaultName in i18n.go).
+  // Once written, a name is content — switching language must not rename
+  // every draft at once.
+  'draft.toc': 'Contents',
+  'draft.toc.expand': 'Show contents',
+  'draft.toc.collapse': 'Hide contents',
+  'draft.new': 'New draft',
+  'draft.untitled': 'Untitled',
+  'draft.empty': 'No drafts yet',
+  'draft.emptyHint': 'Hit “New draft” to start writing. Drafts save as you type.',
+  'draft.titlePlaceholder': 'Title',
+  'draft.bodyPlaceholder': 'Start writing…',
+  'draft.chars': '{n} chars',
+  'draft.reorderHint': 'Drag to reorder',
+  'draft.archived': 'Archived',
+  'draft.archivedNote': 'Archived drafts are cleaned up after {d} days.',
+  'draft.archivedEmpty': 'Nothing archived.',
+  'draft.purgeConfirm': 'Delete for good?',
+  'draft.saving': 'Saving…',
+  'draft.saved': 'Saved',
+  'draft.savedAt': 'Saved · {t}',
+  'draft.saveFailed': 'Save failed: {err}',
+  'draft.gone': 'This draft was deleted; your changes were not saved',
+  'draft.bold': 'Bold',
+  'draft.italic': 'Italic',
+  'draft.underline': 'Underline',
+  'draft.link': 'Link',
+  'draft.linkPrompt': 'Link address',
+  'draft.linkApply': 'Apply',
+  'draft.linkInvalid': 'Only http / https / mailto links are supported',
+  'draft.image': 'Insert image',
+  'draft.imageLimit': 'Images up to {limit}',
+  'draft.imageFailed': 'Could not insert the image: {err}',
 
   'warn.boot': 'Heads up',
   'err.init': 'Backend failed to initialise; nothing will be recorded this run',

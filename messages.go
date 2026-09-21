@@ -157,6 +157,11 @@ func (a *App) localizeErr(err error) error {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		return errors.New(a.T(msgErrNotFound))
+	case errors.Is(err, store.ErrDraftGone):
+		// 草稿在编辑期间被删掉（另一处入口，或另一台机器导入）。
+		// 单独一条而非复用 ErrNotFound：这句要说的是"你手上这条没了，
+		// 别再往里写"，而不是"找不到"。
+		return errors.New(a.T(msgErrDraftGone))
 	case errors.Is(err, store.ErrCategoryNameTaken):
 		return errors.New(a.T(msgErrCategoryTaken))
 	case errors.Is(err, store.ErrTagNameTaken):
@@ -229,6 +234,12 @@ func (a *App) exportReport(r *ExportResult) string {
 		a.T(msgReportBlobs), r.Blobs,
 		a.T(msgReportTook), float64(r.TookMs)/1000,
 	)
+	// 草稿只在 scope=full 时进包，非 full 时这个数字必然是 0。
+	// 仍然只在非 0 时补一句：报告是一行式的（见本文件开头），
+	// 而"草稿 0"对用户没有任何信息量。
+	if r.Drafts > 0 {
+		s += fmt.Sprintf(" · %s %d", a.T(msgReportDrafts), r.Drafts)
+	}
 	if n := len(r.Warnings); n > 0 {
 		s += fmt.Sprintf(" · %s %d", a.T(msgReportWarnings), n)
 	}
@@ -242,6 +253,9 @@ func (a *App) importReport(r *ImportResult) string {
 	}
 	parts := []string{
 		fmt.Sprintf("%s %d", a.T(msgReportInserted), r.Inserted),
+	}
+	if r.DraftsImported > 0 {
+		parts = append(parts, fmt.Sprintf("%s %d", a.T(msgReportDrafts), r.DraftsImported))
 	}
 	if r.Merged > 0 {
 		parts = append(parts, fmt.Sprintf("%s %d", a.T(msgReportMerged), r.Merged))

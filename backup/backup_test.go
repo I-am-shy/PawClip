@@ -763,6 +763,227 @@ func TestAcceptance2_ImportTwiceIsIdempotent(t *testing.T) {
 	}
 }
 
+// ── 草稿（§3.7）─────────────────────────────────────────────────
+
+// seedDraft 直接写一行 drafts。与 seedItem 同一理由：往返测试要断言
+// "每个字段都还在"，种子数据就必须完全可控，不能由 store 决定时间戳。
+func (h *harness) seedDraft(title, md string, seq, sortOrder, createdAt, updatedAt int64, archived bool) int64 {
+	h.t.Helper()
+	var seqArg, archivedArg any
+	if seq > 0 {
+		seqArg = seq
+	}
+	if archived {
+		archivedArg = updatedAt
+	}
+	var id int64
+	err := h.db.Writer().QueryRowContext(h.ctx(), `
+INSERT INTO drafts (title, md, seq, sort_order, created_at, updated_at, archived_at)
+VALUES (?,?,?,?,?,?,?)
+RETURNING id`,
+		title, md, seqArg, sortOrder, createdAt, updatedAt, archivedArg).Scan(&id)
+	if err != nil {
+		h.t.Fatalf("写入草稿 %q: %v", title, err)
+	}
+	return id
+}
+
+// repoDraft 是"往返比较"用的草稿投影。
+//
+// 只比该比的东西：**不含 id**（两台机器的 ID 无关）、**不含 seq**
+// （导入的草稿一律没有编号，见 store.InsertImportedDraft 的三条理由）。
+type repoDraft struct {
+	Title     string
+	MD        string
+	Seq       int64
+	CreatedAt int64
+	UpdatedAt int64
+	Archived  bool
+}
+
+func draftsOf(t *testing.T, db *store.DB) []repoDraft {
+	t.Helper()
+	rows, err := db.Writer().Query(
+		`SELECT title, md, COALESCE(seq, 0), created_at, updated_at, archived_at IS NOT NULL
+		   FROM drafts ORDER BY sort_order ASC, id ASC`)
+	if err != nil {
+		t.Fatalf("读全部草稿: %v", err)
+	}
+	defer rows.Close()
+	var out []repoDraft
+	for rows.Next() {
+		var d repoDraft
+		if err := rows.Scan(&d.Title, &d.MD, &d.Seq, &d.CreatedAt, &d.UpdatedAt, &d.Archived); err != nil {
+			t.Fatalf("scan draft: %v", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("遍历草稿: %v", err)
+	}
+	return out
+}
+
+// TestAcceptance3_DraftsRoundTrip：草稿（含正文里的贴图）往返无损，
+// 且一键回滚能把带进来的草稿一并撤掉。
+//
+// 这条测试的第一个断言就是设计里最容易错的地方：**只被草稿引用的图片**。
+// 它不在任何 items.image_path 里，如果 blob 扫描只扫 items（第一版就是
+// 那样），这张图不会进包 —— 而正文里的引用还在，导入后就是一张必然
+// 破的图，且没有任何报错。
+func TestAcceptance3_DraftsRoundTrip(t *testing.T) {
+	h := newHarness(t)
+	h.seedAll()
+
+	// 草稿专用贴图（不被任何条目引用）。
+	imgRel, _ := h.makePNGBlob(4, 4, color.RGBA{R: 9, G: 8, B: 7, A: 255})
+
+	mdA := "会议记录\n\n- 结论一\n- 结论二\n\n![截图](blob/" + imgRel + ")\n\n[资料](https://example.com/doc)\n"
+	h.seedDraft("会议记录", mdA, 1, 1, 1_700_000_000, 1_700_000_600, false)
+	h.seedDraft("", "", 2, 2, 1_700_000_100, 1_700_000_100, false)
+	// 已归档（软删除）的草稿不进包——与回收站条目同一条规则（§5）。
+	h.seedDraft("删掉的", "不该出现在包里", 3, 3, 1_700_000_200, 1_700_000_200, true)
+
+	want := []repoDraft{
+		{Title: "会议记录", MD: mdA, Seq: 1, CreatedAt: 1_700_000_000, UpdatedAt: 1_700_000_600},
+		{Title: "", MD: "", Seq: 2, CreatedAt: 1_700_000_100, UpdatedAt: 1_700_000_100},
+	}
+
+	res, err := Export(h.ctx(), h.db, h.blobs, ExportOptions{
+		ManifestFormat: "json", OutputDir: h.outDir, AppVersion: "1.2.3",
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if res.Drafts != 2 {
+		t.Fatalf("导出草稿数 = %d，想要 2（归档的那条不该算）", res.Drafts)
+	}
+
+	// ── 包内断言：草稿段存在、正文已改写成包内前缀、贴图在 blobs/ 下 ──
+	zr, err := zip.OpenReader(res.Path)
+	if err != nil {
+		t.Fatalf("打开包: %v", err)
+	}
+	defer func() { _ = zr.Close() }()
+
+	foundBlob := false
+	var mf *zip.File
+	for _, f := range zr.File {
+		if f.Name == BlobDirPrefix+imgRel {
+			foundBlob = true
+		}
+		if f.Name == ManifestJSON {
+			mf = f
+		}
+	}
+	if !foundBlob {
+		t.Errorf("草稿专用贴图没进包：%s（blob 扫描漏了 draft 的引用）", BlobDirPrefix+imgRel)
+	}
+	if mf == nil {
+		t.Fatal("包里没有 manifest.json")
+	}
+	raw, err := readZipEntryLimited(mf, 8<<20)
+	if err != nil {
+		t.Fatalf("读清单: %v", err)
+	}
+	man, err := decodeManifest(ManifestJSON, raw)
+	if err != nil {
+		t.Fatalf("解析清单: %v", err)
+	}
+	if len(man.Drafts) != 2 || man.Stats.Drafts != 2 {
+		t.Fatalf("清单里草稿 %d 条、stats.drafts = %d，想要 2/2", len(man.Drafts), man.Stats.Drafts)
+	}
+	if !strings.Contains(man.Drafts[0].MD, "](blobs/"+imgRel+")") {
+		t.Errorf("清单位图引用应为包内前缀 blobs/\n---\n%s", man.Drafts[0].MD)
+	}
+	if strings.Contains(man.Drafts[0].MD, "](blob/") {
+		t.Errorf("清单里不该出现库内前缀 blob/（两套前缀混了）\n---\n%s", man.Drafts[0].MD)
+	}
+
+	// ── 换一台机器：清库后导入 ──
+	wipeAll(t, h.db)
+
+	pc, err := Precheck(h.ctx(), h.db, res.Path, ImportOptions{})
+	if err != nil {
+		t.Fatalf("Precheck: %v", err)
+	}
+	if pc.TotalDrafts != 2 || pc.WillImportDrafts != 2 {
+		t.Errorf("预检草稿 = %d/%d，想要 2/2", pc.TotalDrafts, pc.WillImportDrafts)
+	}
+
+	ir, err := Import(h.ctx(), h.db, h.blobs, res.Path, ImportOptions{}, pc, nil)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if ir.DraftsImported != 2 || ir.DraftsFailed != 0 {
+		t.Fatalf("导入草稿 %d 条、失败 %d 条，想要 2/0（错误：%v）",
+			ir.DraftsImported, ir.DraftsFailed, ir.Errors)
+	}
+	if !ir.RollbackPossible {
+		t.Error("RollbackPossible = false，导入草稿后应当可以一键回滚")
+	}
+
+	got := draftsOf(t, h.db)
+	if len(got) != len(want) {
+		t.Fatalf("导入后草稿 %d 条，想要 %d", len(got), len(want))
+	}
+	for i := range want {
+		// 库内形态：引用必须改回 blob/ 前缀。
+		w := want[i]
+		w.MD = strings.ReplaceAll(w.MD, "blobs/", "blob/")
+		// 导入的草稿不占本机编号（seq 一律 NULL）。
+		w.Seq = 0
+		if got[i] != w {
+			t.Errorf("草稿[%d] 不一致\n got %+v\nwant %+v", i, got[i], w)
+		}
+	}
+
+	// 贴图必须真的落盘了：正文里留着引用但文件不在 = 破图。
+	if _, err := os.Stat(h.blobs.Abs(imgRel)); err != nil {
+		t.Errorf("导入后贴图不在 blobs/ 里：%v", err)
+	}
+
+	// ── 一键回滚要把草稿也带走 ──
+	if _, err := Rollback(h.ctx(), h.db, ir.ImportID); err != nil {
+		t.Fatalf("回滚: %v", err)
+	}
+	if left := draftsOf(t, h.db); len(left) != 0 {
+		t.Errorf("回滚后还剩 %d 条草稿：%+v", len(left), left)
+	}
+}
+
+// 范围导出不该带草稿：pinned / category / range 选的是**条目**的子集，
+// 草稿与这三个条件正交（§3.7）。带进去等于无视用户在向导里选的范围。
+func TestExport_NonFullScopeExcludesDrafts(t *testing.T) {
+	h := newHarness(t)
+	h.seedAll()
+	h.seedDraft("草稿 1", "正文", 1, 1, 1_700_000_000, 1_700_000_000, false)
+
+	for _, scope := range []ExportScope{ScopePinned, ScopeCategory, ScopeRange} {
+		t.Run(string(scope), func(t *testing.T) {
+			res, err := Export(h.ctx(), h.db, h.blobs, ExportOptions{
+				Scope: scope, ManifestFormat: "json", OutputDir: h.outDir,
+			}, nil, nil)
+			if err != nil {
+				t.Fatalf("Export(%s): %v", scope, err)
+			}
+			if res.Drafts != 0 {
+				t.Errorf("scope=%s 导出了 %d 条草稿，想要 0", scope, res.Drafts)
+			}
+		})
+	}
+	// full 时必须带上（否则上面的断言可能因为"永远不导出"而假绿）。
+	res, err := Export(h.ctx(), h.db, h.blobs, ExportOptions{
+		Scope: ScopeFull, ManifestFormat: "json", OutputDir: h.outDir,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("Export(full): %v", err)
+	}
+	if res.Drafts != 1 {
+		t.Errorf("scope=full 导出 %d 条草稿，想要 1", res.Drafts)
+	}
+}
+
 // TestImport_AllConflictPoliciesDoNotDeadlock 是**死锁**的回归测试。
 //
 // 背景：写句柄是 SetMaxOpenConns(1) 的单连接池，而导入循环用一个长事务
@@ -1177,6 +1398,7 @@ func wipeAll(t *testing.T, db *store.DB) {
 	for _, stmt := range []string{
 		"DELETE FROM item_tags",
 		"DELETE FROM items",
+		"DELETE FROM drafts",
 		"DELETE FROM tags",
 		"DELETE FROM categories",
 		"DELETE FROM imports",

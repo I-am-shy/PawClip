@@ -990,11 +990,14 @@ type ExportOptions struct {
 
 // ExportResult 是导出结果。
 type ExportResult struct {
-	Path         string   `json:"path"`
-	Bytes        int64    `json:"bytes"`
-	Items        int64    `json:"items"`
-	Categories   int64    `json:"categories"`
-	Tags         int64    `json:"tags"`
+	Path       string `json:"path"`
+	Bytes      int64  `json:"bytes"`
+	Items      int64  `json:"items"`
+	Categories int64  `json:"categories"`
+	Tags       int64  `json:"tags"`
+	// Drafts 是写进包的草稿条数。**只在 scope=full 时非 0**：
+	// 草稿与"置顶 / 分类 / 时间范围"这三个筛选条件正交（见 backup.Export）。
+	Drafts       int64    `json:"drafts"`
 	BlobBytes    int64    `json:"blobBytes"`
 	Blobs        int64    `json:"blobs"`
 	MissingBlobs int64    `json:"missingBlobs"`
@@ -1049,6 +1052,7 @@ func (a *App) Export(opts ExportOptions) (*ExportResult, error) {
 		Items:        res.Items,
 		Categories:   res.Categories,
 		Tags:         res.Tags,
+		Drafts:       res.Drafts,
 		BlobBytes:    res.BlobBytes,
 		Blobs:        res.Blobs,
 		MissingBlobs: res.MissingBlobs,
@@ -1087,29 +1091,33 @@ func (o ImportOptions) toBackup() backup.ImportOptions {
 
 // PrecheckResult 是导入前的预检结果（确认页要展示的一切）。
 type PrecheckResult struct {
-	Path            string   `json:"path"`
-	ManifestName    string   `json:"manifestName"`
-	Format          string   `json:"format"`
-	FormatVersion   int      `json:"formatVersion"`
-	AppVersion      string   `json:"appVersion"`
-	ExportedAt      string   `json:"exportedAt"`
-	Platform        string   `json:"platform"`
-	Scope           string   `json:"scope"`
-	Total           int      `json:"total"`
-	WillImport      int      `json:"willImport"`
-	SkipDuplicate   int      `json:"skipDuplicate"`
-	SkipExpired     int      `json:"skipExpired"`
-	Invalid         int      `json:"invalid"`
-	CategoriesNew   []string `json:"categoriesNew"`
-	CategoriesReuse []string `json:"categoriesReuse"`
-	TagsNew         int      `json:"tagsNew"`
-	TagsReuse       int      `json:"tagsReuse"`
-	Uncompressed    int64    `json:"uncompressedBytes"`
-	NeedBytes       int64    `json:"needBytes"`
-	AvailableBytes  int64    `json:"availableBytes"`
-	BlobCount       int      `json:"blobCount"`
-	Warnings        []string `json:"warnings,omitempty"`
-	AlreadyImported bool     `json:"alreadyImported"`
+	Path          string `json:"path"`
+	ManifestName  string `json:"manifestName"`
+	Format        string `json:"format"`
+	FormatVersion int    `json:"formatVersion"`
+	AppVersion    string `json:"appVersion"`
+	ExportedAt    string `json:"exportedAt"`
+	Platform      string `json:"platform"`
+	Scope         string `json:"scope"`
+	Total         int    `json:"total"`
+	WillImport    int    `json:"willImport"`
+	SkipDuplicate int    `json:"skipDuplicate"`
+	SkipExpired   int    `json:"skipExpired"`
+	Invalid       int    `json:"invalid"`
+	// TotalDrafts / WillImportDrafts 是草稿段（确认页必须单独显示"将新增
+	// N 条草稿"：草稿没有指纹，"导入"对它是新增，不是去重后的结果）。
+	TotalDrafts      int      `json:"totalDrafts"`
+	WillImportDrafts int      `json:"willImportDrafts"`
+	CategoriesNew    []string `json:"categoriesNew"`
+	CategoriesReuse  []string `json:"categoriesReuse"`
+	TagsNew          int      `json:"tagsNew"`
+	TagsReuse        int      `json:"tagsReuse"`
+	Uncompressed     int64    `json:"uncompressedBytes"`
+	NeedBytes        int64    `json:"needBytes"`
+	AvailableBytes   int64    `json:"availableBytes"`
+	BlobCount        int      `json:"blobCount"`
+	Warnings         []string `json:"warnings,omitempty"`
+	AlreadyImported  bool     `json:"alreadyImported"`
 }
 
 // PrecheckBackup 预检一个备份包（**不写任何数据**）。
@@ -1126,28 +1134,30 @@ func (a *App) PrecheckBackup(pkgPath string, opts ImportOptions) (*PrecheckResul
 		return nil, err
 	}
 	out := &PrecheckResult{
-		Path:            pc.Path,
-		ManifestName:    pc.ManifestName,
-		Format:          pc.Format,
-		FormatVersion:   pc.FormatVersion,
-		AppVersion:      pc.AppVersion,
-		ExportedAt:      pc.ExportedAt,
-		Platform:        pc.Platform,
-		Scope:           pc.Scope,
-		Total:           pc.Total,
-		WillImport:      pc.WillImport,
-		SkipDuplicate:   pc.SkipDuplicate,
-		SkipExpired:     pc.SkipExpired,
-		Invalid:         pc.Invalid,
-		CategoriesNew:   pc.CategoriesNew,
-		CategoriesReuse: pc.CategoriesReuse,
-		TagsNew:         pc.TagsNew,
-		TagsReuse:       pc.TagsReuse,
-		Uncompressed:    pc.UncompressedBytes,
-		NeedBytes:       pc.NeedBytes,
-		AvailableBytes:  pc.AvailableBytes,
-		BlobCount:       pc.BlobCount,
-		Warnings:        pc.Warnings,
+		Path:             pc.Path,
+		ManifestName:     pc.ManifestName,
+		Format:           pc.Format,
+		FormatVersion:    pc.FormatVersion,
+		AppVersion:       pc.AppVersion,
+		ExportedAt:       pc.ExportedAt,
+		Platform:         pc.Platform,
+		Scope:            pc.Scope,
+		Total:            pc.Total,
+		WillImport:       pc.WillImport,
+		SkipDuplicate:    pc.SkipDuplicate,
+		SkipExpired:      pc.SkipExpired,
+		Invalid:          pc.Invalid,
+		TotalDrafts:      pc.TotalDrafts,
+		WillImportDrafts: pc.WillImportDrafts,
+		CategoriesNew:    pc.CategoriesNew,
+		CategoriesReuse:  pc.CategoriesReuse,
+		TagsNew:          pc.TagsNew,
+		TagsReuse:        pc.TagsReuse,
+		Uncompressed:     pc.UncompressedBytes,
+		NeedBytes:        pc.NeedBytes,
+		AvailableBytes:   pc.AvailableBytes,
+		BlobCount:        pc.BlobCount,
+		Warnings:         pc.Warnings,
 	}
 	// 同一个包导入过没有？确认页据此提示"这个包你已经导入过了"。
 	// 判据是 manifest 的 sha256 —— 同一份清单就是同一个包，
@@ -1165,14 +1175,18 @@ func (a *App) PrecheckBackup(pkgPath string, opts ImportOptions) (*PrecheckResul
 
 // ImportResult 是导入结果。
 type ImportResult struct {
-	ImportID       int64    `json:"importId"`
-	Imported       int      `json:"imported"`
-	Skipped        int      `json:"skipped"`
-	Failed         int      `json:"failed"`
-	Merged         int      `json:"merged"`
-	Overwritten    int      `json:"overwritten"`
-	CategoriesMade int      `json:"categoriesMade"`
-	TagsMade       int      `json:"tagsMade"`
+	ImportID       int64 `json:"importId"`
+	Imported       int   `json:"imported"`
+	Skipped        int   `json:"skipped"`
+	Failed         int   `json:"failed"`
+	Merged         int   `json:"merged"`
+	Overwritten    int   `json:"overwritten"`
+	CategoriesMade int   `json:"categoriesMade"`
+	TagsMade       int   `json:"tagsMade"`
+	// DraftsImported / DraftsFailed 是草稿段的结果。草稿**没有 merge /
+	// overwrite 这一类结果**（没有指纹可以判重），所以只有这两个数字。
+	DraftsImported int      `json:"draftsImported"`
+	DraftsFailed   int      `json:"draftsFailed"`
 	BlobsWritten   int      `json:"blobsWritten"`
 	ThumbsMade     int      `json:"thumbsMade"`
 	Status         string   `json:"status"`
@@ -1208,7 +1222,12 @@ func (a *App) ImportBackup(pkgPath string, opts ImportOptions, pc *PrecheckResul
 	if err != nil {
 		return nil, err
 	}
-	if fresh.ManifestName != pc.ManifestName || fresh.Total != pc.Total {
+	// 预检与执行之间包不能变。比对的是"用户确认过的那些数字"：
+	// 条目数与草稿数都要看——草稿数变了（清单被换过）同样意味着
+	// 用户确认的那份清单已经不是这一份了。
+	if fresh.ManifestName != pc.ManifestName ||
+		fresh.Total != pc.Total ||
+		fresh.TotalDrafts != pc.TotalDrafts {
 		return nil, msgf(msgErrBackupChanged, nil)
 	}
 
@@ -1225,6 +1244,8 @@ func (a *App) ImportBackup(pkgPath string, opts ImportOptions, pc *PrecheckResul
 		Overwritten:    res.Overwritten,
 		CategoriesMade: res.CategoriesMade,
 		TagsMade:       res.TagsMade,
+		DraftsImported: res.DraftsImported,
+		DraftsFailed:   res.DraftsFailed,
 		BlobsWritten:   res.BlobsWritten,
 		ThumbsMade:     res.ThumbsMade,
 		Status:         res.Status,

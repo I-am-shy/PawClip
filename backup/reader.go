@@ -122,6 +122,16 @@ type PrecheckResult struct {
 	SkipExpired   int `json:"skipExpired"`
 	Invalid       int `json:"invalid"`
 
+	// TotalDrafts / WillImportDrafts 是草稿段的条数（§3.7）。
+	//
+	// ⚠️ 草稿**没有指纹**，所以"重复"这个概念对它不成立：草稿是用户手写的
+	// 内容，两条一模一样的草稿是完全正常的状态，没有任何字段能声明
+	// "这条和那条是同一份"。因此每一次导入草稿都是**新增**，conflictPolicy
+	// 对它一律不生效（§8.4 的幂等性只覆盖 items）。确认页必须写
+	// "将新增 N 条草稿"，写"将导入"会让用户以为重导一次不会翻倍。
+	TotalDrafts      int `json:"totalDrafts"`
+	WillImportDrafts int `json:"willImportDrafts"`
+
 	CategoriesNew   []string `json:"categoriesNew"`
 	CategoriesReuse []string `json:"categoriesReuse"`
 	TagsNew         int      `json:"tagsNew"`
@@ -152,19 +162,24 @@ type PrecheckResult struct {
 // （包里有 1000 条、库里多了 1000 条，但 Imported 显示 400）。
 // 想知道真正新插了几行，用 Imported - Merged - Overwritten。
 type ImportResult struct {
-	ImportID       int64    `json:"importId"`
-	Imported       int      `json:"imported"`
-	Skipped        int      `json:"skipped"`
-	Failed         int      `json:"failed"`
-	Merged         int      `json:"merged"`
-	Overwritten    int      `json:"overwritten"`
-	CategoriesMade int      `json:"categoriesMade"`
-	TagsMade       int      `json:"tagsMade"`
-	BlobsWritten   int      `json:"blobsWritten"`
-	BlobsSkipped   int      `json:"blobsSkipped"`
-	ThumbsMade     int      `json:"thumbsMade"`
-	Status         string   `json:"status"`
-	Errors         []string `json:"errors,omitempty"`
+	ImportID       int64 `json:"importId"`
+	Imported       int   `json:"imported"`
+	Skipped        int   `json:"skipped"`
+	Failed         int   `json:"failed"`
+	Merged         int   `json:"merged"`
+	Overwritten    int   `json:"overwritten"`
+	CategoriesMade int   `json:"categoriesMade"`
+	TagsMade       int   `json:"tagsMade"`
+	// DraftsImported 是**新增**的草稿条数。草稿没有指纹，所以没有
+	// Merged / Overwritten 这两个概念（§3.7）：每导入一次就多一批。
+	DraftsImported int `json:"draftsImported"`
+	DraftsFailed   int `json:"draftsFailed"`
+
+	BlobsWritten int      `json:"blobsWritten"`
+	BlobsSkipped int      `json:"blobsSkipped"`
+	ThumbsMade   int      `json:"thumbsMade"`
+	Status       string   `json:"status"`
+	Errors       []string `json:"errors,omitempty"`
 	// Warnings 是非致命问题（例如缩略图重建失败）。与 Errors 分开：
 	// Errors 里的每一条都对应一条真没导进来的条目，Warnings 里的
 	// 只是"数据进来了，但有点小瑕疵"。混在一起用户无法判断要不要重导。
@@ -230,8 +245,11 @@ func Precheck(ctx context.Context, db *store.DB, pkgPath string, opt ImportOptio
 		Platform:      manifest.Platform,
 		Scope:         manifest.Scope,
 		Total:         len(manifest.Items),
+		TotalDrafts:   len(manifest.Drafts),
 		manifest:      manifest,
 	}
+	// 草稿一律全部新增：没有指纹可查重，conflictPolicy 对它不生效。
+	pc.WillImportDrafts = pc.TotalDrafts
 	{
 		sum := sha256.Sum256(raw)
 		pc.ManifestHash = "sha256:" + hex.EncodeToString(sum[:])
@@ -640,6 +658,45 @@ func Import(
 		return nil, err
 	}
 
+	// §8.2 第 4 步（草稿）：正文与图片一起落库。
+	//
+	// 放在 items 全部提交之后而不是混在同一条事务里：items 的 500 条
+	// 分批提交是**必须**的（长事务会把 WAL 顶起来），而草稿条数是"几十"
+	// 这个量级，一次事务就够。混进去会让分批的计数逻辑同时要照顾两个集合。
+	if len(manifest.Drafts) > 0 {
+		if len(manifest.Drafts) != pc.TotalDrafts {
+			// 预检与执行看到的草稿数不同 = 清单在两次读之间变了（不该发生）。
+			res.Warnings = append(res.Warnings, fmt.Sprintf(
+				"预检时清单里有 %d 条草稿，实际读到 %d 条", pc.TotalDrafts, len(manifest.Drafts)))
+		}
+		if err := beginTx(); err != nil {
+			_ = db.FinishImport(ctx, importID,
+				int64(res.Imported), int64(res.Skipped), int64(res.Failed), store.ImportPartial)
+			return nil, err
+		}
+		for i := range manifest.Drafts {
+			if err := ctx.Err(); err != nil {
+				_ = tx.Rollback()
+				_ = db.FinishImport(ctx, importID,
+					int64(res.Imported), int64(res.Skipped), int64(res.Failed), store.ImportPartial)
+				return nil, err
+			}
+			src := &manifest.Drafts[i]
+			if err := importOneDraft(ctx, db, blobs, tx, blobIndex, src, importID, opt, res); err != nil {
+				res.DraftsFailed++
+				res.Errors = append(res.Errors,
+					fmt.Sprintf("草稿 %d（%s）：%v", src.ID, src.Title, err))
+				continue
+			}
+			res.DraftsImported++
+		}
+		if err := commitTx(); err != nil {
+			_ = db.FinishImport(ctx, importID,
+				int64(res.Imported), int64(res.Skipped), int64(res.Failed), store.ImportPartial)
+			return nil, err
+		}
+	}
+
 	// §8.2 第 5 步：收尾状态。
 	status := store.ImportOK
 	switch {
@@ -647,13 +704,19 @@ func Import(
 		status = store.ImportPartial
 	case res.Failed > 0 && res.Imported == 0:
 		status = store.ImportFailed
+	case res.DraftsFailed > 0 && (res.Imported > 0 || res.DraftsImported > 0):
+		status = store.ImportPartial
+	case res.DraftsFailed > 0:
+		status = store.ImportFailed
 	}
 	if err := db.FinishImport(ctx, importID,
 		int64(res.Imported), int64(res.Skipped), int64(res.Failed), status); err != nil {
 		return nil, err
 	}
 	res.Status = status
-	res.RollbackPossible = res.Imported > 0
+	// 草稿也算"这次导进来的东西"：只导入草稿（条目全被跳过）时，
+	// 撤销入口必须还在，否则用户没有任何办法去掉刚带进来的那批草稿。
+	res.RollbackPossible = res.Imported > 0 || res.DraftsImported > 0
 
 	// §8.2 第 6 步：FTS 行数比对（触发器应当已经处理）。
 	//
@@ -893,6 +956,93 @@ func importOne(
 		return outcomeOverwritten, nil
 	}
 	return outcomeImported, nil
+}
+
+// importOneDraft 处理一条草稿（§8.2 第 4 步的草稿版）。
+//
+// 与 importOne 的三点结构差异，都是草稿的形态决定的：
+//
+//   - **没有查重、没有冲突策略。** 草稿没有指纹（§3.7），"是不是同一条"
+//     无法定义，所以每次导入都是新增；
+//   - **blob 的 sha256 从包内路径自己反推**，而不是读清单里的 blobs[]——
+//     草稿清单里没有那个数组。包内路径本来就是 `blobs/<前2>/<次2>/<sha>.<ext>`，
+//     所以路径自证内容，反推出的 sha 就是权威期望值。反推不出来的
+//     （路径被人手工改坏）一律当作**不可信**：宁可丢这一处的引用，
+//     也不要落一个来源不明的文件；
+//   - **引用的改写是"先落盘、再据结果改写"**，不是先改写再落盘。反过来
+//     的话，某个 blob 因为 sha 不符被弃用时，正文里那条引用已经写进库了，
+//     结果是一条**指向不存在文件**的引用——那比"图没了"更难排查。
+func importOneDraft(
+	ctx context.Context,
+	db *store.DB,
+	blobs *store.BlobStore,
+	tx *sql.Tx,
+	blobIndex map[string]*zip.File,
+	src *Draft,
+	importID int64,
+	opt ImportOptions,
+	res *ImportResult,
+) error {
+	// ① 先把引用的图片逐个落盘，记下"哪些真的成了"。
+	kept := make(map[string]bool, 8)
+	for _, rel := range store.DraftBlobRefsInPackageMD(src.MD) {
+		if kept[rel] {
+			continue
+		}
+		sha := shaFromShardPath(rel)
+		if sha == "" {
+			kept[rel] = false
+			res.BlobsSkipped++
+			res.Warnings = append(res.Warnings, fmt.Sprintf(
+				"草稿 %d 的图片引用 %q 不是合法的分片路径，已从正文中移除", src.ID, rel))
+			continue
+		}
+		data, err := readAndVerifyBlob(blobIndex, BlobRef{
+			Role:   roleImage,
+			Path:   BlobDirPrefix + rel,
+			Mime:   MimeForExt(path.Ext(rel)),
+			SHA256: sha,
+		}, opt)
+		if err != nil {
+			kept[rel] = false
+			res.BlobsSkipped++
+			res.Warnings = append(res.Warnings,
+				fmt.Sprintf("草稿 %d 的图片 %s：%v", src.ID, rel, err))
+			continue
+		}
+		// 按内容重新寻址落盘。扩展名用包内路径里的那个：它就是源机器
+		// 判定的类型（ImportDraftImage 按魔数定的），比从 mime 反推更可靠。
+		if _, _, err := blobs.Put(data, path.Ext(rel)[1:]); err != nil {
+			kept[rel] = false
+			res.BlobsSkipped++
+			res.Warnings = append(res.Warnings,
+				fmt.Sprintf("草稿 %d 的图片 %s 写入失败：%v", src.ID, rel, err))
+			continue
+		}
+		kept[rel] = true
+		res.BlobsWritten++
+	}
+
+	// ② 再据实际结果改写正文：没落成的引用换成 `]()`（空 URL）。
+	md, dropped := store.DraftBlobRefsFromPackage(src.MD, func(rel string) bool {
+		return kept[rel]
+	})
+	if dropped > 0 {
+		res.Warnings = append(res.Warnings, fmt.Sprintf(
+			"草稿 %d（%s）有 %d 处图片不在包里或校验不通过，已从正文中移除",
+			src.ID, src.Title, dropped))
+	}
+
+	// ③ 插入。seq 一律 NULL、sort_order 追加到末尾（见 InsertImportedDraft）。
+	if _, err := db.InsertImportedDraft(ctx, tx, importID, &store.ImportedDraft{
+		Title:     src.Title,
+		MD:        md,
+		CreatedAt: src.CreatedAt.Unix(),
+		UpdatedAt: src.UpdatedAt.Unix(),
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // firstNonNil 返回第一个非 nil 的字符串指针。

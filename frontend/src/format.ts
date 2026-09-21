@@ -79,6 +79,20 @@ export function formatDateTime(unixSec: number | null | undefined): string {
   return `${formatDate(unixSec)} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+/**
+ * formatTime 只给 HH:MM。
+ *
+ * 用在"已保存 · 15:42"这种位置：那里要说的是"刚刚存过一次"，
+ * 带上日期反而让人去读一个无关的信息。日期仍然由 formatDate /
+ * formatDateTime 负责，三者共用同一套补零逻辑。
+ */
+export function formatTime(unixSec: number | null | undefined): string {
+  if (!unixSec || unixSec <= 0) return ''
+  const d = new Date(unixSec * 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 /** formatDuration 把毫秒变成 "12 ms" / "1.2 s"。 */
 export function formatDuration(ms: number | null | undefined): string {
   if (ms == null || !isFinite(ms) || ms < 0) return '—'

@@ -175,6 +175,67 @@ export type Tag = {
 
 export type RestoreResult = { restored: number; conflict: number }
 
+// ── 草稿本（docs/DESIGN.md §4.4）────────────────────────────────
+
+/**
+ * DraftRow 是目录里的一条：**没有正文全文**。
+ *
+ * 与 ListRow 同一条纪律（§14 第 7 条）：目录只需要标题 / 摘要 / 字数 / 时间。
+ * 正文要单独调 Draft(id) 取——一次把两百条草稿的正文全拉进内存，
+ * 是几十 MB 的无谓开销。
+ */
+export type DraftRow = {
+  id: number
+  title: string
+  /** 默认名里的编号。0 表示没有编号（导入进来的）。 */
+  seq: number
+  snippet: string
+  chars: number
+  sortOrder: number
+  createdAt: number
+  updatedAt: number
+  /** 非 null 表示在归档区（软删除）。 */
+  archivedAt: number | null
+}
+
+export type Draft = {
+  id: number
+  title: string
+  /** Markdown 源码。它是**唯一真源**，富文本只是编辑态的呈现。 */
+  md: string
+  seq: number
+  sortOrder: number
+  createdAt: number
+  updatedAt: number
+  archivedAt: number | null
+}
+
+export type DraftList = {
+  items: DraftRow[]
+  archived: DraftRow[]
+  /** 归档保留期（秒）：归档的草稿超过它会被 GC 彻底删除。 */
+  trashTtlSec: number
+  maxImageBytes: number
+  /** 上限的人读形式（"10 MB"）。后端给，避免两处各算一遍。 */
+  maxImageLabel: string
+  autoSaveDebounceMs: number
+}
+
+export type DraftSaveResult = {
+  /** 落库时间（Unix 秒），界面据此显示"已保存 · HH:MM"。 */
+  updatedAt: number
+  chars: number
+}
+
+export type DraftImage = {
+  /** 要插进正文的图片地址（相对 URL，形如 blob/9f/2a/…png）。 */
+  url: string
+  bytes: number
+  /** 像素尺寸；非 PNG 时为 0，前端按"未知高度"处理。 */
+  width: number
+  height: number
+}
+
 // ── 统计 ────────────────────────────────────────────────────────
 
 export type KindStat = { kind: string; count: number; bytes: number }
@@ -235,6 +296,8 @@ export type ExportResult = {
   items: number
   categories: number
   tags: number
+  // drafts 只在 scope=full 时非 0（草稿与置顶/分类/时间范围正交）。
+  drafts: number
   blobBytes: number
   blobs: number
   missingBlobs: number
@@ -264,6 +327,9 @@ export type PrecheckResult = {
   skipDuplicate: number
   skipExpired: number
   invalid: number
+  // 草稿没有指纹，所以"导入"对它是**新增**（没有 skipDuplicate 那一档）。
+  totalDrafts: number
+  willImportDrafts: number
   categoriesNew: string[] | null
   categoriesReuse: string[] | null
   tagsNew: number
@@ -285,6 +351,9 @@ export type ImportResult = {
   overwritten: number
   categoriesMade: number
   tagsMade: number
+  // 草稿段的结果：只有"成了几条 / 失败几条"两档（没有 merge/overwrite）。
+  draftsImported: number
+  draftsFailed: number
   blobsWritten: number
   thumbsMade: number
   status: string
@@ -364,6 +433,14 @@ export type SettingsShape = {
      */
     panelWidth: number
     panelHeight: number
+    /**
+     * 上次停在哪一页（"panel" | "drafts" | "stats" | "backup" | "settings"）。
+     *
+     * 只有**草稿本**会被粘滞地恢复（见 App.tsx 的 stickyView）：
+     * 其余视图在下次呼出面板时都回到历史页。后端有 NormalizeLastView
+     * 兜住未知值，所以这里给 string 就够，不必做成联合类型。
+     */
+    lastView: string
   }
   storage: {
     cleanShutdownMarker: boolean
@@ -372,6 +449,18 @@ export type SettingsShape = {
   backup: {
     manifestFormat: string
     includeExpired: boolean
+  }
+  /**
+   * 草稿本的三个参数（draft.*）。
+   *
+   * 与其它分区一样**只读展示**：目前没有对应的设置控件，
+   * 但它们进了设置页的"未覆盖项"清单（同 settings.uncovered 那条规矩）。
+   */
+  draft: {
+    /** 实时保存的防抖窗口（毫秒）。 */
+    autoSaveDebounceMs: number
+    /** 单张草稿贴图的上限（字节）。 */
+    imageMaxBytes: number
   }
 }
 
@@ -442,6 +531,35 @@ export type Bindings = {
   DeleteTag(id: number): Promise<void>
   SetItemTags(itemId: number, tagIds: number[]): Promise<void>
 
+  /** 目录 + 归档区 + 草稿本的几个设置值，一次给全（避免三次 IPC 往返）。 */
+  Drafts(): Promise<DraftList>
+  /** 取一条草稿（含正文）。已删除时抛错，而不是返回 null。 */
+  Draft(id: number): Promise<Draft>
+  /** 新建一条，默认名由后端按当前语言渲染并写进库。返回新草稿。 */
+  CreateDraft(): Promise<Draft>
+  /**
+   * 写正文——实时保存的**唯一**入口。
+   *
+   * 刻意不接收 title：标题走 RenameDraft。两条写路径分开，才不会出现
+   * "自动保存顺手把用户正在改的标题覆盖回去"。
+   */
+  SaveDraft(id: number, md: string): Promise<DraftSaveResult>
+  RenameDraft(id: number, title: string): Promise<void>
+  /** 软删除（进归档区，保留期内可恢复）。 */
+  ArchiveDraft(id: number): Promise<void>
+  RestoreDraft(id: number): Promise<void>
+  /** 彻底删除，返回被删掉的字符数。 */
+  PurgeDraft(id: number): Promise<number>
+  /** 按给定顺序重写目录顺序（拖拽排序的落库入口）。 */
+  ReorderDrafts(ids: number[]): Promise<void>
+  /**
+   * 把一张图片落成 blob，返回可插进正文的 URL。
+   *
+   * 入参是 base64（可带 `data:image/png;base64,` 前缀），不是文件路径：
+   * 前端从剪贴板或文件框拿到的就是这个形式，没有别的东西可传。
+   */
+  ImportDraftImage(mime: string, dataBase64: string): Promise<DraftImage>
+
   Paste(id: number, autoPaste: boolean): Promise<PasteResult>
   CopyOnly(id: number): Promise<PasteResult>
   PasteText(text: string): Promise<void>
@@ -457,6 +575,14 @@ export type Bindings = {
 
   ShowPanel(): Promise<void>
   HidePanel(): Promise<void>
+  /**
+   * 记住"当前停在哪一页"（ui.lastView）。
+   *
+   * 只有草稿本是**粘滞**的：其余视图在下次呼出面板时都回到历史页
+   * （见 App.tsx 里那条 show 事件的处理）。所以这个调用只在进入/离开
+   * 草稿本时发生，不是每次切视图都发。
+   */
+  SetLastView(view: string): Promise<void>
   /**
    * 热键输入态：让出 / 收回全局热键。
    *

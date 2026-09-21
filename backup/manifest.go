@@ -71,14 +71,20 @@ type Header struct {
 	Tags          []Tag          `json:"tags"`
 }
 
-// Manifest 是**读取侧**的完整清单：头部 + items。
+// Manifest 是**读取侧**的完整清单：头部 + items + drafts。
 //
-// 写入侧刻意不用它：导出是流式的（§7），items 必须逐条追加、
+// 写入侧刻意不用它：导出是流式的（§7），items 与 drafts 都必须逐条追加、
 // 不能先攒成一个切片。这里能整体载入，是因为导入本来就按
 // "预检一次 + 逐条写入"走，预检需要先知道全部条目才能给出确认页。
+//
+// ⚠️ drafts 在**清单里**能整体载入，不代表它的体积可以忽略：一条草稿的
+// 正文是用户手写的、没有上限。预检读的是整份清单（readZipEntryLimited
+// 有 512 MB 上限兜底），这是既有设计；真要为超长草稿分片，那属于
+// §10 的"字段语义变更"，要动 formatVersion。
 type Manifest struct {
 	Header
-	Items []Item `json:"items"`
+	Items  []Item  `json:"items"`
+	Drafts []Draft `json:"drafts"`
 }
 
 // Stats 是清单里的统计块。
@@ -89,6 +95,8 @@ type Stats struct {
 	Items      int64 `json:"items"`
 	Categories int64 `json:"categories"`
 	Tags       int64 `json:"tags"`
+	// Drafts 是包里的草稿条数（不含已归档的，见 §3.7）。
+	Drafts int64 `json:"drafts"`
 	// BlobBytes 是未压缩总字节（只算真正写进包的 blob，不含缩略图）。
 	BlobBytes int64 `json:"blobBytes"`
 }
@@ -169,6 +177,27 @@ type Item struct {
 	UseCount    int64      `json:"useCount"`
 
 	Blobs []BlobRef `json:"blobs"`
+}
+
+// Draft 是清单里的一条草稿（§3.7）。
+//
+// 与 Item 的形态差别只有一处，但它必须解释清楚：**正文里的图片引用直接
+// 写在 md 里**（`blobs/<分片路径>`），没有 items 那样的 `blobs[]` 数组。
+//
+// 理由是库里本来就只有一份真源：草稿的图片引用是**正文的一部分**，
+// 没有第二张"这条草稿引用了哪些 blob"的表（store/drafts.go 开头写了为什么）。
+// 导出时再抽出来列一份，导入时就有了两个真源——正文里是 `blobs/x`、
+// 清单里又是另一份，迟早对不上。宁可让第三方工具多认一条 `](...)` 的写法。
+//
+// 时间字段与 Item 同规则：ISO-8601 **带时区偏移**（§3.5）。
+type Draft struct {
+	ID    int64  `json:"id"`
+	Title string `json:"title"`
+	// MD 是 Markdown 正文，**唯一真源**。包内形态里图片 URL 是
+	// `blobs/<rel>`，导入时改写回库内的 `blob/<rel>`（§2 的两套前缀）。
+	MD        string    `json:"md"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Validate 检查条目里我们自己能自证的部分。

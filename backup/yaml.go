@@ -202,6 +202,8 @@ func writeYAMLHeader(w io.Writer, h Header) error {
 	yamlIndent(&b, 1)
 	fmt.Fprintf(&b, "tags: %d\n", h.Stats.Tags)
 	yamlIndent(&b, 1)
+	fmt.Fprintf(&b, "drafts: %d\n", h.Stats.Drafts)
+	yamlIndent(&b, 1)
 	fmt.Fprintf(&b, "blobBytes: %d\n", h.Stats.BlobBytes)
 
 	if len(h.Settings) > 0 {
@@ -258,7 +260,10 @@ func writeYAMLHeader(w io.Writer, h Header) error {
 		fmt.Fprintf(&b, "color: %s\n", yamlEmit(tg.Color))
 	}
 
-	b.WriteString("items:\n")
+	// ⚠️ 这里**不写 `items:`**。两个集合（items / drafts）的键名由
+	// yamlManifestWriter 惰性写出：空集合必须写成 `items: []` 这一行，
+	// 而"先写键名、发现是空再补一个缩进的 []"会产出非法 YAML
+	// （独立一行的 `[]` 不是合法节点续行）。详见 writer.go 里的长注释。
 	_, err := w.Write(b.Bytes())
 	return err
 }
@@ -488,6 +493,31 @@ func writeYAMLItem(w io.Writer, it Item, seqIndent int) error {
 			fmt.Fprintf(&b, "sha256: %s\n", yamlEmit(bl.SHA256))
 		}
 	}
+	_, err := w.Write(b.Bytes())
+	return err
+}
+
+// writeYAMLDraft 写一条草稿。seqIndent 与 writeYAMLItem 同义。
+//
+// 只有四个字段，所以不套用 writeYAMLItem 的骨架：草稿的形态是刻意的
+// 小（§3.7）——没有 id 交叉引用、没有标签、没有 TTL，正文里就是全部内容。
+func writeYAMLDraft(w io.Writer, d Draft, seqIndent int) error {
+	var b bytes.Buffer
+	yamlIndent(&b, seqIndent)
+	fmt.Fprintf(&b, "- id: %d\n", d.ID)
+
+	kv := func(k string, v any) {
+		yamlIndent(&b, seqIndent+1)
+		fmt.Fprintf(&b, "%s: %s\n", k, yamlEmit(v))
+	}
+	// title 与 md 都可能含换行（md 必然含）：yamlEmit → yamlQuote 会
+	// 自动走双引号 + 转义，这里不用特殊处理。别改成单引号——单引号里
+	// 的换行会被折叠成空格，正文被静默改掉。
+	kv("title", d.Title)
+	kv("md", d.MD)
+	kv("createdAt", d.CreatedAt)
+	kv("updatedAt", d.UpdatedAt)
+
 	_, err := w.Write(b.Bytes())
 	return err
 }

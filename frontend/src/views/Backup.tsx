@@ -147,6 +147,8 @@ function ExportPane({ t, onToast }: { t: TFn; onToast: (m: string) => void }) {
           <div className="result-title">{t('backup.exportDone')}</div>
           <KV k={t('backup.path')} v={result.path} mono />
           <KV k={t('backup.total')} v={String(result.items)} />
+          {/* 草稿只在 full 范围里进包，为 0 时不必占一行。 */}
+          {result.drafts > 0 && <KV k={t('backup.drafts')} v={String(result.drafts)} />}
           <KV k={t('stats.diskBytes')} v={`${formatBytes(result.blobBytes)} (${result.blobs})`} />
           <KV k={t('backup.tookMs')} v={formatDuration(result.tookMs)} />
           {result.missingBlobs > 0 && (
@@ -334,6 +336,11 @@ function ImportPane({
           {pre.skipDuplicate > 0 && <KV k={t('backup.skipDup')} v={String(pre.skipDuplicate)} />}
           {pre.skipExpired > 0 && <KV k={t('backup.skipExpired')} v={String(pre.skipExpired)} />}
           {pre.invalid > 0 && <KV k={t('backup.invalid')} v={String(pre.invalid)} />}
+          {/* 草稿单独一行，措辞必须是"新增"：它没有指纹，重导一次就多一批。
+              写"将导入"会让用户以为和条目一样会去重。 */}
+          {pre.totalDrafts > 0 && (
+            <KV k={t('backup.draftsNew')} v={String(pre.willImportDrafts)} />
+          )}
           <KV k={t('backup.total')} v={`${formatBytes(pre.uncompressedBytes)} → ${t('stats.aliveBytes')} ${formatBytes(pre.needBytes)}`} />
           {pre.availableBytes >= 0 && (
             <KV k={t('stats.diskBytes')} v={formatBytes(pre.availableBytes)} />
@@ -366,6 +373,12 @@ function ImportPane({
           <KV k={t('backup.merged')} v={String(result.merged)} />
           <KV k={t('backup.overwritten')} v={String(result.overwritten)} />
           {result.failed > 0 && <KV k={t('backup.failed')} v={String(result.failed)} />}
+          {result.draftsImported > 0 && (
+            <KV k={t('backup.draftsNew')} v={String(result.draftsImported)} />
+          )}
+          {result.draftsFailed > 0 && (
+            <KV k={t('backup.draftsFailed')} v={String(result.draftsFailed)} />
+          )}
           <KV k={t('backup.tookMs')} v={formatDuration(result.tookMs)} />
           {result.errors && result.errors.length > 0 && (
             <ul className="errlist">

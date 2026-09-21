@@ -25,7 +25,11 @@ import (
 // 自定义 scheme 下会解析成 `wails://wails/blob/...`，这正是 AssetServer 的
 // 用户 handler 能接到的形式（见 wails 的 assetHandler.ServeHTTP：嵌入式
 // 前端产物里找不到这个文件时，才会把请求转给用户 handler）。
-const BlobURLPrefix = "blob/"
+// 值本身由 store.DraftBlobPrefix 定义，这里只是别名——**不要**再写一遍字面量。
+// 这个前缀现在同时是"图片 URL 的前缀"和"草稿正文里图片引用的前缀"
+// （docs/DESIGN.md §4.4）：两处各写一份，改一处就会出现"正文里写的 URL
+// 取不到字节"这种只在运行时才看得见的错位。
+const BlobURLPrefix = store.DraftBlobPrefix
 
 // blobServer 是 AssetServer 的用户 handler（只会收到"内嵌资源里没有"的请求）。
 //
