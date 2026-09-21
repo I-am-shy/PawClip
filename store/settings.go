@@ -48,10 +48,12 @@ const (
 	KeyUIPanelWidth           = "ui.panelWidth"
 	KeyUIPanelHeight          = "ui.panelHeight"
 	KeyUILastView             = "ui.lastView"
+	KeyUILastDraftId          = "ui.lastDraftId"
 	KeyUIDraftTOCCollapsed    = "ui.draftTocCollapsed"
 
 	KeyDraftAutoSaveDebounceMs = "draft.autoSaveDebounceMs"
 	KeyDraftImageMaxBytes      = "draft.imageMaxBytes"
+	KeyDraftArchiveTtlSec      = "draft.archiveTtlSec"
 
 	KeyStorageCleanShutdownMarker = "storage.cleanShutdownMarker"
 	KeyStorageWALCheckpointEvery  = "storage.walCheckpointEvery"
@@ -175,6 +177,12 @@ type UISettings struct {
 	// 560 下"左目录 180 + 右编辑"只剩 380 逻辑点，富文本排版放不下。
 	// 所以这个开关是**布局必需**，值要活过这次运行。
 	DraftTOCCollapsed bool `json:"draftTocCollapsed"`
+
+	// LastDraftID 是"上次打开的草稿"（ui.lastView 的草稿粒度）。
+	//
+	// 0 表示没有记录。它只在"重新进入草稿本"时用来回到上次看的那条，
+	// 不参与任何业务判断；指向的草稿可能已被删除，读取方必须校验存在性。
+	LastDraftID int64 `json:"lastDraftId"`
 }
 
 // DraftSettings ← draft.*
@@ -189,6 +197,15 @@ type DraftSettings struct {
 	AutoSaveDebounceMs int `json:"autoSaveDebounceMs"`
 	// ImageMaxBytes 是单张草稿贴图的大小上限。
 	ImageMaxBytes int64 `json:"imageMaxBytes"`
+	// ArchiveTTLSec 是归档草稿的保留期：软删除进归档区后，超过这个
+	// 时长由 GC 硬删（docs/DESIGN.md §5.4 第 3 步）。
+	//
+	// **刻意不与 retention.trashTtlSec 共用一个值**：剪贴板回收站里的
+	// 是"自动捕获的流水"，草稿归档区里的是"用户手写的作品"，两者对
+	// "留多久才敢真删"的心理预期不同——回收站 7 天够了，草稿通常要
+	// 更长（默认 30 天）。共用一个键的话，用户把回收站调短，草稿
+	// 会跟着被悄悄清空。
+	ArchiveTTLSec int64 `json:"archiveTtlSec"`
 }
 
 // StorageSettings ← storage.*
@@ -272,6 +289,8 @@ func DefaultSettings() *Settings {
 			// 前端另有一条 5s 的强制落盘兜住"一直在打字"的情况。
 			AutoSaveDebounceMs: 500,
 			ImageMaxBytes:      10 * 1024 * 1024,
+			// 30 天，长于回收站的 7 天：见 ArchiveTTLSec 的字段注释。
+			ArchiveTTLSec: 30 * 86400,
 		},
 	}
 }
@@ -316,10 +335,12 @@ func (s *Settings) bindings() []binding {
 		{KeyUIPanelWidth, &s.UI.PanelWidth},
 		{KeyUIPanelHeight, &s.UI.PanelHeight},
 		{KeyUILastView, &s.UI.LastView},
+		{KeyUILastDraftId, &s.UI.LastDraftID},
 		{KeyUIDraftTOCCollapsed, &s.UI.DraftTOCCollapsed},
 
 		{KeyDraftAutoSaveDebounceMs, &s.Draft.AutoSaveDebounceMs},
 		{KeyDraftImageMaxBytes, &s.Draft.ImageMaxBytes},
+		{KeyDraftArchiveTtlSec, &s.Draft.ArchiveTTLSec},
 
 		{KeyStorageCleanShutdownMarker, &s.Storage.CleanShutdownMarker},
 		{KeyStorageWALCheckpointEvery, &s.Storage.WALCheckpointEvery},

@@ -14,6 +14,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -30,14 +31,19 @@ const draftTitleMaxRunes = 200
 
 // DraftList 是草稿目录的一次性快照。
 //
-// 三个设置值（归档保留期、图片上限、防抖窗口）搭这个结构一起带出去，
+// 几个设置值（归档保留期、图片上限、防抖窗口）搭这个结构一起带出去，
 // 而不是让前端为它们各发一次 IPC：它们**只在草稿本页面用**，
 // 而且都是"打开页面时读一次就够"的静态值。
 type DraftList struct {
 	Items    []store.DraftRow `json:"items"`
 	Archived []store.DraftRow `json:"archived"`
-	// TrashTtlSec 是归档保留期（秒），界面用它说明"再过 X 天彻底删除"。
-	TrashTtlSec int64 `json:"trashTtlSec"`
+	// ArchiveTtlSec 是归档保留期（秒），界面用它说明"再过 X 天彻底删除"。
+	ArchiveTtlSec int64 `json:"archiveTtlSec"`
+	// LastDraftID 是"上次打开的草稿"（ui.lastDraftId）：重新进入草稿本时
+	// 回到它，而不是固定回第一条。指向的草稿可能已删，前端必须校验存在。
+	LastDraftID int64 `json:"lastDraftId"`
+	// TocCollapsed 是目录的收起状态（ui.draftTocCollapsed）。
+	TocCollapsed bool `json:"tocCollapsed"`
 	// MaxImageBytes 是单张贴图上限，ImageMaxMB 是它的人读形式。
 	//
 	// 两个都给：前端要拿数字做预检，要拿文本拼错误提示。
@@ -98,10 +104,17 @@ func (a *App) Drafts() (*DraftList, error) {
 
 	out := &DraftList{Items: items, Archived: archived}
 	if s := a.Settings(); s != nil {
-		out.TrashTtlSec = s.Retention.TrashTTLSec
+		out.ArchiveTtlSec = s.Draft.ArchiveTTLSec
+		out.LastDraftID = s.UI.LastDraftID
+		out.TocCollapsed = s.UI.DraftTOCCollapsed
 		out.MaxImageBytes = s.Draft.ImageMaxBytes
 		out.MaxImageLabel = humanBytes(s.Draft.ImageMaxBytes)
 		out.AutoSaveDebounceMs = s.Draft.AutoSaveDebounceMs
+	}
+	if out.ArchiveTtlSec <= 0 {
+		// 读不到时给默认值：前端要拿它算"再过 X 天删除"的提示，
+		// 0 会让那句话显示成"0 天后清理"，像是一个坏掉的天数。
+		out.ArchiveTtlSec = store.DefaultSettings().Draft.ArchiveTTLSec
 	}
 	if out.AutoSaveDebounceMs <= 0 {
 		// 设置读不到时给一个能用的值：0 会让前端每次都立即落盘，
@@ -316,6 +329,21 @@ func (a *App) SetLastView(view string) error {
 		return a.localizeErr(msgf(msgErrLastView, err, err))
 	}
 	return nil
+}
+
+// SetLastDraft 记住"上次打开的草稿"（ui.lastDraftId）。
+//
+// 重新进入草稿本时回到它，而不是固定回目录第一条——用户有多条草稿时，
+// 固定回第一条看起来就像"我刚写的东西没了"。
+//
+// 与内存里的值相同时直接返回，不写库（理由同 SetLastView）。
+// 不校验 id 是否存在：这条调用的语义是"用户正在看它"，存在性由
+// 下一次读取时（前端在目录里找不到就回退第一条）兜底。
+func (a *App) SetLastDraft(id int64) error {
+	if s := a.Settings(); s != nil && s.UI.LastDraftID == id {
+		return nil
+	}
+	return a.SetSetting(store.KeyUILastDraftId, strconv.FormatInt(id, 10))
 }
 
 // ── 小工具 ──────────────────────────────────────────────────────

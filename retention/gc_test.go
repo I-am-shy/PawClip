@@ -902,7 +902,7 @@ func TestGC_DraftOnlyLibrarySweepsOrphans(t *testing.T) {
 func TestGC_PurgesArchivedDrafts(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	h.cfg.TrashTTLSec = 3600
+	h.cfg.DraftArchiveTTLSec = 3600
 	h.cfg.VacuumAfterDelete = false
 
 	keepID, _ := h.db.CreateDraft(ctx, "刚删的", 1)
@@ -945,5 +945,56 @@ func TestGC_PurgesArchivedDrafts(t *testing.T) {
 	// 混在一个数字里，用户在统计页看到"硬删 1"会以为剪贴板少了一条。
 	if rep.Purged != 0 {
 		t.Fatalf("Purged = %d，草稿的回收不该计入剪贴板回收站的计数", rep.Purged)
+	}
+}
+
+// TestGC_DraftArchiveTtlIsIndependentOfTrashTtl 钉住两个保留期**互不牵连**。
+//
+// 这是把草稿保留期从 retention.trashTtlSec 拆成 draft.archiveTtlSec 的
+// 核心动机：用户把剪贴板回收站调得很短（甚至准备清空）时，草稿归档区
+// 不该跟着被清。反向断言（回收站里的条目在草稿保留期已过时仍然保留）
+// 也在同一条用例里——两个方向都盯住，改回去任何一个都会变红。
+func TestGC_DraftArchiveTtlIsIndependentOfTrashTtl(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	// 回收站 1 小时、草稿 30 天：方向是"草稿活得比回收站长"。
+	h.cfg.TrashTTLSec = 3600
+	h.cfg.DraftArchiveTTLSec = 30 * 86400
+	h.cfg.VacuumAfterDelete = false
+
+	// 回收站里放一条 2 小时前的条目（超过回收站保留期）。
+	text := "x"
+	itemID := h.put(t, store.Item{Preview: "回收站条目", TextContent: &text})
+	if _, err := h.db.SoftDelete(ctx, []int64{itemID}); err != nil {
+		t.Fatalf("SoftDelete: %v", err)
+	}
+	if _, err := h.db.Writer().ExecContext(ctx,
+		`UPDATE items SET deleted_at = ? WHERE id = ?`, time.Now().Unix()-7200, itemID); err != nil {
+		t.Fatalf("改删除时间: %v", err)
+	}
+
+	// 草稿归档区里放一条刚归档的草稿。
+	draftID, err := h.db.CreateDraft(ctx, "刚归档的草稿", 1)
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if err := h.db.ArchiveDraft(ctx, draftID); err != nil {
+		t.Fatalf("ArchiveDraft: %v", err)
+	}
+
+	rep := h.gc(t).RunOnce(ctx)
+	if rep.Errors != nil {
+		t.Fatalf("GC 报错：%v", rep.Errors)
+	}
+	// 回收站条目该删：它的保留期是 1 小时，条目已躺了 2 小时。
+	if rep.Purged != 1 {
+		t.Fatalf("Purged = %d，想要 1（回收站条目超期应被硬删）", rep.Purged)
+	}
+	// 归档草稿不该删：草稿自己的保留期是 30 天，跟回收站没关系。
+	if rep.DraftsPurged != 0 {
+		t.Fatalf("DraftsPurged = %d，想要 0（草稿保留期未到）", rep.DraftsPurged)
+	}
+	if d, _ := h.db.GetDraft(ctx, draftID); d == nil {
+		t.Fatal("归档草稿被回收站保留期误删——两个 TTL 又被接回去了")
 	}
 }

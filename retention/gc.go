@@ -57,6 +57,13 @@ type Config struct {
 	MaxDiskBytes  int64 // retention.maxDiskBytes
 	GCIntervalSec int   // retention.gcIntervalSec
 
+	// DraftArchiveTTLSec 是归档草稿的保留期（draft.archiveTtlSec）。
+	//
+	// **与 TrashTTLSec 分开**：剪贴板回收站是"自动捕获的流水"，草稿
+	// 归档区是"用户手写的作品"，两者的保留预期不同（默认 7 天 vs 30 天）。
+	// 共用一个值的话，用户把回收站调短，草稿会被跟着悄悄清空。
+	DraftArchiveTTLSec int64 // draft.archiveTtlSec
+
 	// ArchiveCategoryID 是 onExpire=archive 时要移入的分类。
 	//
 	// ⚠️ 文档缺口：§5.2 第 2 步写了"移入**指定**分类"，但 §9 的设置表里
@@ -76,12 +83,15 @@ type Config struct {
 func DefaultConfig() Config {
 	s := store.DefaultSettings()
 	return Config{
-		DefaultTTLSec:     s.Retention.DefaultTTLSec,
-		OnExpire:          s.Retention.OnExpire,
-		TrashTTLSec:       s.Retention.TrashTTLSec,
-		MaxItems:          s.Retention.MaxItems,
-		MaxDiskBytes:      s.Retention.MaxDiskBytes,
-		GCIntervalSec:     s.Retention.GCIntervalSec,
+		DefaultTTLSec: s.Retention.DefaultTTLSec,
+		OnExpire:      s.Retention.OnExpire,
+		TrashTTLSec:   s.Retention.TrashTTLSec,
+		MaxItems:      s.Retention.MaxItems,
+		MaxDiskBytes:  s.Retention.MaxDiskBytes,
+		GCIntervalSec: s.Retention.GCIntervalSec,
+
+		DraftArchiveTTLSec: s.Draft.ArchiveTTLSec,
+
 		VacuumAfterDelete: true,
 	}
 }
@@ -106,6 +116,9 @@ func (c Config) withDefaults() Config {
 	}
 	if out.TrashTTLSec == 0 {
 		out.TrashTTLSec = def.TrashTTLSec
+	}
+	if out.DraftArchiveTTLSec == 0 {
+		out.DraftArchiveTTLSec = def.DraftArchiveTTLSec
 	}
 	if out.GCIntervalSec <= 0 {
 		out.GCIntervalSec = def.GCIntervalSec
@@ -366,16 +379,16 @@ func (g *GC) RunOnce(ctx context.Context) *Report {
 
 	// ── 步骤 3b：硬删归档期满的草稿 ──────────────────────────────
 	//
-	// 复用 retention.trashTtlSec 这个"回收站保留期"，而不是给草稿单开一个
-	// 同义的新设置：用户已经理解"删掉的东西留 N 天"，让草稿走同一条表
-	// 就不会出现"两个都叫保留期、值却不一样"。草稿在这条路径上唯一与
-	// 剪贴板不同的是**它不进剪贴板回收站**（§4.4 第 4 条），
-	// 归档区在草稿本页面自己的目录里。
+	// 用草稿自己的 draft.archiveTtlSec，而不是回收站的
+	// retention.trashTtlSec：两者语义不同（自动捕获的流水 vs 用户手写的
+	// 作品），保留预期也不同（默认 7 天 vs 30 天），各自可调。
+	// 草稿在这条路径上唯一与剪贴板不同的是**它不进剪贴板回收站**
+	// （§4.4 第 4 条），归档区在草稿本页面自己的目录里。
 	//
 	// 这里删掉的是行，blob 文件交给步骤 6 的孤儿扫描——内容寻址下
 	// 同一张图可能同时被剪贴板和另一条草稿引用，按条删文件必误伤。
-	if cfg.TrashTTLSec > 0 {
-		n, chars, err := g.db.PurgeArchivedDraftsBefore(ctx, start.Unix()-cfg.TrashTTLSec)
+	if cfg.DraftArchiveTTLSec > 0 {
+		n, chars, err := g.db.PurgeArchivedDraftsBefore(ctx, start.Unix()-cfg.DraftArchiveTTLSec)
 		rep.stepErr("硬删归档草稿", err)
 		rep.DraftsPurged, rep.DraftsPurgedChars = n, chars
 	}

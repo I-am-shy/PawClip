@@ -100,15 +100,25 @@ func (a *App) retentionSettings() store.RetentionSettings {
 // gcConfig 把设置投影成 GC 的配置。GC 每轮开头调它一次。
 func (a *App) gcConfig() retention.Config {
 	r := a.retentionSettings()
+	d := a.draftSettings()
 	return retention.Config{
-		DefaultTTLSec:     r.DefaultTTLSec,
-		OnExpire:          r.OnExpire,
-		TrashTTLSec:       r.TrashTTLSec,
-		MaxItems:          r.MaxItems,
-		MaxDiskBytes:      r.MaxDiskBytes,
-		GCIntervalSec:     r.GCIntervalSec,
-		VacuumAfterDelete: true,
+		DefaultTTLSec:      r.DefaultTTLSec,
+		OnExpire:           r.OnExpire,
+		TrashTTLSec:        r.TrashTTLSec,
+		MaxItems:           r.MaxItems,
+		MaxDiskBytes:       r.MaxDiskBytes,
+		GCIntervalSec:      r.GCIntervalSec,
+		DraftArchiveTTLSec: d.ArchiveTTLSec,
+		VacuumAfterDelete:  true,
 	}
+}
+
+// draftSettings 同 retentionSettings：给草稿本相关的后台路径用。
+func (a *App) draftSettings() store.DraftSettings {
+	if s := a.Settings(); s != nil {
+		return s.Draft
+	}
+	return store.DefaultSettings().Draft
 }
 
 // ── 面板回调（实现 panel.Handler）───────────────────────────────
