@@ -308,6 +308,38 @@ export function Settings(p: SettingsProps) {
         </Row>
       </Section>
 
+      {/* ── 草稿本 ────────────────────────────────────────── */}
+      <Section title={t('settings.draftTitle')}>
+        {/*
+          归档保留期刻意放在这里而不是"保留策略"区：它与回收站的
+          trashTtlSec 互不影响（一个是用户手写的作品，一个是自动捕获
+          的流水），放在一起会让人以为改一个会带动另一个。
+        */}
+        <Row label={t('settings.draftArchiveTtlSec')} note={t('settings.draftArchiveTtlSec.note')} wide>
+          <NumberInput
+            value={settings.draft.archiveTtlSec}
+            disabled={busy}
+            onCommit={(v) => void set('draft.archiveTtlSec', v)}
+          />
+        </Row>
+
+        <Row label={t('settings.draftAutoSaveDebounceMs')}>
+          <NumberInput
+            value={settings.draft.autoSaveDebounceMs}
+            disabled={busy}
+            onCommit={(v) => void set('draft.autoSaveDebounceMs', v)}
+          />
+        </Row>
+
+        <Row label={t('settings.draftImageMaxBytes')}>
+          <NumberInput
+            value={settings.draft.imageMaxBytes}
+            disabled={busy}
+            onCommit={(v) => void set('draft.imageMaxBytes', v)}
+          />
+        </Row>
+      </Section>
+
       {/* ── 存储 / 关于 ────────────────────────────────────── */}
       <Section title={t('settings.storage')}>
         <Row label={t('settings.cleanShutdownMarker')}>

@@ -26,11 +26,18 @@
 // 否则最后一段文字会在切视图时丢掉。顺带一提，面板"闲置收起"目前
 // **不销毁** WebView（§14 第 10 条：当前 Wails 版本没有销毁 API），
 // 所以隐藏本身不会丢数据——真正会丢的是进程退出，那由 beforeunload 兜。
+//
+// # 跨实例的 I/O 顺序（draftIO / sequenced）
+//
+// 卸载 flush 是异步的：它的 SaveDraft 还在路上时，用户切回草稿本，
+// 重新挂载的 Draft(id) 可能**先到**——Wails 绑定调用之间没有顺序保证。
+// 读到旧正文 → 渲染 → 之后自动保存把旧正文写回去，最后一段编辑就真丢了。
+// 所以本文件里所有草稿读写都走模块级的 sequenced()（见 import 之后）。
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { T as TFn } from '../i18n'
 import { call, type DraftList, type DraftRow } from '../api'
-import { htmlToMd, mdToHtml, safeHref } from '../md'
+import { findAutoLinks, htmlToMd, mdToHtml, safeHref } from '../md'
 import { formatDateTime, formatRelative, formatTime } from '../format'
 import { useInterval } from '../hooks'
 import {
@@ -43,6 +50,53 @@ import {
   IconSidebar,
   IconTrash,
 } from '../components/Icons'
+
+// ── 跨实例的 I/O 顺序链 ─────────────────────────────────────────
+//
+// Wails 的绑定调用之间**没有顺序保证**（各走各的 goroutine）。切走视图时
+// 卸载 flush 发出的 SaveDraft 还在路上，重新挂载后的 Draft(id) 完全可能
+// 先到——读到旧正文，把旧内容渲染进编辑器；之后的自动保存再把
+// "旧正文 + 新输入"写回去，最后一段编辑就真丢了（用户看到的正是
+// "重新进草稿本，内容少了"）。把所有草稿读写串到一条**模块级**链上：
+// 组件状态活不过卸载，链必须放在模块里才能跨"卸载 → 重挂"保住
+// "先写后读"的顺序。
+let draftIO: Promise<unknown> = Promise.resolve()
+
+/** sequenced 把一次草稿读写排进链：前面的（哪怕失败）落地后才轮到它。 */
+function sequenced<T>(fn: () => Promise<T>): Promise<T> {
+  const run = draftIO.then(fn, fn)
+  // 链只保证顺序、不传播错误——错误由调用方自己 await 拿。
+  draftIO = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
+}
+
+const NODE_TEXT = 3
+
+/** insideAnchor：这个节点是否躺在链接里（在链接里就不做自动识别）。 */
+function insideAnchor(node: Node, root: Node): boolean {
+  for (let n: Node | null = node; n != null && n !== root; n = n.parentNode) {
+    if (n.nodeName === 'A') return true
+  }
+  return false
+}
+
+/** appendTextWithLinks 把一段文本（可能含裸 URL）变成节点塞进 frag。 */
+function appendTextWithLinks(frag: DocumentFragment, text: string): void {
+  const ms = findAutoLinks(text)
+  let pos = 0
+  for (const m of ms) {
+    if (m.start > pos) frag.appendChild(document.createTextNode(text.slice(pos, m.start)))
+    const a = document.createElement('a')
+    a.setAttribute('href', m.url)
+    a.textContent = m.text
+    frag.appendChild(a)
+    pos = m.end
+  }
+  if (pos < text.length) frag.appendChild(document.createTextNode(text.slice(pos)))
+}
 
 export type DraftsProps = {
   t: TFn
@@ -68,6 +122,8 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
   const [bodyEmpty, setBodyEmpty] = useState(true)
   const [linkOpen, setLinkOpen] = useState(false)
   const [linkValue, setLinkValue] = useState('')
+  // 链接的显示文本（别名）。空串 = 沿用（选中文字 / 原文字 / 地址）。
+  const [linkText, setLinkText] = useState('')
   const [marks, setMarks] = useState({ bold: false, italic: false, underline: false })
   const [dragFrom, setDragFrom] = useState<number | null>(null)
   const [dragOver, setDragOver] = useState<number | null>(null)
@@ -88,10 +144,13 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
   const dirtyRef = useRef(false)
   const saveTimerRef = useRef<number | null>(null)
   const titleTimerRef = useRef<number | null>(null)
+  const pendingTitleRef = useRef<string | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
   // savedRange 是点工具栏时"用户最后一次在正文里的选区"。
   // 点按钮会让编辑区失焦，不记下来的话链接/图片只能插到末尾。
   const savedRangeRef = useRef<Range | null>(null)
+  // linkEditRef 非空表示链接浮层正在"编辑这条已有的链接"而不是新建。
+  const linkEditRef = useRef<HTMLAnchorElement | null>(null)
 
   const debounceMs = list?.autoSaveDebounceMs ?? 500
   const maxImageLabel = list?.maxImageLabel ?? ''
@@ -121,7 +180,8 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
         return
       }
       try {
-        const r = await call('SaveDraft', id, md)
+        // 走模块级顺序链：与"重挂载后的读取"保住先后（见文件头）。
+        const r = await sequenced(() => call('SaveDraft', id, md))
         // 期间切走了就不认这次结果：否则会把新草稿的状态显示成旧草稿的。
         if (selectedIdRef.current !== id) return
         lastSavedRef.current = md
@@ -157,6 +217,17 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
     }, debounceMs)
   }, [flush, debounceMs])
 
+  /**
+   * syncEmpty 同步"正文是否为空"的开关（占位提示靠它显隐）。
+   *
+   * 贴图、插链接这类**程序化插入**不触发 input 事件，必须在这里补一次，
+   * 否则占位提示要等用户敲下一个键才消失——看起来就像"图没插上"。
+   */
+  const syncEmpty = useCallback(() => {
+    const node = nodeRef.current
+    if (node) setBodyEmpty(node.textContent === '' && node.querySelector('img') == null)
+  }, [])
+
   // 第 2 层：连续打字时防抖永不触发，靠这个 5 秒的 tick 强制落盘。
   useInterval(() => {
     if (dirtyRef.current) void flush()
@@ -181,13 +252,34 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
 
   // ── 目录 ──────────────────────────────────────────────────────
 
+  /** fireTitle 立刻把待写的标题落库（切草稿前必须做，见 onTitleChange）。 */
+  const fireTitle = useCallback(() => {
+    if (titleTimerRef.current != null) {
+      window.clearTimeout(titleTimerRef.current)
+      titleTimerRef.current = null
+    }
+    const v = pendingTitleRef.current
+    pendingTitleRef.current = null
+    if (v == null) return
+    const id = selectedIdRef.current
+    if (id == null) return
+    void sequenced(() => call('RenameDraft', id, v))
+      .then(() => {
+        setItems((prev) => prev.map((it) => (it.id === id ? { ...it, title: v } : it)))
+      })
+      .catch((e: unknown) => {
+        onToast(t('err.generic', { err: e instanceof Error ? e.message : String(e) }))
+      })
+  }, [onToast, t])
+
   const openDraft = useCallback(
     async (id: number) => {
       // 先存旧的。DOM 此刻还是旧草稿（innerHTML 在下面才换），
       // 顺序反了就会把新草稿的内容写成旧草稿的。
+      fireTitle()
       await flush({ force: true })
       try {
-        const d = await call('Draft', id)
+        const d = await sequenced(() => call('Draft', id))
         selectedIdRef.current = id
         setSelectedId(id)
         setTitle(d.title)
@@ -201,16 +293,18 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
           nodeRef.current.innerHTML = mdToHtml(d.md)
           setBodyEmpty(d.md.trim() === '')
         }
+        // 记住"上次打开的草稿"（值相同则后端不写库）。
+        void sequenced(() => call('SetLastDraft', id)).catch(() => {})
       } catch (e: unknown) {
         onToast(t('err.generic', { err: e instanceof Error ? e.message : String(e) }))
       }
     },
-    [flush, onToast, t],
+    [flush, onToast, t, fireTitle],
   )
 
   const refresh = useCallback(async (): Promise<DraftList | null> => {
     try {
-      const l = await call('Drafts')
+      const l = await sequenced(() => call('Drafts'))
       setList(l)
       setItems(l.items)
       setArchived(l.archived)
@@ -221,12 +315,16 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
     }
   }, [onToast, t])
 
-  // 挂载：取目录。有草稿就打开第一条——目录已经排在左边，
-  // 用户第一眼就能看到"有哪些"，不需要额外再点一下。
+  // 挂载：取目录。回到**上次打开的那条**草稿（而不是固定第一条）——
+  // 多条草稿时固定回第一条，看起来就像"我刚写的东西没了"。
+  // 上次那条已被删除时回退到第一条。目录的收起状态也从设置里恢复。
   useEffect(() => {
     void (async () => {
       const l = await refresh()
-      if (l && l.items.length > 0) await openDraft(l.items[0].id)
+      if (!l) return
+      setTocOpen(!l.tocCollapsed)
+      const target = l.items.find((it) => it.id === l.lastDraftId) ?? l.items[0]
+      if (target) await openDraft(target.id)
     })()
     // 只跑一次。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -241,9 +339,10 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
   }, [selectedId, tocOpen])
 
   const createDraft = async () => {
+    fireTitle()
     await flush({ force: true })
     try {
-      const d = await call('CreateDraft')
+      const d = await sequenced(() => call('CreateDraft'))
       const l = await refresh()
       if (!l) return
       await openDraft(d.id)
@@ -255,15 +354,16 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
   const archiveDraft = async (id: number) => {
     try {
       if (selectedIdRef.current === id) {
-        // 先落盘再软删，并把选中清掉：不清的话紧接着的 openDraft
-        // 会带着一个已被软删的 id 去 force 保存，往归档区里写内容。
+        // 先落盘（标题 + 正文）再软删，并把选中清掉：不清的话紧接着的
+        // openDraft 会带着一个已被软删的 id 去 force 保存，往归档区里写内容。
+        fireTitle()
         await flush({ force: true })
-        await call('ArchiveDraft', id)
+        await sequenced(() => call('ArchiveDraft', id))
         selectedIdRef.current = null
         setSelectedId(null)
         dirtyRef.current = false
       } else {
-        await call('ArchiveDraft', id)
+        await sequenced(() => call('ArchiveDraft', id))
       }
       const l = await refresh()
       if (l && selectedIdRef.current == null && l.items.length > 0) {
@@ -276,7 +376,7 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
 
   const restoreDraft = async (id: number) => {
     try {
-      await call('RestoreDraft', id)
+      await sequenced(() => call('RestoreDraft', id))
       await refresh()
     } catch (e: unknown) {
       onToast(t('err.generic', { err: e instanceof Error ? e.message : String(e) }))
@@ -285,7 +385,7 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
 
   const purgeDraft = async (id: number) => {
     try {
-      await call('PurgeDraft', id)
+      await sequenced(() => call('PurgeDraft', id))
       setConfirmPurge(null)
       await refresh()
     } catch (e: unknown) {
@@ -307,27 +407,34 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
     next.splice(to, 0, moved)
     setItems(next)
     try {
-      await call('ReorderDrafts', next.map((it) => it.id))
+      await sequenced(() => call('ReorderDrafts', next.map((it) => it.id)))
     } catch (e: unknown) {
       onToast(t('err.generic', { err: e instanceof Error ? e.message : String(e) }))
     }
   }
 
+  // 目录的收起状态是**布局必需**（面板只有 560 逻辑点），所以要落库，
+  // 活过重启。值相同 SetSetting 不会重复写（键值层去重）。
+  const toggleToc = () => {
+    setTocOpen((v) => {
+      const nv = !v
+      void call('SetSetting', 'ui.draftTocCollapsed', String(nv)).catch(() => {})
+      return nv
+    })
+  }
+
   // ── 标题 ──────────────────────────────────────────────────────
+  //
+  // 防抖期间把值挂在 pendingTitleRef 上：切草稿 / 新建 / 软删时由 fireTitle
+  // **立刻**结算。不清算的话，旧草稿的标题定时器会在选中已经换到新草稿之后
+  // 触发，把旧标题写到新草稿上（切得越快越容易撞上）。
 
   const onTitleChange = (v: string) => {
     setTitle(v)
+    pendingTitleRef.current = v
     if (titleTimerRef.current != null) window.clearTimeout(titleTimerRef.current)
     titleTimerRef.current = window.setTimeout(() => {
-      const id = selectedIdRef.current
-      if (id == null) return
-      void call('RenameDraft', id, v)
-        .then(() => {
-          setItems((prev) => prev.map((it) => (it.id === id ? { ...it, title: v } : it)))
-        })
-        .catch((e: unknown) => {
-          onToast(t('err.generic', { err: e instanceof Error ? e.message : String(e) }))
-        })
+      fireTitle()
     }, debounceMs)
   }
 
@@ -374,8 +481,10 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
       sel?.addRange(range)
       savedRangeRef.current = range.cloneRange()
       markDirty()
+      // 程序化插入不触发 input 事件，占位提示的开关要在这里补一次。
+      syncEmpty()
     },
-    [markDirty],
+    [markDirty, syncEmpty],
   )
 
   const exec = (cmd: string) => {
@@ -402,10 +511,47 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
     return () => document.removeEventListener('selectionchange', syncMarks)
   }, [syncMarks])
 
+  /**
+   * anchorAt 找选区所在的链接（在编辑区内部才算）。
+   *
+   * 用于链接浮层的"编辑"形态：光标落在链接里再点链接按钮，
+   * 预填那条链接的地址与文字，应用时改它而不是再包一层。
+   */
+  const anchorAt = useCallback((r: Range | null): HTMLAnchorElement | null => {
+    const node = nodeRef.current
+    if (!r || !node) return null
+    for (let n: Node | null = r.startContainer; n != null && n !== node; n = n.parentNode) {
+      if (n instanceof HTMLAnchorElement) return n
+    }
+    return null
+  }, [])
+
+  /**
+   * applyLink 应用链接浮层。
+   *
+   * 两种形态（参考飞书）：
+   *   · 编辑——浮层打开时光标在链接里：改那条链接的 href，
+   *     给了"显示文本"就同时替换链接文字（别名）；
+   *   · 新建——选了文字就包住它；没选文字就插入一条以地址为文字的链接。
+   * "显示文本"留空表示沿用（选中文字 / 原有文字 / 地址）。
+   */
   const applyLink = () => {
     const href = safeHref(linkValue)
     if (href === '') {
       onToast(t('draft.linkInvalid'))
+      return
+    }
+    const alias = linkText.trim()
+    const editing = linkEditRef.current
+    if (editing) {
+      editing.setAttribute('href', href)
+      if (alias !== '') editing.textContent = alias
+      linkEditRef.current = null
+      setLinkOpen(false)
+      setLinkValue('')
+      setLinkText('')
+      markDirty()
+      syncEmpty()
       return
     }
     const range = currentRange()
@@ -413,14 +559,21 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
     const a = document.createElement('a')
     a.setAttribute('href', href)
     if (range.collapsed) {
-      a.textContent = href
+      a.textContent = alias !== '' ? alias : href
+      range.insertNode(a)
+    } else if (alias !== '') {
+      // 显式给了别名：用别名替换选中文字。
+      a.textContent = alias
+      range.deleteContents()
       range.insertNode(a)
     } else {
       a.appendChild(range.extractContents())
       range.insertNode(a)
     }
+    linkEditRef.current = null
     setLinkOpen(false)
     setLinkValue('')
+    setLinkText('')
     afterInsert(range, a)
   }
 
@@ -476,31 +629,128 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
     const range = currentRange()
     if (!range) return
     range.deleteContents()
+    // 一次插入整段：先把各行（连同链接识别的结果）拼进一个 fragment，
+    // 再 insertNode 一次。逐节点 insertNode 的插入点始终在 range 起点，
+    // 多次插入的相对顺序没有保障——多行文本会倒过来。
+    const frag = document.createDocumentFragment()
     const lines = text.replace(/\r\n?/g, '\n').split('\n')
-    let last: Node | null = null
     lines.forEach((line, i) => {
-      if (i > 0) {
-        last = document.createElement('br')
-        range.insertNode(last)
-      }
-      if (line !== '') {
-        const tn = document.createTextNode(line)
-        range.insertNode(tn)
-        last = tn
-      }
+      if (i > 0) frag.appendChild(document.createElement('br'))
+      if (line !== '') appendTextWithLinks(frag, line)
     })
+    const last = frag.lastChild
+    range.insertNode(frag)
     if (last) afterInsert(range, last)
   }
 
-  const onInput = () => {
+  /**
+   * linkifyTextNode 把一个文本节点里可识别成链接的片段换成 `<a>`。
+   *
+   * caret 恰好在这个节点里时按"逻辑文本偏移"映射回拆出来的新节点
+   * （[前文字][<a>][后文字]）——不恢复的话光标会跳到节点外。
+   */
+  const linkifyTextNode = (tn: Text): boolean => {
+    const text = tn.data
+    const ms = findAutoLinks(text)
+    if (ms.length === 0) return false
+    const sel = window.getSelection()
+    const caretHere = !!sel && sel.rangeCount > 0 && sel.anchorNode === tn
+    const caretOff = caretHere ? sel.anchorOffset : -1
+
+    const frag = document.createDocumentFragment()
+    let pos = 0
+    for (const m of ms) {
+      if (m.start > pos) frag.appendChild(document.createTextNode(text.slice(pos, m.start)))
+      const a = document.createElement('a')
+      a.setAttribute('href', m.url)
+      a.textContent = m.text
+      frag.appendChild(a)
+      pos = m.end
+    }
+    if (pos < text.length) frag.appendChild(document.createTextNode(text.slice(pos)))
+    tn.replaceWith(frag)
+
+    if (caretHere && sel) {
+      let acc = 0
+      let placed = false
+      const place = (n: Node, off: number) => {
+        const r = document.createRange()
+        r.setStart(n, off)
+        r.collapse(true)
+        sel.removeAllRanges()
+        sel.addRange(r)
+        savedRangeRef.current = r.cloneRange()
+        placed = true
+      }
+      for (const k of Array.from(frag.childNodes)) {
+        if (k.nodeType === NODE_TEXT) {
+          const len = k.textContent?.length ?? 0
+          if (caretOff <= acc + len) {
+            place(k, caretOff - acc)
+            break
+          }
+          acc += len
+        } else {
+          const inner = k.firstChild
+          const len = k.textContent?.length ?? 0
+          if (inner && caretOff > acc && caretOff < acc + len) {
+            place(inner, caretOff - acc)
+            break
+          }
+          acc += len
+        }
+      }
+      if (!placed) {
+        const last = frag.lastChild
+        if (last && last.nodeType === NODE_TEXT) place(last, last.textContent?.length ?? 0)
+      }
+    }
+    return true
+  }
+
+  /**
+   * autolinkAll 扫编辑器里所有**不在链接里**的文本节点做识别。
+   *
+   * 只在"敲下空格 / 回车"时触发：那是"URL 写完了"的自然信号，
+   * 每次按键都扫会和正在输入的 URL 打架（参考飞书的触发时机）。
+   */
+  const autolinkAll = useCallback(() => {
     const node = nodeRef.current
-    if (node) setBodyEmpty(node.textContent === '' && node.querySelector('img') == null)
+    if (!node) return
+    let changed = false
+    const walk = (n: Node): void => {
+      for (const child of Array.from(n.childNodes)) {
+        if (child.nodeType === NODE_TEXT) {
+          if (!insideAnchor(child, node)) changed = linkifyTextNode(child as Text) || changed
+        } else if (child.nodeName !== 'A') {
+          walk(child)
+        }
+      }
+    }
+    walk(node)
+    if (changed) markDirty()
+  }, [markDirty])
+
+  const onInput = (e: React.FormEvent<HTMLDivElement>) => {
+    syncEmpty()
+    // 触发链接识别：敲下空格 / 回车，且不在输入法组词中——
+    // 组词里的空格是选字动作，不是分隔符。
+    const ne = e.nativeEvent
+    const isComposing = ne instanceof InputEvent && ne.isComposing
+    const data = ne instanceof InputEvent ? ne.data : null
+    const inputType = ne instanceof InputEvent ? ne.inputType : ''
+    if (
+      !isComposing &&
+      (data === ' ' || inputType.includes('Paragraph') || inputType.includes('LineBreak'))
+    ) {
+      autolinkAll()
+    }
     markDirty()
   }
 
   // ── 渲染 ──────────────────────────────────────────────────────
 
-  const ttlDays = list ? Math.max(1, Math.round(list.trashTtlSec / 86400)) : 0
+  const ttlDays = list ? Math.max(1, Math.round(list.archiveTtlSec / 86400)) : 0
 
   return (
     <div className="view-body drafts">
@@ -514,7 +764,7 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
           className={`iconbtn ${tocOpen ? 'iconbtn-on' : ''}`}
           title={tocOpen ? t('draft.toc.collapse') : t('draft.toc.expand')}
           aria-label={tocOpen ? t('draft.toc.collapse') : t('draft.toc.expand')}
-          onClick={() => setTocOpen((v) => !v)}
+          onClick={toggleToc}
         >
           <IconSidebar size={14} />
         </button>
@@ -570,6 +820,21 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
                       <span className="draft-toc-sub">
                         {it.snippet || formatRelative(t, it.updatedAt)}
                       </span>
+                    </span>
+                    <span className="draft-toc-acts">
+                      <button
+                        type="button"
+                        className="iconbtn"
+                        title={t('action.delete')}
+                        aria-label={t('action.delete')}
+                        onClick={(e) => {
+                          // 不然点击会先触发 li 的 openDraft。
+                          e.stopPropagation()
+                          void archiveDraft(it.id)
+                        }}
+                      >
+                        <IconTrash size={12} />
+                      </button>
                     </span>
                   </li>
                 ))}
@@ -670,15 +935,6 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
                           ? t('draft.savedAt', { t: formatTime(savedAt) })
                           : t('draft.saved')}
                 </span>
-                <button
-                  type="button"
-                  className="iconbtn"
-                  title={t('action.delete')}
-                  aria-label={t('action.delete')}
-                  onClick={() => void archiveDraft(selectedId)}
-                >
-                  <IconTrash size={13} />
-                </button>
               </div>
 
               <div className="draft-tools">
@@ -727,7 +983,18 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
                     rememberSelection()
                   }}
                   onClick={() => {
-                    setLinkValue('')
+                    // 光标在链接里 → 打开成"编辑这条链接"（预填地址与文字）；
+                    // 选了文字 → 预填成显示文本；什么都没有 → 全新链接。
+                    const anchor = anchorAt(savedRangeRef.current)
+                    linkEditRef.current = anchor
+                    if (anchor) {
+                      setLinkValue(anchor.getAttribute('href') ?? '')
+                      setLinkText(anchor.textContent ?? '')
+                    } else {
+                      const r = savedRangeRef.current
+                      setLinkValue('')
+                      setLinkText(r && !r.collapsed ? r.toString() : '')
+                    }
                     setLinkOpen((v) => !v)
                   }}
                 >
@@ -782,6 +1049,24 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
                         e.preventDefault()
                         e.stopPropagation()
                         setLinkOpen(false)
+                        linkEditRef.current = null
+                      }
+                    }}
+                  />
+                  <input
+                    className="draft-linkinput"
+                    value={linkText}
+                    placeholder={t('draft.linkTextPrompt')}
+                    onChange={(e) => setLinkText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        applyLink()
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        setLinkOpen(false)
+                        linkEditRef.current = null
                       }
                     }}
                   />

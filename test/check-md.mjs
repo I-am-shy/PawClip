@@ -32,9 +32,8 @@ if (major < 22 || (major === 22 && minor < 18)) {
 const here = dirname(fileURLToPath(import.meta.url))
 const modPath = join(here, '..', 'frontend', 'src', 'md.ts')
 
-const { mdToHtml, htmlToMd, escapeText, safeHref, safeImgSrc, encodeUrl, canonical } = await import(
-  modPath
-)
+const { mdToHtml, htmlToMd, escapeText, safeHref, safeImgSrc, encodeUrl, canonical, findAutoLinks } =
+  await import(modPath)
 
 // ── 假 DOM ───────────────────────────────────────────────────────
 
@@ -284,6 +283,56 @@ eq('canonical 保留单个换行', canonical('a\nb'), 'a\nb')
 eq('canonical 幂等', canonical(canonical('a\n\n\nb\n')), canonical('a\n\n\nb\n'))
 eq('escapeText 转义六个字符', escapeText('\\*_[]<'), '\\\\\\*\\_\\[\\]\\<')
 eq('escapeText 不转义其他标点', escapeText('()#-`>'), '()#-`>')
+
+// ── 裸 URL 自动识别 ──────────────────────────────────────────────
+
+console.log('findAutoLinks')
+{
+  const one = (label, text, want) => {
+    const got = findAutoLinks(text)
+    eq(
+      label,
+      JSON.stringify(got),
+      JSON.stringify(want),
+    )
+  }
+  one('识别 http 与 https', '看 https://a.com 和 http://b.cn/x', [
+    { start: 2, end: 15, url: 'https://a.com', text: 'https://a.com' },
+    { start: 18, end: 31, url: 'http://b.cn/x', text: 'http://b.cn/x' },
+  ])
+  one('www 补 https 前缀', '见 www.foo.bar 页', [
+    { start: 2, end: 13, url: 'https://www.foo.bar', text: 'www.foo.bar' },
+  ])
+  one('www 后没有点不算', 'www 就是 world wide web 的缩写', [])
+  one('前一个字符是字母数字不算', 'axwww.foo.bar', [])
+  one('句尾标点剥掉', '链接是 https://a.com。', [
+    { start: 4, end: 17, url: 'https://a.com', text: 'https://a.com' },
+  ])
+  one('右括号剥掉', '(https://a.com)', [
+    { start: 1, end: 14, url: 'https://a.com', text: 'https://a.com' },
+  ])
+  one('普通文本无链接', '没有任何链接的句子。', [])
+  one('空文本', '', [])
+  one('多个连着', 'https://a.com https://b.com', [
+    { start: 0, end: 13, url: 'https://a.com', text: 'https://a.com' },
+    { start: 14, end: 27, url: 'https://b.com', text: 'https://b.com' },
+  ])
+  // 中文引号是常见的"从聊天工具里复制出来"的包裹符，得能剥掉。
+  one('中文引号剥掉', '“https://a.com”', [
+    { start: 1, end: 14, url: 'https://a.com', text: 'https://a.com' },
+  ])
+  // 识别出来的 URL 必须能过 safeHref（http/https 白名单）——
+  // 过不了的话，编辑器里包出来的 <a> 会在保存时被剥成纯文本，
+  // "自动识别"就成了只在屏幕上闪一下的假动作。
+  for (const m of findAutoLinks('https://a.com/x?y=1 与 www.b.io')) {
+    ok(`识别结果可作 href：${m.url}`, safeHref(m.url) !== '')
+  }
+  // 别把已识别的文本再喂回去时认出别的东西：text 与片段一一对应。
+  {
+    const m = findAutoLinks('https://a.com')[0]
+    eq('片段与原文一致', 'https://a.com'.slice(m.start, m.end), m.text)
+  }
+}
 
 // ── 总表 ────────────────────────────────────────────────────────
 

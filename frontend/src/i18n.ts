@@ -150,6 +150,12 @@ const zh: Dict = {
   'settings.maxItems': '最多保留多少条（0 = 不限）',
   'settings.maxDiskBytes': '最多占用多少字节（0 = 不限）',
   'settings.gcIntervalSec': '回收间隔（秒）',
+
+  'settings.draftTitle': '草稿本',
+  'settings.draftArchiveTtlSec': '归档草稿保留多久（秒）',
+  'settings.draftArchiveTtlSec.note': '删除草稿先进归档区，超过这个时长后被清理。与剪贴板回收站的保留期互不影响。',
+  'settings.draftAutoSaveDebounceMs': '自动保存防抖（毫秒）',
+  'settings.draftImageMaxBytes': '贴图大小上限（字节）',
   'settings.autostart': '开机自启',
   'settings.autostart.note': '开关显示的是**系统里的实际状态**，不是设置里的意图。',
 
@@ -297,6 +303,7 @@ const zh: Dict = {
   'draft.underline': '下划线',
   'draft.link': '超链接',
   'draft.linkPrompt': '链接地址',
+  'draft.linkTextPrompt': '显示文本（留空则显示链接地址）',
   'draft.linkApply': '确定',
   'draft.linkInvalid': '只支持 http / https / mailto 链接',
   'draft.image': '插入图片',
@@ -453,6 +460,13 @@ const en: Dict = {
   'settings.maxItems': 'Max items (0 = unlimited)',
   'settings.maxDiskBytes': 'Max disk bytes (0 = unlimited)',
   'settings.gcIntervalSec': 'Collection interval (seconds)',
+
+  'settings.draftTitle': 'Notebook',
+  'settings.draftArchiveTtlSec': 'Archived drafts kept for (seconds)',
+  'settings.draftArchiveTtlSec.note':
+    'Deleted drafts go to the archive first, then are cleaned up after this long. Independent of the clipboard trash retention.',
+  'settings.draftAutoSaveDebounceMs': 'Autosave debounce (ms)',
+  'settings.draftImageMaxBytes': 'Image size limit (bytes)',
   'settings.autostart': 'Launch at login',
   'settings.autostart.note': 'The toggle shows the *actual system state*, not the intent stored in settings.',
 
@@ -599,6 +613,7 @@ const en: Dict = {
   'draft.underline': 'Underline',
   'draft.link': 'Link',
   'draft.linkPrompt': 'Link address',
+  'draft.linkTextPrompt': 'Display text (blank = the address itself)',
   'draft.linkApply': 'Apply',
   'draft.linkInvalid': 'Only http / https / mailto links are supported',
   'draft.image': 'Insert image',

@@ -1747,6 +1747,18 @@ select.input {
   opacity: 1;
 }
 
+/* 目录条目上的删除（进归档区）。悬停才出现——它是"次要动作"，
+   常驻显示会让每一条草稿看起来都顶着一个删除标记。 */
+.draft-toc-acts {
+  flex: none;
+  display: inline-flex;
+  opacity: 0;
+}
+
+.draft-toc-item:hover .draft-toc-acts {
+  opacity: 1;
+}
+
 /* 第二步确认：把图标染成危险色，与"直接执行"区分开。 */
 .iconbtn-danger,
 .iconbtn-danger:hover {

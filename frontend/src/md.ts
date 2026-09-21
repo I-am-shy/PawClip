@@ -139,6 +139,59 @@ export function safeImgSrc(raw: string): string {
   return s.startsWith(BLOB_PREFIX) ? s : ''
 }
 
+// ── 裸 URL 自动识别 ─────────────────────────────────────────────
+
+/** AutoLinkMatch 是一段纯文本里可以识别成链接的片段。 */
+export type AutoLinkMatch = {
+  /** 在源文本里的起始偏移（字符计数）。 */
+  start: number
+  /** 结束偏移（不含）。 */
+  end: number
+  /** href。`www.` 开头的会补上 `https://`。 */
+  url: string
+  /** 显示文字 = 原文片段（自动识别不改写用户看到的内容）。 */
+  text: string
+}
+
+/** URL 的收尾字符不算链接的一部分（用户在句尾打了句号之类）。 */
+const AUTOLINK_TRAILING = '.,;:!?)]}\'"’”』」）〉》。，：；？！'
+
+/**
+ * findAutoLinks 在一段**纯文本**里找出裸 URL（https://… 或 www.…）。
+ *
+ * 给编辑器的自动识别用：用户敲完空格 / 回车时，把他刚打完的那段
+ * 文本扫一遍，找到的换成 `<a>`。规则刻意保守——
+ *
+ *   · 只认 `https?://` 和 `www.` 两种开头。`mailto:` 用户手打的
+ *     场景几乎不存在，`http://` 明文站也少，认得越多误伤越多；
+ *   · 前一个字符是字母数字时不认（`axwww.foo` 里那不是链接）；
+ *   · `www.` 后面必须还有一个 `.`（`www.foo.bar`），不然 `www.` 就是
+ *     普通缩写；
+ *   · 句尾标点（逗号句号右括号引号等）剥掉，链接不吞标点。
+ *
+ * 这是纯函数（文本进、片段出），DOM 的替换在 Drafts.tsx 里做——
+ * 这样规则本身可以在 test/check-md.mjs 里直接测。
+ */
+export function findAutoLinks(text: string): AutoLinkMatch[] {
+  const out: AutoLinkMatch[] = []
+  const re = /(?:https?:\/\/|www\.)\S+/gi
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    const raw = m[0]
+    let cut = raw.length
+    while (cut > 0 && AUTOLINK_TRAILING.includes(raw[cut - 1])) cut--
+    const url = raw.slice(0, cut)
+    if (cut === 0) continue
+    const start = m.index
+    // 前一个字符是字母数字下划线：说明这个开头是某个词的一部分。
+    if (start > 0 && /[A-Za-z0-9_]/.test(text[start - 1])) continue
+    const lower = url.toLowerCase()
+    if (lower.startsWith('www.') && !url.slice(4).includes('.')) continue
+    const href = lower.startsWith('www.') ? 'https://' + url : url
+    out.push({ start, end: start + cut, url: href, text: url })
+  }
+  return out
+}
+
 // ── md → HTML ───────────────────────────────────────────────────
 
 /** LinkMatch 是 `[text](url)` 或 `![alt](url)` 的解析结果。 */

@@ -213,8 +213,12 @@ export type Draft = {
 export type DraftList = {
   items: DraftRow[]
   archived: DraftRow[]
-  /** 归档保留期（秒）：归档的草稿超过它会被 GC 彻底删除。 */
-  trashTtlSec: number
+  /** 归档保留期（秒）：归档的草稿超过它会被 GC 彻底删除（draft.archiveTtlSec）。 */
+  archiveTtlSec: number
+  /** 上次打开的草稿（ui.lastDraftId）：重进草稿本时回到它；可能已被删，须校验存在。 */
+  lastDraftId: number
+  /** 目录的收起状态（ui.draftTocCollapsed）。 */
+  tocCollapsed: boolean
   maxImageBytes: number
   /** 上限的人读形式（"10 MB"）。后端给，避免两处各算一遍。 */
   maxImageLabel: string
@@ -441,6 +445,10 @@ export type SettingsShape = {
      * 兜住未知值，所以这里给 string 就够，不必做成联合类型。
      */
     lastView: string
+    /** 上次打开的草稿（0 = 未记录）。重进草稿本时回到它。 */
+    lastDraftId: number
+    /** 草稿本目录的收起状态。 */
+    draftTocCollapsed: boolean
   }
   storage: {
     cleanShutdownMarker: boolean
@@ -451,16 +459,15 @@ export type SettingsShape = {
     includeExpired: boolean
   }
   /**
-   * 草稿本的三个参数（draft.*）。
-   *
-   * 与其它分区一样**只读展示**：目前没有对应的设置控件，
-   * 但它们进了设置页的"未覆盖项"清单（同 settings.uncovered 那条规矩）。
+   * 草稿本的参数（draft.*）。设置页有对应控件（归档保留期 / 防抖 / 贴图上限）。
    */
   draft: {
     /** 实时保存的防抖窗口（毫秒）。 */
     autoSaveDebounceMs: number
     /** 单张草稿贴图的上限（字节）。 */
     imageMaxBytes: number
+    /** 归档草稿的保留期（秒），超过后 GC 硬删。 */
+    archiveTtlSec: number
   }
 }
 
@@ -583,6 +590,13 @@ export type Bindings = {
    * 草稿本时发生，不是每次切视图都发。
    */
   SetLastView(view: string): Promise<void>
+  /**
+   * 记住"上次打开的草稿"（ui.lastDraftId）。
+   *
+   * 重进草稿本回到它而不是固定回第一条——用户有多条草稿时，
+   * 固定回第一条看起来就像"刚写的东西没了"。与当前值相同时后端不写库。
+   */
+  SetLastDraft(id: number): Promise<void>
   /**
    * 热键输入态：让出 / 收回全局热键。
    *
