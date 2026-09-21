@@ -312,7 +312,7 @@ pawclip/
 
 | 项 | 现状 | 影响 |
 |---|---|---|
-| 空闲内存 54 MB（目标 30 MB） | 面板"闲置销毁"在 Wails v2.16 的单窗口模型下做不了（只导出 `Show/Hide/Quit`，无窗口重建 API），当前实现是**闲置收起**而不是销毁 | 面板收起后 WebView 内存仍在。这是 §12 里唯一未达标的指标，归因见 [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) |
+| 空闲内存 60–73 MB（目标 30 MB） | 面板"闲置销毁"在 Wails v2.16 的单窗口模型下做不了（只导出 `Show/Hide/Quit`，无窗口重建 API），当前实现是**闲置收起**而不是销毁 | 面板收起后 WebView 内存仍在。这是 §12 里唯一未达标的指标，归因见 [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) |
 | Windows 只在 CI 构建，未在真机验证 | 有 `CGO_ENABLED=0` 交叉编译烟测与 `windows-2022` 上的正式构建 | 能证明"编得出来"；剪贴板 / 热键 / 托盘的真机行为未实测 |
 | 未做代码签名与公证 | 既定取舍（不买证书） | 首次打开要手动绕过 Gatekeeper / SmartScreen |
 | Linux | 只有接口骨架，不参与编译 | 按设计边界，本期不做 |
