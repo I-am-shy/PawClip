@@ -115,9 +115,26 @@ jobs:
         run: go build -tags sqlite_fts5 ./...
 
   # ── 前端：i18n 检查 + 类型检查 + 产物 ─────────────────────────
+  #
+  # ⚠️ windows-2022 那一格不是凑数。`frontend:build` 在**发布时是在 Windows
+  # runner 上跑的**（release.yml 的 windows 矩阵项），而这一层的两个脚本
+  # （`check-i18n.mjs` / `check-md.mjs`）都是"按路径读文件、按路径 import"的
+  # node 脚本——**路径处理恰好是最容易只在 Windows 上坏掉的一类代码**。
+  #
+  # 2026-09-21 发 v0.1.1 就是这么炸的：`check-md.mjs` 用 `import(绝对路径)`
+  # 加载 `md.ts`，POSIX 上合法、Windows 上抛 ERR_UNSUPPORTED_ESM_URL_SCHEME。
+  # 当时跑 `npm run build` 的只有 ubuntu 这一格，于是 mac 全绿、Windows 红、
+  # Release 被跳过，错误一路漏到打完 tag 才出现。补上这一格之后，同类问题
+  # 在下一次 push 就会红，而不是在下一次发版。
   frontend:
-    name: Frontend
-    runs-on: ubuntu-latest
+    name: Frontend (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台红不牵连同批的另一个：要知道"是不是 Windows 独有"，
+      # 恰恰需要两边的结论都在。
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022]
     defaults:
       run:
         working-directory: frontend

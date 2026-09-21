@@ -14,7 +14,7 @@
 // 另有一个只认"我们自己生成的 HTML"的极小解析器，用来做真正的往返断言——
 // 那条断言是这一层的核心，因为它一次性盯住了两个方向的对称性。
 
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
 
 // 前置检查：本文件靠 Node 的**类型擦除**直接 import .ts。
@@ -30,7 +30,19 @@ if (major < 22 || (major === 22 && minor < 18)) {
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
-const modPath = join(here, '..', 'frontend', 'src', 'md.ts')
+
+// ⚠️ 必须过 `pathToFileURL` 再 import：`import()` 吃的是 **URL**，不是文件系统
+// 路径。POSIX 上两者恰好长得一样（都以 `/` 开头），所以这个写法在 macOS/Linux
+// 上一直是对的，**在 Windows 上直接抛** ERR_UNSUPPORTED_ESM_URL_SCHEME
+// （"Received protocol 'c:'"）。
+//
+// 这不是理论风险。2026-09-21 发 v0.1.1 时 Windows 的 Release 构建就是这么红的：
+// `npm run build` 里加了 `check:md` 之后，`wails build` 在前端这一步就中止，
+// `build/bin` 压根不会生成（诊断 annotation 只看到 "build/bin 里没有 PawClip.exe"），
+// 而当时 CI 里唯一跑 `npm run build` 的是 ubuntu 那个 job——于是错误一路漏到
+// 打完 tag 才出现：macOS 全绿、Windows 红、Release 被跳过。两个方面都已补上，
+// 经过记在 docs/ACCEPTANCE.md。
+const modPath = pathToFileURL(join(here, '..', 'frontend', 'src', 'md.ts')).href
 
 const {
   mdToHtml,
