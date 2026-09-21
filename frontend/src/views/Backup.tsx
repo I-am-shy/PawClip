@@ -276,7 +276,9 @@ function ImportPane({
     setBusy(true)
     try {
       const n = await call('RollbackImport', latest.id)
-      onToast(t('trash.restored', { n }))
+      // 回滚做的是**删除**那批导入的条目，所以不能说"已恢复"——
+      // 方向反了。这与"清空回收站"当初复用 trash.restored 是同一个错。
+      onToast(t('backup.rolledBack', { n }))
       setLatest(null)
       onReload()
     } catch (e: unknown) {
