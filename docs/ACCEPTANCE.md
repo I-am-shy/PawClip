@@ -3,10 +3,10 @@
 > 这份报告回答一个问题：**§12 列的指标，到底达标没有。**
 > 达不到的如实标 ⚠️ 并给出归因，不粉饰；有东西坏了才标 ❌。
 
-实测环境：macOS / Apple Silicon，2026-09-16。
+实测环境：macOS / Apple Silicon，2026-09-16（首轮）· 2026-09-21（M5 草稿本补测）。
 单测口径 `test/run.sh`（= `go test -tags sqlite_fts5 -p 1 -count=1 ./...`）；
 真机口径 `test/accept.sh`（对 `build/bin/pawclip.app` 实跑，真剪贴板、真磁盘、真 SIGKILL）。
-当前规模：**257 条用例 / 9 个包全绿**（另有一个无测试的工具包 `tools/genpinyin`）。
+当前规模：**299 条用例 / 9 个包全绿**（另有一个无测试的工具包 `tools/genpinyin`）。
 
 ---
 
@@ -26,7 +26,24 @@
 | 导出完整性 | 导出→清库→导入，全字段一致 | 条目/内容/分类/标签/置顶/过期时间逐项比对一致 | `backup` `TestAcceptance1_ExportThenImportPreservesEverything` | ✅ |
 | 导入幂等 | 同包导入两次，第二次全跳过 | 第二次全部走跳过，库中无重复 | `backup` `TestAcceptance2_ImportTwiceIsIdempotent` | ✅ |
 | 断电安全 | 捕获中强杀，重启后可开库且无半截记录 | 真机 SIGKILL → 重启走「标记 → `integrity_check=ok`」→ 无悬空 blob | `capture` `TestAcceptance3_Kill9Recovery` + `accept.sh` ⑦ | ✅ |
-| （附）前端体积 | §14 第 14 条：gzip 后 < 150 KB | gzip **69.3 KB**（JS 65.4 + CSS 3.7） | `npm run build` 产物实测 | ✅ |
+| （附）前端体积 | §14 第 14 条：gzip 后 < 150 KB | gzip **81.5 KB**（JS 76.77 + CSS 4.71）；余量约 68 KB | `npm run build` 产物实测 | ✅ |
+
+### M5 草稿本（2026-09-21 新增）
+
+| 项 | §12 指标 | 实测 | 取证方式 | 结论 |
+|---|---|---|---|---|
+| 草稿往返 | 导出→清库→导入后逐字段一致，且**图片真的在 `blobs/` 里** | 标题/正文/创建时间/修改时间逐字段一致；包内引用已改写成 `blobs/…`、库内改回 `blob/…`；导入后 `os.Stat` 贴图命中 | `backup` `TestAcceptance3_DraftsRoundTrip` | ✅ |
+| 草稿回滚 | 一键回滚带走那批草稿，本机草稿不受影响 | 回滚后该批次草稿数为 0；归档草稿与 `import_id IS NULL` 的草稿不在删除面内 | 同上（测试后半段）+ `store` `TestDeleteImportItems_AlsoRemovesDrafts` / `TestPurgeDraft_DetachesFromImport` | ✅ |
+| 草稿图片存活 | 贴图跨过 24 h 门槛跑 3 轮 GC 仍在 | 3 轮 GC 后贴图仍在；另钉住「库里只有草稿、`items` 为空」时孤儿扫描**仍然执行** | `retention` `TestGC_DraftImagesSurviveOrphanSweep` / `TestGC_DraftOnlyLibrarySweepsOrphans` | ✅ |
+| 草稿归档到期回收 | 归档草稿超 `retention.trashTtlSec` 后被硬删 | 超期归档草稿被收走并计入 `Report.DraftsPurged` / `DraftsPurgedChars` | `retention` `TestGC_PurgesArchivedDrafts` | ✅ |
+| 草稿目录规模 | 200 条时目录滚动流畅（列表不读正文全文） | **未做真机滚动取证**；纪律侧已钉住：`ListDrafts` 的 SQL 只取 `substr(md,1,120)` 摘要，不 SELECT 全文 | `store` `TestListDrafts_DoesNotLoadFullBody` | ⚠️ 见下 |
+| 草稿保存延迟 | 停手 ≤ 800 ms 落盘；持续打字 5 s 内必落一次 | **未做量化取证**（前端防抖 500 ms + 5 s 强制落盘，代码路径存在但无计时用例） | — | ⚠️ 见下 |
+| 草稿断电安全 | 编辑中强杀，重启后为最后一次落盘内容且库可开 | **未做真机取证**（沿用条目侧同一条 `capture` 用例的结论外推，不构成独立证据） | — | ⚠️ 见下 |
+
+草稿本的**格式与不变量**在单测层面是齐的（`test/check-md.mjs` 68 条断言钉住
+md ⇄ HTML 往返与转义契约；`store`/`backup`/`retention` 共 20 条草稿相关用例）。
+上表三条 ⚠️ 是**缺真机取证**，不是发现缺陷——它们都需要在真实面板里手动操作
+（滚动、计时、强杀），`accept.sh` 目前不驱动 UI，所以自动验收覆盖不到。
 
 `test/accept.sh` 共 21 项，**20 通过 / 1 已知差距 / 0 失败**——已知差距即上表的「空闲内存」。
 退出码只跟真正的失败走，理由见下一节。
@@ -87,6 +104,7 @@
 | Linux | 只有接口骨架 | 按 §11 的边界，本期不投入 |
 | 面板交互只有真机手测 | 拖动 / 边缘缩放 / 点面板以外自动收起这三件事没有自动化判据 | 它们要真的产生 AppKit 事件（鼠标按下、窗口 key 变化），脚本化得靠 AX 权限与座标点击，收益不如代价。Go 侧的**策略**（`ui.closeOnBlur`、落盘尺寸）有单测钉着，原生侧的**触发**靠手测 |
 | 热键输入态只在浏览器里验过 | harness（假绑定页面）实测了草稿 / 确认 / 取消 / 留空确认四条路径，并在 `activeElement=BODY`（无焦点）下验证了按键捕获——这正是 WebKit 里点 button 不聚焦的真实形态 | 真机（WKWebView）上仍要手测一遍完整录制；与浏览器的差异只剩两点：全局热键让出后系统不再拦按键、以及 WKWebView 的键盘通路（搜索框可输入已证明它是通的） |
+| 草稿本三条真机项未取证 | 「目录 200 条滚动流畅」「保存延迟 ≤ 800 ms / 5 s 强制落盘」「编辑中强杀」三项需要真人操作面板（滚动、计时、`kill -9`），`accept.sh` 不驱动 UI | 不影响功能正确性——不变量侧（往返转换、blob 存活、回滚、列表不读全文）都有单测钉住；缺的是**性能与断电语义的实测数字**，与上面的「面板交互只有真机手测」同类 |
 
 ---
 

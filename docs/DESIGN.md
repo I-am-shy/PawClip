@@ -411,6 +411,21 @@ CREATE TABLE settings (
   updated_at INTEGER NOT NULL
 );
 
+-- 草稿本（§4.4）。schema v3 加入，v4 补 import_id——见下面的版本说明。
+CREATE TABLE drafts (
+  id          INTEGER PRIMARY KEY,
+  title       TEXT    NOT NULL,
+  md          TEXT    NOT NULL DEFAULT '',   -- 唯一真源：Markdown 正文
+  seq         INTEGER,                       -- 默认名里的编号；NULL = 无编号（导入的）
+  sort_order  INTEGER NOT NULL DEFAULT 0,    -- 目录顺序，拖拽后重编号
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  archived_at INTEGER,                       -- 软删除（草稿自己的归档区）
+  import_id   INTEGER REFERENCES imports(id) ON DELETE SET NULL
+);
+CREATE INDEX idx_drafts_alive    ON drafts(sort_order, id) WHERE archived_at IS NULL;
+CREATE INDEX idx_drafts_archived ON drafts(archived_at)    WHERE archived_at IS NOT NULL;
+
 CREATE VIRTUAL TABLE items_fts USING fts5(
   text_content,
   preview,
@@ -421,6 +436,16 @@ CREATE VIRTUAL TABLE items_fts USING fts5(
 ```
 
 FTS 同步靠 `AFTER INSERT / AFTER UPDATE / AFTER DELETE ON items` 三个触发器维护。
+
+**schema 版本演进**（`PRAGMA user_version`，每次迁移 +1）：v1 建表 → v2 加
+`items.pinyin` → v3 加 `drafts`（纯新增表）→ v4 加 `drafts.import_id`
+（备份的一键回滚要靠它认批次）。
+
+⚠️ 后加的列**不写进上面这份建表语句的"v1 形状"里**，而是各由一条迁移的
+`ALTER TABLE` 加上：`items.pinyin`（v2）与 `drafts.import_id`（v4）都是。
+新装库与升级库会依次跑完全部迁移，最终得到同一张表；把列塞回建表语句
+只会让"新装"与"升级"两条路径分叉。`drafts.seq` 是例外——它随 v3 的建表
+语句一起生，因为那一步本来就是"新建一张表"。
 
 ### 4.2 中文搜索的两段式策略
 
@@ -455,6 +480,197 @@ UPDATE items
 ```
 
 `created_at` 被复用为排序键（列表按 `created_at DESC`）。`first_seen_at` 单独保留首次复制时间供统计用。
+
+### 4.4 草稿本（Draft Notebook）
+
+与「历史」**同级**的一个视图，导航顺序是
+`历史 → 草稿本 → 统计 → 导出/导入 → 设置`（视图数 4 → 5，未超 §1.2 的
+"视图数 ≤ 6"预算）。
+
+**先划清边界：草稿本 ≠ 片段库（§11 P2）。** 两者长得像但语义相反：
+
+| | 草稿本 | 片段库（P2，未实现） |
+|---|---|---|
+| 内容 | 长文、富文本、图文混排 | 短片段、纯文本 + 占位符 |
+| 用途 | 持续编辑的草稿 / 笔记 | 一次配置、反复插入的模板 |
+| 插入行为 | 无。用户自己复制出去 | 占位符求值后回贴 |
+| 目录 | 有（可收起） | 通常无 |
+
+草稿本**不做**占位符求值。片段库留在 P2 不动；将来若实现，它更像是
+"草稿的一种快捷插入方式"，不另起一套存储。两者不合并。
+
+#### 4.4.1 内容模型：md 是唯一真源
+
+- **`md` 是唯一真源。** 富文本编辑器（`contenteditable`）是**编辑态**，
+  Markdown 是**存储态**。不另存 HTML / JSON 副本——存了就有两个真源，
+  "改了一边另一边没跟上"迟早发生。
+- 支持的格式集**刻意很窄**：文本 + 图片 + 超链接三样。粗体 / 斜体 /
+  下划线按 Markdown 的 `**` / `*` / `<u>` 表达。
+- 图片引用写成 `![alt](blob/<分片路径>)`，**混在正文里**，
+  **不存在第二张"这条草稿引用了哪些 blob"的表**。有了它就会回到
+  "删了正文但图片留着 / 图片删了但正文还引用"的经典不一致。
+- 前缀用相对 URL `blob/<rel>` 而不是自定义 scheme `blob://`：
+  §14 A 第 1 条要求"图片绝不走 IPC"，而 `blob/…` 在 Wails 的自定义
+  scheme 下会解析成 `wails://wails/blob/…`，正好落进 AssetServer 的
+  用户 handler（`blobserver.go`）——**零新增机制**。换成 `blob://`
+  得给两个平台各注册一个 scheme handler，纯为好看增加一条平台分支。
+- 代价：`![…](blob/…)` 不是标准 Markdown（标准写法是相对/绝对路径）。
+  导出时由 `store.DraftBlobRefsToPackage` 改写成包内的 `blobs/…`，
+  导入时改回来。**库里的正文永远只有一种写法。**
+
+#### 4.4.2 编辑器选型：自研 contenteditable（档位 B）
+
+| 档位 | 做法 | 体积代价 | 结论 |
+|---|---|---|---|
+| A | `<textarea>` + 轻量预览 | ≈ 0 KB | 不是所见即所得，与"富文本"的预期有落差 |
+| **B ✅** | 原生 `contenteditable` + Range API，自写 DOM ↔ md 双向转换 | **≈ 0 KB** | **采用** |
+| C | TipTap / Quill / Lexical | TipTap ≈ 60–90 KB、Quill ≈ 43 KB（gzip） | 吃掉 §14 D 剩余预算的大半，且与 §0.4"不用 UI 组件库、手写样式"相悖 |
+
+选 B 的依据是**需求的格式集很窄**：只有文本 + 图片 + 超链接三样，
+恰好是 `contenteditable` 最可靠的那部分（表格、嵌套列表、协作、撤销栈
+才是它的雷区，这里都不需要）。选 C 必须同步放宽 §14 D 第 14 条的体积
+目标——为一个功能放宽全局预算，代价不只是那几十 KB。
+
+两条必须自己兑现的约定（缺任何一条都会静默出错）：
+
+1. **粘贴只接 `text/plain`**，换行转 `<br>`，**绝不插入剪贴板里的 HTML**。
+   插入外部 HTML 等于把任意标记（含脚本）喂进 DOM，是这类编辑器最典型的
+   安全事故。
+2. **`]` 必须转义成 `\]`，URL 里的 `()` 与空格必须百分号编码。**
+   Go 侧的 `rewriteMDRefs` 是文本扫描器，靠"转义的 `]` 不构成链接"来
+   区分"用户在正文里打了一个 `](`"和"真的有一个链接"。两边的约定是一对，
+   所以 `test/check-md.mjs` 里有一条用例专门盯着前端这一半。
+
+#### 4.4.3 实时保存
+
+`store` 是**单写串行**（§2 第 1 条，`SetMaxOpenConns(1)`），而
+`storage.walCheckpointEvery = 1000` 意味着每 1000 次写入触发一次
+`wal_checkpoint(TRUNCATE)`。逐字符写库会同时打坏两件事：抢走捕获线程的
+写连接，以及让 WAL 频繁 checkpoint。三层策略：
+
+1. 前端**防抖 500 ms**（停手即存），另加 **5 s 强制落盘**——否则
+   "一直在打字"就永不保存。
+2. **只在内容真变化时写**（拿上次已存内容比对）。纯光标移动、纯选中
+   不触发写。
+3. 写入是**单条 `UPDATE`、只动 `md` 与 `updated_at`**
+   （`store.SaveDraftMD`），不重写整行、不碰 title / seq / sort_order。
+
+标题走单独的 `RenameDraft`，与正文两条路径分开：让"打字期间每 500 ms
+一次"的那条更新尽可能小，也避免自动保存顺手把用户正在改的标题覆盖回去。
+
+状态提示必须显式：`编辑中… / 已保存 · HH:MM / 保存失败（点击重试）`。
+保存失败沉默化会让用户以为写进去了——这是这类功能最不能犯的错。
+
+**必须 flush 的时机**（漏一个就是"打了字没了"）：
+
+| 时机 | 为什么 |
+|---|---|
+| 切视图（含 `Esc`） | 组件卸载，pending 的定时器被丢 |
+| 面板收起（`hide` / `idleHidden`） | 面板闲置会**收起**（§1.2），前端状态全丢 |
+| 应用退出 / `beforeunload` | 同上 |
+| 输入框失焦 | 用户点了别的地方，此时不落盘就可能一直挂着 |
+
+#### 4.4.4 目录、命名与排序
+
+- 目录每条显示：标题 + 正文摘要（`substr(md,1,120)`）+ 字数 + 时间。
+  **列表查询绝不 SELECT 正文全文**（§14 第 7 条同一条纪律）：200 条草稿的
+  正文全量进内存可以到几十 MB，而目录只需要标题与摘要。
+- **排序键是 `sort_order`（默认 = 创建顺序），不是 `updated_at`。**
+  实时保存会不停改 `updated_at`，正在编辑的那条会一直往上跳，用户点
+  下一条时会点错。默认顺序取"当前最大值 +1"，拖拽后整表重编号
+  （第一个变成 1）。
+- 拖拽**只重写 `sort_order`，不动 `archived_at`**：归档的草稿恢复时回到
+  原位置，而不是因为"删了一次"就跳到末尾。
+- 默认名 `草稿N`：取**最小的未占用正整数**（`seq`），不是"数量 + 1"
+  ——否则删掉草稿 2 之后再新建就撞名。**已归档的草稿仍然占号**
+  （它还能恢复，让新草稿去占它的编号，恢复之后就会出现两条同名）。
+- 编号单独存一列而不从标题反推：标题是本地化的（中文"草稿 2" /
+  英文"Draft 2"），拿标题反推数字在切语言后必然失效。默认名**只在创建
+  那一刻**按当前语言写入，不随后续切语言变化（否则用户改语言后草稿名
+  集体跳变）。
+- 目录可**收起**。这不是交互偏好而是**布局必需**（§4.4.5）。
+
+#### 4.4.5 面板宽度与页面形态
+
+```go
+// panel/panel.go
+MinPanelWidth  = 380
+MaxPanelWidth  = 760      // ← 硬上限，理由是"形态"而不是技术限制
+```
+
+| 布局 | 目录宽 | 编辑区宽（560 默认） | 编辑区宽（拉到 760） |
+|---|---|---|---|
+| 左目录 + 右编辑 | 180 | **380** | 580 |
+
+380 px 做富文本编辑太窄——一段中文正文一行放不下 15 个字，图文混排基本
+没法看。所以**选单页（左目录 + 右编辑，目录可收起）**，而不是两级导航：
+两点理由，一是收起目录就能拿到全部宽度（两级导航每个页面都是全宽，
+但多一次点击），二是视图数已经到 5，再加一个"草稿编辑页"会让导航模型
+多出一层需要解释的状态。代价是 560 默认宽度下用户得先收起目录。
+
+#### 4.4.6 软删除：归档区与到期回收
+
+- 软删除 = 写 `archived_at`，**进草稿自己的归档区，不混进剪贴板回收站**。
+  剪贴板的回收站是"找一条刚才删掉的复制内容"的临时去处，草稿混进去会
+  污染它，而且失效期也不同。
+- 归档区在界面上是草稿页底部一个可折叠的独立分区，排序按删除时间倒序。
+- 到期回收：`archived_at` 超过 `retention.trashTtlSec`（复用同一个保留期
+  设置，**不另开一个 key**）由 GC 硬删，统计进
+  `retention.Report.DraftsPurged / DraftsPurgedChars`。
+- **草稿不进 TTL、不进条数与容量淘汰。** §5.2 那套三级 TTL 是为"自动捕获
+  的剪贴板数据"设计的；草稿是用户手写的内容，被 GC 定时收走是灾难性的。
+- **草稿图片不参与 `retention.maxDiskBytes` 的"按体积淘汰"**（不进步骤 5 的
+  候选集）。代价是磁盘上限可能被草稿图片突破，所以统计页单独列出
+  "草稿占用"，让账目可查。
+
+#### 4.4.7 一处必须先修的既有缺陷：草稿图片会被 GC 删掉
+
+孤儿回收的判据原本**只认剪贴板条目**：
+
+```go
+// store/mutate.go（修复前）
+func (d *DB) AllBlobRefs(ctx context.Context) (map[string]struct{}, error) {
+    rows, err := d.r.QueryContext(ctx,
+        `SELECT rtf_path, image_path, thumb_path FROM items`)   // ← 只有 items
+```
+
+`retention/gc.go` 的 `sweepOrphans` 拿这个集合比对 `blobs/` 下的全部文件，
+不在集合里、且 mtime 超过 1 天（`OrphanMinAgeSec = 86400`）的**直接删**。
+后果：**草稿里贴的图片会在超过一天后的第一次 GC 里被删掉**，表现是
+"草稿里的图偶发消失"；因为有三条安全阀（年龄门槛 / items 为空则整步跳过），
+复现条件很刁钻——只有"历史非空 + 贴图超过一天 + GC 跑过"才触发。
+
+修法选了"**扫 `drafts.md` 抽引用**"而不是新增 `draft_blobs` 引用表：
+后者引入第二真源，md 里的图被删了而表里还留着引用时，图片永远不回收。
+"md 是唯一真源"这条不能破。`AllBlobRefs` 因此多了一路
+（`forEachDraftMD` → `DraftBlobRefsInMD`），并且 `sweepOrphans` 的安全阀
+从"items 为空"收紧为"**items 与 drafts 都为空**"。
+
+回归测试：`retention.TestGC_DraftImagesSurviveOrphanSweep`
+（已用变异测试验证过——把缺陷注回去，它会变红）。
+
+#### 4.4.8 视图记忆：只有草稿是粘滞的
+
+| 收起面板时所在的视图 | 下次呼出落在 |
+|---|---|
+| 历史 | 历史 |
+| **草稿本** | **草稿本** |
+| 统计 / 导出导入 / 设置 | 历史 |
+
+为什么只让草稿粘滞：**历史是这个工具的主界面，而另外三个是一次性动作页**
+（看一眼统计、导一次包、改一个开关），呼出时回到历史符合"我要贴东西"的
+主诉求；草稿本不一样，它是**持续编辑**的工作区——用户收起面板往往只是去
+别处看一下，回来还是想接着写，每次都弹回历史会让人重新点一遍。
+
+实现上有两个坑：
+
+1. **不能只存"是不是草稿"**，要存视图标识再在读取时归一化
+   （`NormalizeLastView`），否则老库里一个手写的非法值会让启动时的视图
+   落到一个不存在的页面。
+2. **`show` 事件不能直接切到 `ui.lastView`**，要用"粘滞归一"后的值：
+   正常路径是"用户点了统计 → 收起 → 再呼出"，如果 `show` 直接读
+   `lastView`（值是 `stats`）就会停在一个动作页上。归一化把"非草稿"
+   一律折成历史，正是这条规则的可执行形式。
 
 ---
 
@@ -494,10 +710,20 @@ UPDATE items
              → 按 (pinned ASC, last_used_at ASC) 淘汰到限额内
 5. 容量淘汰  blobs/ 总大小 > retention.maxDiskBytes（默认 500 MB）
              → 同上，优先淘汰大体积图片
-6. 一致性    VACUUM；扫描 blobs/ 中的孤儿文件（无 items 引用且 mtime > 1 天）删除
+             （**草稿图片不在候选集里**：草稿是用户手写内容，不参与
+             体积淘汰；代价是上限可能被突破，故统计页单列"草稿占用"）
+6. 一致性    VACUUM；扫描 blobs/ 中的孤儿文件删除
+             （判据：**items 与 drafts 都没有引用** 且 mtime > 1 天）
 ```
 
 **第 2 步的软删除不能省。** 剪贴板历史属于"误删代价极高"的数据，一次直接物理删除就会让用户彻底不再信任这个工具。
+
+**草稿在这个流程里的位置**（§4.4.6）：它**只走第 3 步的一半**——归档区里
+`archived_at` 超过 `retention.trashTtlSec` 的草稿被硬删（计数进
+`Report.DraftsPurged`），然后在第 6 步被孤儿扫描回收掉不再被引用的图片。
+第 1/2/4 步完全不碰它：草稿没有 `expires_at`，不进条数淘汰，也不参与
+容量淘汰。第 6 步的孤儿判据必须**同时**看 items 与 drafts，否则草稿贴的
+图会在一天后被删掉（§4.4.7 记录的那个既有缺陷）。
 
 ### 5.3 blob 存储布局
 
@@ -509,6 +735,10 @@ blobs/
 ```
 
 按前 4 位十六进制分两级，最多 65536 个目录，避免单目录堆积万级文件拖慢 Windows 上的目录枚举。写入采用**临时文件 + `rename` 原子替换**，防止崩溃留下半截文件。
+
+**草稿贴图与条目图片共用同一个 `blobs/` 目录**，不做区分：寻址规则只认内容
+（sha256），同一份字节被条目和草稿同时引用时只存一份。引用关系一律**从正文
+现场抽取**（`DraftBlobRefsInMD`），没有引用表——理由见 §4.4.1。
 
 ---
 
@@ -524,6 +754,14 @@ blobs/
 - **ID 重映射**：导入绝不能沿用原 ID，必须建立 `旧 id → 新 id` 映射并重写 `categoryId` / `tagIds`
 - **幂等**：靠指纹唯一索引，同一包重复导入不会产生重复数据
 - **可回滚**：整批导入带 `import_id`，支持一键撤销上次导入
+- **含草稿**：清单里有 `drafts` 段，草稿正文引用的图片一并打包。三条要点——
+  (1) `drafts` 是**新增可选字段**，按 §10 的版本规则**不动 `formatVersion`**
+  （老读取方忽略未知字段），所以"新建可选字段"与"改字段语义"的分界线要守住；
+  (2) 只有 `scope = full` 才带草稿，`pinned` / `category` / `range` 与草稿正交；
+  (3) 已归档的草稿不进包（与回收站条目同规则），草稿**不适用幂等**——
+  它没有指纹，重导一次就新增一批，确认页必须如实写"将新增 N 条草稿"。
+  回滚要**同时**删 items 与 drafts（同一事务），否则批次被标成 `rolled_back`
+  之后用户再也找不到入口去撤掉那批草稿。
 
 ---
 
@@ -610,6 +848,7 @@ TOML 解析用 `github.com/BurntSushi/toml`（约 100 KB、无传递依赖）。
 | `ui.quickPasteCount` | `9` | ⌘/Ctrl + 1..N 直贴 |
 | `ui.closeOnBlur` | `true` | 面板丢掉**键盘焦点**（点到面板以外的任何地方：别的 App、桌面、别的窗口）时自动收起。判据不是 `NSApp.isActive`——面板是 NonactivatingPanel，呼出时它自己拿键盘却不激活 App。原生侧只上报"失焦了"，收不收由这一项决定 |
 | `ui.language` | `"system"` | `system` / `zh-CN` / `en`。解析顺序：本机设置 → 系统区域 → 回退 `en` |
+| `ui.lastView` | `"panel"` | 上次所处的视图。**只有"草稿本"是粘滞的**：从草稿本收起面板、下次呼出仍回到草稿本；其余视图（统计 / 导出导入 / 设置）的呼出一律回到历史。理由与实现见 §4.4.8。取值域与内部视图标识一致（`panel` / `drafts` / `stats` / `backup` / `settings`），非法值回退 `panel` |
 | `ui.theme` | `"system"` | `light` / `dark` / `system` |
 | `ui.panelWidth` | `560` | 面板宽度（逻辑点）。**不是给用户填的参数**：面板边缘可拉伸，收起/退出时把当前 frame 写回这两项，下次启动照原样打开。取值域 `380–760`（`panel.ClampPanelSize`） |
 | `ui.panelHeight` | `760` | 面板高度（逻辑点）。取值域 `480–1100` |
@@ -617,6 +856,8 @@ TOML 解析用 `github.com/BurntSushi/toml`（约 100 KB、无传递依赖）。
 | `storage.walCheckpointEvery` | `1000` | 每 N 次写入或每 1 小时执行 `wal_checkpoint(TRUNCATE)` |
 | `backup.manifestFormat` | `"json"` | `json` / `yaml` |
 | `backup.includeExpired` | `false` | 导出是否包含已过期条目 |
+| `draft.autoSaveDebounceMs` | `500` | 草稿正文的防抖窗口（§4.4.3）。另有一条**不可配置**的 5 s 强制落盘：只靠防抖的话，一直在打字就永不保存 |
+| `draft.imageMaxBytes` | `10485760` | 草稿贴图上限。与 `capture.imageMaxBytes` **同值但独立**：草稿贴图不该被捕获上限的改动牵连（用户调小捕获上限是为了"别记大图"，而不是"别让我贴大图"） |
 
 ---
 
@@ -626,8 +867,10 @@ TOML 解析用 `github.com/BurntSushi/toml`（约 100 KB、无传递依赖）。
 pawclip/
 ├─ frontend/                            # React + Vite + TypeScript
 │  ├─ src/
-│  │  ├─ views/        panel · settings · stats · backup
-│  │  ├─ components/   itemlist · searchbar · preview · ttl-badge · icons
+│  │  ├─ views/        panel · drafts · settings · stats · backup
+│  │  ├─ components/   itemlist · searchbar · preview · ttl-badge · icons · contentviewer · contextmenu
+│  │  ├─ md.ts                              # Markdown ⇄ HTML 双向转换（草稿编辑器，§4.4.2）
+│  │  ├─ hotkey.ts                          # 热键录制与显示格式化
 │  │  ├─ i18n.ts       zh-CN / en 两份字典
 │  │  └─ main.tsx
 │  └─ vite.config.ts
@@ -644,15 +887,21 @@ pawclip/
 ├─ store/
 │  ├─ schema.go                         # 建表 + user_version 迁移
 │  ├─ items.go  categories.go  tags.go  settings.go
+│  ├─ drafts.go                         # 草稿 CRUD + 排序 + 正文里抽 blob 引用（§4.4）
+│  ├─ mutate.go                         # 写路径 + AllBlobRefs（items **与 drafts** 两路）
+│  ├─ imports.go                        # 导入批次、回滚、按 name 映射分类
 │  ├─ fts.go                            # trigram + LIKE 兜底两段式
 │  └─ blobs.go                          # 分片路径 + 原子写 + 缩略图
 ├─ retention/gc.go
 ├─ backup/
-│  └─ manifest.go  writer.go  reader.go  yaml.go
+│  └─ manifest.go  writer.go  reader.go  yaml.go  readme.go
 ├─ writer.go                            # 回写 + 自动粘贴
 ├─ autostart.go
 ├─ tray.go
 ├─ app.go                               # Wails App 绑定（前端可调方法都在这）
+├─ bindings.go                          # 各视图的绑定方法（含草稿与备份）
+├─ drafts.go                            # 草稿的绑定层（含贴图导入，§4.4）
+├─ blobserver.go                        # blobs/ 的 AssetServer（绝不走 IPC，§14 A）
 ├─ config.go
 ├─ i18n.go                              # 后端字符串（托盘 / 通知 / 报告）
 ├─ main.go
@@ -673,13 +922,15 @@ pawclip/
 │  ├─ run.sh                            # 测试总入口（与 CI 同口径）
 │  ├─ accept.sh                         # 产物真机验收（对打包好的 .app）
 │  ├─ demo-m1.sh                        # 捕获链路演示
-│  └─ check-i18n.mjs                    # 前端 i18n 一致性（也是 npm run build 的第一段）
+│  ├─ check-i18n.mjs                    # 前端 i18n 一致性（也是 npm run build 的第一段）
+│  └─ check-md.mjs                      # Markdown ⇄ HTML 往返与转义契约（§4.4.2）
 ├─ .github/workflows/                   # ci.yml + release.yml
 ├─ docs/                                # 开发文档（与产品源码分离）
-│  ├─ DESIGN.md                         # 本文件
+│  ├─ DESIGN.md                         # 本文件（唯一权威规格）
 │  ├─ ACCEPTANCE.md                     # §12 验收结果与已知遗留
 │  ├─ BACKUP-FORMAT.md                  # .clipbak 格式规范
-│  └─ HANDOFF-PROMPT.md                 # 新会话开工提示词
+│  ├─ HANDOFF-PROMPT.md                 # 新会话开工提示词
+│  └─ README.md                         # 文档索引
 └─ README.md                            # 面向使用者：功能 / 构建 / 使用
 ```
 
@@ -739,6 +990,10 @@ pawclip/
 
 ### P2 · 效率增强
 
+> **草稿本（§4.4）已实现（2026-09-21），早于本期的其余条目。** 它原本排在
+> P2（"效率增强"而不是 P0/P1 的核心闭环），是用户在使用中提前提出的需求。
+
+- **草稿本（Draft Notebook）** —— ✅ 已完成（§4.4）
 - 连续粘贴模式（多选排队，逐个消费）
 - 拼音首字母搜索（`zgd` → "文档"）
 - 搜索语法：`类型:图片 应用:Chrome 今天 报告`
@@ -771,6 +1026,13 @@ pawclip/
 | 搜索正确性 | 1 / 2 / 3 字中文、英文、中英混排、大小写、特殊字符全部命中符合预期 |
 | 导出完整性 | 导出→清库→导入，条目数、内容、分类、标签、置顶、过期时间全部一致 |
 | 导入幂等 | 同一包导入两次，第二次全部走跳过，库中无重复 |
+| 草稿往返 | 草稿（含正文里的贴图）导出→清库→导入后，标题、正文、创建/修改时间逐字段一致；**导入后图片真的在 `blobs/` 里**（正文里留着引用而文件不在 = 破图） |
+| 草稿回滚 | 一键回滚后那批草稿一并消失，且**不属于该批次的本机草稿不受影响** |
+| 草稿图片存活 | 贴图后跨过 24 h 门槛跑 3 轮 GC，图片仍在（防 §4.4.7 那个缺陷回归） |
+| 草稿保存延迟 | 停手后 ≤ 800 ms 落盘（防抖 500 + 写 ≤ 300）；一直在打字时 5 s 内必有一次落盘 |
+| 草稿断电安全 | 编辑中强杀进程，重启后草稿为最后一次落盘内容，且库可正常打开 |
+| 草稿目录规模 | 200 条草稿时目录滚动流畅（列表查询不读正文全文） |
+| 前端体积 | 产物 gzip 后 < 150 KB（草稿编辑器**不引第三方库**是其前提，见 §14 D 第 14 条） |
 | 断电安全 | 捕获过程中强杀进程，重启后库可正常打开且无半截记录 |
 
 ---
@@ -820,6 +1082,8 @@ pawclip/
 12. 不用 UI 组件库；不用 `react-router` / `vue-router`（视图切换用一个状态变量即可）；不用 Redux / Pinia（`useState` / `reactive` 足够）。
 13. 调高 Vite `assetsInlineLimit`；图标用内联 SVG 而非图标字体。
 14. 目标：前端产物 gzip 后 < 150 KB。
+    - **实测**（2026-09-21，草稿本合入后）：JS 76.77 KB + CSS 4.71 KB = **81.5 KB**，余量约 68 KB。
+    - 草稿本选自研 `contenteditable`（§4.4.2）而不是引入编辑器库，正是为了不把这 68 KB 一次吃掉：TipTap 约 60–90 KB、Quill 约 43 KB（gzip），选任何一个都要在 §12 的"前端体积"这一行上重新谈判。**这条预算不是数字洁癖**——面板是"用完即销毁"的轻量窗口（§1.2），首屏解析的就是这份 JS。
 
 ### E. 捕获正确性
 
@@ -973,6 +1237,21 @@ M0 是门禁，M1–M4 每步都产出**可独立验证**的产物。不要跳�
 **交付**：i18n 补全（§14 第 24 条那 6 个易漏位置）、内容转换器、连续粘贴、拼音首字母搜索、GitHub Actions 矩阵构建 + Release。
 
 **验收**：两台机器真机走一遍「下载 → 绕过 Gatekeeper / SmartScreen → 使用 → 导出 → 换机导入」。
+
+### M5 · 草稿本 —— ✅ **已完成（2026-09-21）**
+
+原本排在 §11 P2，由用户在使用中提前提出。**交付**：`drafts` 表与 CRUD（§4.4）、
+正文里抽 blob 引用的孤儿回收修复（§4.4.7）、自研 contenteditable 编辑器与
+`md.ts` 双向转换、视图记忆（§4.4.8）、`.clipbak` 纳入草稿（§6）、
+schema v3 → v4。
+
+**验收**：§12 的「草稿往返」「草稿回滚」「草稿图片存活」「草稿保存延迟」
+「草稿目录规模」五项；前端体积仍在预算内（§14 D 第 14 条）。
+
+> 这一步的**范围纪律**值得记一笔：草稿本一次引入了三处不在原计划里的
+> 结构性变化——新表（v3）、新列（v4）、备份格式新增段。三处都按既有规则
+> 处理（迁移而不是改建表语句、可选字段不动 `formatVersion`、回归测试 +
+> 变异测试验证承重），没有为了"少改一点"而绕开规则。
 
 ---
 
