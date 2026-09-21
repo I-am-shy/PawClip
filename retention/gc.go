@@ -134,6 +134,14 @@ type Report struct {
 	OrphanBytes    int64 `json:"orphanBytes"`
 	Vacuumed       bool  `json:"vacuumed"`
 
+	// DraftsPurged 是硬删掉的草稿条数（§5.4 第 3 步：归档期满）。
+	//
+	// 它**不合并进 Purged**：草稿的回收与剪贴板回收站是两条互不相干的
+	// 路径，混在一个数字里，用户在统计页看到"硬删 3"会以为剪贴板少了 3 条。
+	// DraftsPurgedChars 是随之释放的正文字符数，用来解释"删了多大"。
+	DraftsPurged      int64 `json:"draftsPurged"`
+	DraftsPurgedChars int64 `json:"draftsPurgedChars"`
+
 	// Alive / TotalBytes 是收尾时的库状态，便于观察趋势。
 	Alive      int64 `json:"alive"`
 	TotalBytes int64 `json:"totalBytes"`
@@ -146,11 +154,14 @@ func (r *Report) Summary() string {
 	if r == nil {
 		return "GC: 尚未运行"
 	}
-	return "GC: 到期 " + itoa(r.Trashed+r.Deleted+r.Archived) +
+	s := "GC: 到期 " + itoa(r.Trashed+r.Deleted+r.Archived) +
 		"（回收站 " + itoa(r.Trashed) + " / 删除 " + itoa(r.Deleted) + " / 归档 " + itoa(r.Archived) + "）" +
 		"，硬删 " + itoa(r.Purged) +
-		"，淘汰 " + itoa(r.Evicted) +
-		"，孤儿 " + itoa(r.OrphansRemoved) +
+		"，淘汰 " + itoa(r.Evicted)
+	if r.DraftsPurged > 0 {
+		s += "，草稿回收 " + itoa(r.DraftsPurged)
+	}
+	return s + "，孤儿 " + itoa(r.OrphansRemoved) +
 		"，存活 " + itoa(r.Alive) +
 		"，耗时 " + itoa(r.TookMs) + "ms"
 }
@@ -353,6 +364,22 @@ func (g *GC) RunOnce(ctx context.Context) *Report {
 		rep.Purged = n
 	}
 
+	// ── 步骤 3b：硬删归档期满的草稿 ──────────────────────────────
+	//
+	// 复用 retention.trashTtlSec 这个"回收站保留期"，而不是给草稿单开一个
+	// 同义的新设置：用户已经理解"删掉的东西留 N 天"，让草稿走同一条表
+	// 就不会出现"两个都叫保留期、值却不一样"。草稿在这条路径上唯一与
+	// 剪贴板不同的是**它不进剪贴板回收站**（§4.4 第 4 条），
+	// 归档区在草稿本页面自己的目录里。
+	//
+	// 这里删掉的是行，blob 文件交给步骤 6 的孤儿扫描——内容寻址下
+	// 同一张图可能同时被剪贴板和另一条草稿引用，按条删文件必误伤。
+	if cfg.TrashTTLSec > 0 {
+		n, chars, err := g.db.PurgeArchivedDraftsBefore(ctx, start.Unix()-cfg.TrashTTLSec)
+		rep.stepErr("硬删归档草稿", err)
+		rep.DraftsPurged, rep.DraftsPurgedChars = n, chars
+	}
+
 	// ── 步骤 4：条数淘汰 ─────────────────────────────────────────
 	var evictedIDs []int64
 	if cfg.MaxItems > 0 {
@@ -456,11 +483,18 @@ func (g *GC) RunOnce(ctx context.Context) *Report {
 //
 //  1. **年龄门槛**（OrphanMinAgeSec）：捕获是"先落文件、后写行"，
 //     窗口期内文件没有引用是正常的，不能删。
-//  2. **条数前提**：items 表完全为空时**整步跳过**。这是防"数据库换了路径
-//     指向一个空库"这种事故的——那种情况下所有 blob 看起来都是孤儿，
+//
+//  2. **条数前提**：items 与 drafts **都**为空时整步跳过。这是防"数据库换了
+//     路径指向一个空库"这种事故的——那种情况下所有 blob 看起来都是孤儿，
 //     一次 GC 就能把用户几年的图片清空。宁可留着垃圾也不能赌。
+//
+//     ⚠️ 判据从"items 为空"改成了"两者都为空"（2026-09-21）。原来的写法在
+//     "只用草稿本、剪贴板历史是空的"这种情况下会让孤儿扫描永远不跑，
+//     垃圾 blob 无限堆积；而反过来"items 为空但草稿非空"时跳过是**不必要的
+//     保守**——那时引用集合（AllBlobRefs）里本来就有草稿的引用，扫了也安全。
+//
 //  3. **引用集合来自全部条目**（含回收站）。回收站里的还能恢复，
-//     它的图片不能被当成孤儿。
+//     它的图片不能被当成孤儿。草稿同理：归档的草稿也算引用。
 func (g *GC) sweepOrphans(ctx context.Context, now time.Time) (removed int64, bytes int64, err error) {
 	if ctx.Err() != nil {
 		return 0, 0, ctx.Err()
@@ -472,7 +506,13 @@ func (g *GC) sweepOrphans(ctx context.Context, now time.Time) (removed int64, by
 		return 0, 0, err
 	}
 	if total == 0 {
-		return 0, 0, nil
+		draftsAlive, draftsArchived, derr := g.db.CountDrafts(ctx)
+		if derr != nil {
+			return 0, 0, derr
+		}
+		if draftsAlive+draftsArchived == 0 {
+			return 0, 0, nil
+		}
 	}
 
 	refs, err := g.db.AllBlobRefs(ctx)

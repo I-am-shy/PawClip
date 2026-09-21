@@ -778,3 +778,172 @@ func TestGC_ConfigWithDefaults(t *testing.T) {
 }
 
 var _ = filepath.Join
+
+// ── 草稿（docs/DESIGN.md §5.4）──────────────────────────────────
+
+// ageBlob 把一个 blob 的 mtime 推到 2 天前，越过孤儿扫描的年龄门槛。
+func (h *harness) ageBlob(t *testing.T, rel string) {
+	t.Helper()
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(h.blobs.Abs(rel), old, old); err != nil {
+		t.Fatalf("Chtimes(%s): %v", rel, err)
+	}
+}
+
+// TestGC_DraftImagesSurviveOrphanSweep 是那个既有缺陷的回归测试。
+//
+// 缺陷原样：孤儿扫描的引用集合只来自 items。草稿引用的 blob 不在集合里，
+// 于是**超过一天后的第一次 GC 就会把草稿里的图删掉**——用户看到的是
+// "草稿里的图偶发消失"，而它的复现条件很刁钻（剪贴板历史非空 +
+// 图片贴了超过一天 + GC 跑过），当初因此没被发现。
+//
+// 用例刻意跑三轮而不是一轮：真实使用里 GC 每 60 秒一轮，
+// 图片是"过了一天之后才进入可删窗口"，只跑一轮不足以模拟那个时间关系。
+func TestGC_DraftImagesSurviveOrphanSweep(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// 剪贴板历史非空——这正是缺陷的触发前提（空库时整步跳过，反而没事）。
+	h.put(t, store.Item{Preview: "有内容"})
+
+	rel, _, err := h.blobs.Put([]byte("draft-image-bytes"), "png")
+	if err != nil {
+		t.Fatalf("blobs.Put: %v", err)
+	}
+	id, err := h.db.CreateDraft(ctx, "草稿1", 1)
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	md := "一段正文\n\n![贴图](" + store.DraftBlobPrefix + rel + ")\n"
+	if _, err := h.db.SaveDraftMD(ctx, id, md); err != nil {
+		t.Fatalf("SaveDraftMD: %v", err)
+	}
+	h.ageBlob(t, rel)
+
+	g := h.gc(t)
+	for round := 1; round <= 3; round++ {
+		rep := g.RunOnce(ctx)
+		if rep.OrphansRemoved != 0 {
+			t.Fatalf("第 %d 轮删掉了 %d 个孤儿——草稿引用的图片被当成孤儿了",
+				round, rep.OrphansRemoved)
+		}
+		if !h.blobs.Exists(rel) {
+			t.Fatalf("第 %d 轮之后草稿的图片已不在磁盘上（这正是那个缺陷的表现）", round)
+		}
+	}
+
+	// 归档（软删除）之后也不能删：它还能恢复。
+	if err := h.db.ArchiveDraft(ctx, id); err != nil {
+		t.Fatalf("ArchiveDraft: %v", err)
+	}
+	if rep := g.RunOnce(ctx); rep.OrphansRemoved != 0 {
+		t.Fatalf("归档草稿的图片被当孤儿删了（%d 个）", rep.OrphansRemoved)
+	}
+	if !h.blobs.Exists(rel) {
+		t.Fatal("归档草稿的图片不该被删——它还能恢复")
+	}
+}
+
+// TestGC_DraftOnlyLibrarySweepsOrphans 覆盖安全阀 2 的改动。
+//
+// 原来的判据是"items 为空则整步跳过"，那会让"只用草稿本、剪贴板历史是空的"
+// 这种用法下孤儿扫描**永远不跑**，垃圾 blob 无限堆积。改成"两者都为空才跳过"。
+// 同时钉住另一头：**两者都空时仍然必须跳过**——那是防"库换了路径指向空库"
+// 的最后一道闸，一次 GC 就能把用户几年的图片清空。
+func TestGC_DraftOnlyLibrarySweepsOrphans(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("只有草稿时照样扫", func(t *testing.T) {
+		h := newHarness(t)
+		id, err := h.db.CreateDraft(ctx, "草稿1", 1)
+		if err != nil {
+			t.Fatalf("CreateDraft: %v", err)
+		}
+		if _, err := h.db.SaveDraftMD(ctx, id, "只有草稿，没有剪贴板历史"); err != nil {
+			t.Fatalf("SaveDraftMD: %v", err)
+		}
+
+		// 一个谁都不引用的老文件。
+		orphan, _, err := h.blobs.Put([]byte("nobody-references-me"), "png")
+		if err != nil {
+			t.Fatalf("blobs.Put: %v", err)
+		}
+		h.ageBlob(t, orphan)
+
+		rep := h.gc(t).RunOnce(ctx)
+		if rep.OrphansRemoved != 1 {
+			t.Fatalf("OrphansRemoved = %d，想要 1——只有草稿的库也必须做孤儿回收", rep.OrphansRemoved)
+		}
+		if h.blobs.Exists(orphan) {
+			t.Fatal("无人引用的老 blob 没被回收")
+		}
+	})
+
+	t.Run("全都为空时仍然跳过", func(t *testing.T) {
+		h := newHarness(t)
+		rel, _, err := h.blobs.Put([]byte("looks-orphan-but-is-not"), "png")
+		if err != nil {
+			t.Fatalf("blobs.Put: %v", err)
+		}
+		h.ageBlob(t, rel)
+
+		rep := h.gc(t).RunOnce(ctx)
+		if rep.OrphansRemoved != 0 {
+			t.Fatalf("空库保护失效：删掉了 %d 个文件。这是防「库指向空库」的最后一道闸",
+				rep.OrphansRemoved)
+		}
+		if !h.blobs.Exists(rel) {
+			t.Fatal("空库保护失效：文件被删了")
+		}
+	})
+}
+
+// TestGC_PurgesArchivedDrafts 覆盖 §5.4 第 3 步：归档期满的草稿被硬删。
+func TestGC_PurgesArchivedDrafts(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.cfg.TrashTTLSec = 3600
+	h.cfg.VacuumAfterDelete = false
+
+	keepID, _ := h.db.CreateDraft(ctx, "刚删的", 1)
+	oldID, _ := h.db.CreateDraft(ctx, "删很久了", 2)
+	if _, err := h.db.SaveDraftMD(ctx, oldID, "一段会被回收的正文"); err != nil {
+		t.Fatalf("SaveDraftMD: %v", err)
+	}
+	for _, id := range []int64{keepID, oldID} {
+		if err := h.db.ArchiveDraft(ctx, id); err != nil {
+			t.Fatalf("ArchiveDraft: %v", err)
+		}
+	}
+	// 把 oldID 的归档时间推到 2 小时前（超过 1 小时的保留期）。
+	if _, err := h.db.Writer().ExecContext(ctx,
+		`UPDATE drafts SET archived_at = ? WHERE id = ?`, time.Now().Unix()-7200, oldID); err != nil {
+		t.Fatalf("改归档时间: %v", err)
+	}
+
+	rep := h.gc(t).RunOnce(ctx)
+	if rep.Errors != nil {
+		t.Fatalf("GC 报错：%v", rep.Errors)
+	}
+	if rep.DraftsPurged != 1 {
+		t.Fatalf("DraftsPurged = %d，想要 1", rep.DraftsPurged)
+	}
+	if rep.DraftsPurgedChars != int64(len([]rune("一段会被回收的正文"))) {
+		t.Fatalf("释放字符数 = %d，期望 %d",
+			rep.DraftsPurgedChars, len([]rune("一段会被回收的正文")))
+	}
+	if d, err := h.db.GetDraft(ctx, oldID); err != nil {
+		t.Fatalf("GetDraft: %v", err)
+	} else if d != nil {
+		t.Fatal("归档期满的草稿应被硬删")
+	}
+	if d, _ := h.db.GetDraft(ctx, keepID); d == nil {
+		t.Fatal("还没到期的归档草稿被误删")
+	}
+
+	// 草稿数量**不混进** Purged：剪贴板回收站与草稿归档是两条路径，
+	// 混在一个数字里，用户在统计页看到"硬删 1"会以为剪贴板少了一条。
+	if rep.Purged != 0 {
+		t.Fatalf("Purged = %d，草稿的回收不该计入剪贴板回收站的计数", rep.Purged)
+	}
+}
