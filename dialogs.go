@@ -236,3 +236,51 @@ func (a *App) dbHandle() *store.DB {
 	a.initMu.Unlock()
 	return db
 }
+
+// openableURL 判断一条地址能不能交给系统默认程序打开。
+//
+// 白名单只有三种协议，与前端 md.ts 的 safeHref 同源（两边都是**白名单不是
+// 黑名单**）：黑名单挡不住 `JaVaScRiPt:`、`file:` 以及各种注册 scheme 的
+// 大小写/空白变体，而这里递出去的东西是**系统会去执行**的——macOS 的 `open`
+// 连一个 .app 都会替你启动。
+//
+// 不带协议的相对地址（草稿图片的 `blob/…`）也一律拒绝：它没有"外部"可言，
+// 而放它过去只会得到一句"文件不存在"。
+func openableURL(raw string) bool {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return false
+	}
+	lower := strings.ToLower(s)
+	for _, sc := range []string{"http:", "https:", "mailto:"} {
+		if strings.HasPrefix(lower, sc) {
+			return true
+		}
+	}
+	return false
+}
+
+// openURLInSystem 与 revealInFileManager 一样，是"交给系统"这一步的间接层：
+// 留成变量只为单测（真跑起来它会弹出浏览器）。唯一的替换者是测试。
+var openURLInSystem = openExternalURL
+
+// OpenURL 用系统默认程序打开一条外部链接（草稿正文里点一条链接）。
+//
+// # 为什么必须由后端打开
+//
+// 草稿正文里的 `<a href>` 不能让 WebView 自己导航：这个 WebView **就是应用
+// 界面本身**，跟着链接走一趟等于把整个面板换成网页，用户回不来。所以前端
+// 一律 preventDefault，把地址送到这里。
+//
+// # 为什么先收起面板
+//
+// 与 revealAndStepBack 同一个坑：浏览器被拉起来 → 本 App 失去活跃 → 面板
+// （非不透明窗口）在"App 已经不活跃"的时刻被 orderOut，回来时就是一块透明
+// 空壳。先收再交，让 orderOut 落在面板仍持有键盘的那一刻。
+func (a *App) OpenURL(raw string) error {
+	if !openableURL(raw) {
+		return msgf(msgErrOpenURLBad, nil)
+	}
+	a.hideBeforeReveal()
+	return openURLInSystem(strings.TrimSpace(raw))
+}

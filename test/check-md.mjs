@@ -32,8 +32,17 @@ if (major < 22 || (major === 22 && minor < 18)) {
 const here = dirname(fileURLToPath(import.meta.url))
 const modPath = join(here, '..', 'frontend', 'src', 'md.ts')
 
-const { mdToHtml, htmlToMd, escapeText, safeHref, safeImgSrc, encodeUrl, canonical, findAutoLinks } =
-  await import(modPath)
+const {
+  mdToHtml,
+  htmlToMd,
+  escapeText,
+  safeHref,
+  safeImgSrc,
+  externalHref,
+  encodeUrl,
+  canonical,
+  findAutoLinks,
+} = await import(modPath)
 
 // ── 假 DOM ───────────────────────────────────────────────────────
 
@@ -209,6 +218,15 @@ ok('safeHref 大小写混写的 javascript 也拒', safeHref('JaVaScRiPt:alert(1
 ok('safeHref 前导空白的 javascript 也拒', safeHref('  javascript:alert(1)') === '')
 ok('safeHref 拒绝纯锚点（草稿里没有去处）', safeHref('#sec') === '')
 ok('safeImgSrc 只认 blob', safeImgSrc('http://a/x.png') === '')
+
+// externalHref 是"能交给系统浏览器打开"的判据（编辑区点链接用）。
+// 它与 safeHref 的差别只有一条，但那条正是"打开一个相对地址"：
+// safeHref 放行 blob/ 是为了渲染，而"去打开它"得到的只会是一句报错。
+ok('externalHref 放行 https', externalHref('https://a.com/x') === 'https://a.com/x')
+ok('externalHref 放行 mailto', externalHref('mailto:a@b.com') === 'mailto:a@b.com')
+ok('externalHref 拒 blob（没有"外部"可打开）', externalHref('blob/9f/2a/x.png') === '')
+ok('externalHref 拒 javascript:', externalHref('javascript:alert(1)') === '')
+ok('externalHref 拒不带协议的裸域名', externalHref('www.a.com') === '')
 ok('encodeUrl 编码括号', encodeUrl('a(b)c') === 'a%28b%29c')
 ok('encodeUrl 编码空格', encodeUrl('a b') === 'a%20b')
 

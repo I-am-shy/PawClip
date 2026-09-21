@@ -646,6 +646,13 @@ export type Bindings = {
   RevealDataDir(): Promise<void>
   /** 在文件管理器里定位数据目录内的某个路径。 */
   RevealPath(path: string): Promise<void>
+  /**
+   * 用系统默认程序打开一条外部链接（草稿正文里点一条链接）。
+   *
+   * 必须由后端打开：这个 WebView 就是应用界面本身，跟着 `<a>` 导航一趟
+   * 等于把面板换成网页。后端还会再筛一次协议（只放 http / https / mailto）。
+   */
+  OpenURL(url: string): Promise<void>
 }
 
 declare global {

@@ -37,7 +37,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { T as TFn } from '../i18n'
 import { call, type DraftList, type DraftRow } from '../api'
-import { IMG_MIN_W, findAutoLinks, htmlToMd, mdToHtml, safeHref } from '../md'
+import { IMG_MIN_W, externalHref, findAutoLinks, htmlToMd, mdToHtml, safeHref } from '../md'
 import { formatDateTime, formatRelative, formatTime } from '../format'
 import { useInterval } from '../hooks'
 import {
@@ -319,6 +319,41 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
   }
 
   /**
+   * onEditorClick 让正文里的链接真的能点开。
+   *
+   * contenteditable 里的 `<a>` 点不动是浏览器的既定行为（编辑区把点击当成
+   * 选区操作），所以要自己接管。而**绝不能放它导航**：这个 WebView 就是应用
+   * 界面本身，跟着链接走一趟等于把整个面板换成网页，用户回不来。于是这里
+   * 一律 preventDefault，把地址交给后端用系统浏览器打开。
+   *
+   * 想改链接内容时不必绕路：光标已经落在链接里，点工具栏的链接按钮就是
+   * "编辑这条链接"（见 applyLink 的两种形态）。
+   */
+  const onEditorClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const el = e.target instanceof Element ? e.target.closest('a') : null
+    if (!el) return
+    // 正在拖选文字（从链接里拖出去）不算"想打开它"。
+    const sel = window.getSelection()
+    if (sel && !sel.isCollapsed) return
+    const href = externalHref(el.getAttribute('href') ?? '')
+    // 无论能不能打开，都不许 WebView 自己跟着走。
+    e.preventDefault()
+    if (href === '') return
+    // 先落盘，再把地址交出去：打开浏览器会让后端**先把面板收起**
+    // （见 dialogs.go 的 hideBeforeReveal），而"收起"这条路上前端不 flush
+    // （App.tsx 的 'hide' 分支是空的，草稿视图也不卸载）——最后那几百毫秒的
+    // 输入会留在 DOM 里，浏览器开着、字没了。
+    void (async () => {
+      try {
+        await flush({ force: true })
+        await call('OpenURL', href)
+      } catch (err: unknown) {
+        onToast(t('err.generic', { err: err instanceof Error ? err.message : String(err) }))
+      }
+    })()
+  }
+
+  /**
    * startImgResize 拖动右下角把手改宽度。
    *
    * 上限取编辑区的可视宽度：拖过边界的话图片会被 CSS 的 `max-width: 100%`
@@ -354,6 +389,23 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
     window.addEventListener('resize', refreshImgSel)
     return () => window.removeEventListener('resize', refreshImgSel)
   }, [refreshImgSel])
+
+  // 彻底删除确认框里的 Esc = 取消。
+  //
+  // 必须用**捕获**阶段：App 那一层也在 window 上听 Esc（非面板视图 = 返回），
+  // 不先把它截下来的话，用户按 Esc 会"连同弹窗一起"退回历史页——弹窗关了、
+  // 草稿本也关了，像是按了一次按钮。
+  useEffect(() => {
+    if (confirmPurge == null) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      setConfirmPurge(null)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [confirmPurge])
 
   // 第 2 层：连续打字时防抖永不触发，靠这个 5 秒的 tick 强制落盘。
   useInterval(() => {
@@ -882,6 +934,10 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
   // ── 渲染 ──────────────────────────────────────────────────────
 
   const ttlDays = list ? Math.max(1, Math.round(list.archiveTtlSec / 86400)) : 0
+  // 待确认彻底删除的那一条（null = 没有弹窗）。存整条而不是 id：弹窗要写清
+  // "删的是哪一条"——归档区里可能躺着好几条标题相似的草稿。
+  const purgeTarget =
+    confirmPurge == null ? null : (archived.find((it) => it.id === confirmPurge) ?? null)
 
   return (
     <div className="view-body drafts">
@@ -993,66 +1049,36 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
                   <>
                     <div className="dim draft-note">{t('draft.archivedNote', { d: ttlDays })}</div>
                     <ul className="draft-toc-list">
-                      {archived.map((it) =>
-                        confirmPurge === it.id ? (
-                          /* 彻底删除的确认。这里**不能只靠"图标变红、再点一下"**：
-                             这是全应用唯一不可恢复的破坏性动作，而"再点一下"
-                             那层约定屏幕上没有任何文字说明它存在。所以整条
-                             就地换成一句问句 + 两个写明动作的按钮，
-                             取消放在左边（危险动作不放第一位）。 */
-                          <li key={it.id} className="draft-toc-item draft-toc-confirm">
-                            <span className="draft-toc-main">
-                              <span className="draft-toc-title">{t('draft.purgeTitle')}</span>
-                              <span className="draft-toc-sub">{t('draft.purgeBody')}</span>
+                      {archived.map((it) => (
+                        <li key={it.id} className="draft-toc-item draft-toc-arch">
+                          <span className="draft-toc-main">
+                            <span className="draft-toc-title">{it.title || t('draft.untitled')}</span>
+                            <span className="draft-toc-sub">
+                              {formatDateTime(it.archivedAt ?? it.updatedAt)}
                             </span>
-                            <span className="draft-confirm-acts">
-                              <button
-                                type="button"
-                                className="linkbtn"
-                                onClick={() => setConfirmPurge(null)}
-                              >
-                                {t('common.cancel')}
-                              </button>
-                              <button
-                                type="button"
-                                className="linkbtn draft-danger"
-                                onClick={() => void purgeDraft(it.id)}
-                              >
-                                {t('action.purge')}
-                              </button>
-                            </span>
-                          </li>
-                        ) : (
-                          <li key={it.id} className="draft-toc-item draft-toc-arch">
-                            <span className="draft-toc-main">
-                              <span className="draft-toc-title">{it.title || t('draft.untitled')}</span>
-                              <span className="draft-toc-sub">
-                                {formatDateTime(it.archivedAt ?? it.updatedAt)}
-                              </span>
-                            </span>
-                            <span className="draft-arch-acts">
-                              <button
-                                type="button"
-                                className="iconbtn"
-                                title={t('action.restore')}
-                                aria-label={t('action.restore')}
-                                onClick={() => void restoreDraft(it.id)}
-                              >
-                                <IconRestore size={13} />
-                              </button>
-                              <button
-                                type="button"
-                                className="iconbtn"
-                                title={t('action.purge')}
-                                aria-label={t('action.purge')}
-                                onClick={() => setConfirmPurge(it.id)}
-                              >
-                                <IconTrash size={13} />
-                              </button>
-                            </span>
-                          </li>
-                        ),
-                      )}
+                          </span>
+                          <span className="draft-arch-acts">
+                            <button
+                              type="button"
+                              className="iconbtn"
+                              title={t('action.restore')}
+                              aria-label={t('action.restore')}
+                              onClick={() => void restoreDraft(it.id)}
+                            >
+                              <IconRestore size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              className="iconbtn"
+                              title={t('action.purge')}
+                              aria-label={t('action.purge')}
+                              onClick={() => setConfirmPurge(it.id)}
+                            >
+                              <IconTrash size={13} />
+                            </button>
+                          </span>
+                        </li>
+                      ))}
                     </ul>
                   </>
                 )}
@@ -1250,6 +1276,7 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
                   onKeyUp={syncMarks}
                   onMouseUp={rememberSelection}
                   onMouseDown={onEditorMouseDown}
+                  onClick={onEditorClick}
                   onDoubleClick={onEditorDoubleClick}
                   onScroll={refreshImgSel}
                   onFocus={rememberSelection}
@@ -1270,6 +1297,55 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
           )}
         </section>
       </div>
+
+      {/* 彻底删除的确认框。
+          用模态而不是"就地替换掉那一条目录"：这是全应用唯一不可恢复的动作，
+          而侧栏总共 180 px，一句完整的话在那里会被切成省略号——最要紧的那半句
+          （删的是哪一条）恰好是被切掉的那半句。 */}
+      {purgeTarget && (
+        <div
+          className="modal-mask"
+          role="presentation"
+          onMouseDown={(e) => {
+            // 点遮罩 = 取消。用 mousedown 而不是 click，是为了让"在弹窗里按下、
+            // 拖到外面松手"这种误操作不会把它关掉。
+            if (e.target === e.currentTarget) setConfirmPurge(null)
+          }}
+        >
+          <div
+            className="modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="draft-purge-title"
+            aria-describedby="draft-purge-body"
+          >
+            <div className="modal-title" id="draft-purge-title">
+              {t('draft.purgeTitle')}
+            </div>
+            <div className="modal-body" id="draft-purge-body">
+              {t('draft.purgeBody', { name: purgeTarget.title || t('draft.untitled') })}
+            </div>
+            <div className="modal-acts">
+              {/* 取消拿到焦点：这个弹窗的默认动作必须是"不发生任何事"。 */}
+              <button
+                type="button"
+                className="btn btn-quiet"
+                autoFocus
+                onClick={() => setConfirmPurge(null)}
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => void purgeDraft(purgeTarget.id)}
+              >
+                {t('action.purge')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

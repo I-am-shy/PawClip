@@ -153,6 +153,11 @@ const (
 	msgErrRevealFailed  msgKey = "err.revealFailed"
 	msgErrPathMissing   msgKey = "err.pathMissing"
 	msgErrNoFileManager msgKey = "err.noFileManager"
+	// 打开外部链接（草稿正文里点一条链接）用得到的两条。
+	// 白名单这条是**给被绕过的前端兜底**的：前端的 safeHref 是第一道，
+	// 但这里往外递的是"交给系统执行的东西"，不能只看前端的脸色。
+	msgErrOpenURLBad    msgKey = "err.openURLUnsupported"
+	msgErrOpenURLFail   msgKey = "err.openURLFailed"
 	msgErrClipboardWr   msgKey = "err.clipboardWrite"
 	msgErrSettingsLoad  msgKey = "err.settingsReload"
 	msgErrAutoStartNo   msgKey = "err.autostartUnsupported"
@@ -287,6 +292,8 @@ var allMsgKeys = []msgKey{
 	msgErrRevealFailed,
 	msgErrPathMissing,
 	msgErrNoFileManager,
+	msgErrOpenURLBad,
+	msgErrOpenURLFail,
 	msgErrClipboardWr,
 	msgErrSettingsLoad,
 	msgErrAutoStartNo,
@@ -392,6 +399,8 @@ var catalog = map[Lang]map[msgKey]string{
 		msgErrRevealFailed:      "在文件管理器里显示失败：%v",
 		msgErrPathMissing:       "这个路径不存在了：%v",
 		msgErrNoFileManager:     "这个系统上没有可用的文件管理器",
+		msgErrOpenURLBad:        "只能用系统默认程序打开 http / https / mailto 链接",
+		msgErrOpenURLFail:       "打开链接失败：%v",
 		msgErrClipboardWr:       "写剪贴板失败：%v",
 		msgErrSettingsLoad:      "设置写进去了，但重新读取失败：%v",
 		msgErrAutoStartNo:       "当前系统不支持开机自启",
@@ -490,6 +499,8 @@ var catalog = map[Lang]map[msgKey]string{
 		msgErrRevealFailed:      "Could not show it in the file manager: %v",
 		msgErrPathMissing:       "That path no longer exists: %v",
 		msgErrNoFileManager:     "No file manager is available on this system",
+		msgErrOpenURLBad:        "Only http / https / mailto links can be opened with the default app",
+		msgErrOpenURLFail:       "Could not open the link: %v",
 		msgErrClipboardWr:       "Could not write to the clipboard: %v",
 		msgErrSettingsLoad:      "The setting was saved, but reloading it failed: %v",
 		msgErrAutoStartNo:       "This system does not support launching at login",

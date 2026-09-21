@@ -175,6 +175,27 @@ export function safeHref(raw: string): string {
 }
 
 /**
+ * externalHref 从一条 href 里取出"可以交给系统浏览器打开"的那个地址，
+ * 空串表示这条链接没有"外部"可言（草稿自己的 blob 图片、以及一切被
+ * safeHref 拒掉的协议）。
+ *
+ * 为什么要在 safeHref 之外再筛一遍：safeHref 是本模块的**通用**判据
+ * （还能被 `<a>` 的渲染路径用），而"打开"这个动作的边界更窄——
+ * `blob/…` 相对地址交给系统只会得到一句"文件不存在"。后端也会再筛一次
+ * （dialogs.go 的 openableURL），两处都要有：前端那次是为了给用户
+ * 一个"点了没反应"之外的明确结果，后端那次是因为前端不可信。
+ */
+export function externalHref(raw: string): string {
+  const s = safeHref(raw)
+  if (s === '') return ''
+  const lower = s.toLowerCase()
+  for (const sc of SAFE_SCHEMES) {
+    if (lower.startsWith(sc)) return s
+  }
+  return ''
+}
+
+/**
  * safeImgSrc 只放行草稿自己的 blob 图片。
  *
  * 不放行 http(s)：那会让"打开草稿"变成"向某个服务器发出请求"，

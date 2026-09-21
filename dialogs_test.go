@@ -163,3 +163,76 @@ func TestPickExportDir_ErrorsBeforeUIReady(t *testing.T) {
 		t.Errorf("不应把 ErrUnsupported 泄漏给上层: %v", err)
 	}
 }
+
+// TestOpenableURL 钉住"什么地址可以交给系统去打开"这道白名单。
+//
+// 为什么值得单独测：这是"用户内容 → 系统执行"的那条通道，一旦放宽，
+// 出问题的地方在**应用之外**（浏览器/访达被拉起来），应用里没有任何迹象。
+// 所以这里刻意用**白名单**（黑名单挡不住 `JaVaScRiPt:`、`file:`、
+// 以及各种注册 scheme 的大小写变体），并配一组"看起来像地址但不是"的输入。
+//
+// 变异验证：把 openableURL 改成 `return s != ""`，下面 deny 组会红。
+func TestOpenableURL(t *testing.T) {
+	allow := []string{
+		"http://a.com",
+		"https://a.com/x?y=1#z",
+		"HTTPS://A.COM/x",   // 协议大小写不敏感
+		"  https://a.com  ", // 前后空白由 TrimSpace 吃掉
+		"mailto:a@b.com",
+	}
+	for _, s := range allow {
+		if !openableURL(s) {
+			t.Errorf("openableURL(%q) = false，应当放行", s)
+		}
+	}
+	deny := []string{
+		"",
+		"   ",
+		"javascript:alert(1)",
+		"JaVaScRiPt:alert(1)",
+		"java\tscript:alert(1)", // 内部制表符不会被 TrimSpace 去掉
+		"file:///etc/passwd",
+		"data:text/html,<b>x</b>",
+		"ftp://a.com",
+		"blob/9f/2a/x.png", // 草稿自己的图片：相对地址，没有"外部"可言
+		"www.a.com",        // 不带协议的不算（补协议是前端识别裸 URL 的活）
+	}
+	for _, s := range deny {
+		if openableURL(s) {
+			t.Errorf("openableURL(%q) = true，应当拒绝", s)
+		}
+	}
+}
+
+// TestOpenURL_RefusesBeforeReachingTheSystem 钉住"被拒的地址一步都不往外走"。
+//
+// 只断言返回错误是不够的：真正的危害是**系统那一侧已经被启动了**，
+// 所以这里替换掉 openURLInSystem 看它有没有被调到。
+func TestOpenURL_RefusesBeforeReachingTheSystem(t *testing.T) {
+	var called []string
+	old := openURLInSystem
+	openURLInSystem = func(u string) error {
+		called = append(called, u)
+		return nil
+	}
+	t.Cleanup(func() { openURLInSystem = old })
+
+	a := &App{}
+	for _, bad := range []string{"", "javascript:alert(1)", "blob/9f/2a/x.png"} {
+		if err := a.OpenURL(bad); err == nil {
+			t.Errorf("OpenURL(%q) 应当报错", bad)
+		}
+	}
+	if len(called) != 0 {
+		t.Fatalf("被拒的地址不该走到系统那一步，实际调了 %v", called)
+	}
+
+	// 放行的要原样递出去，但**去掉前后空白**（空白会让 exec 的参数与
+	// 用户看到的不一致，`open " https://a.com"` 在有些平台上会当路径找）。
+	if err := a.OpenURL("  https://a.com/x  "); err != nil {
+		t.Fatalf("OpenURL(https) 报错：%v", err)
+	}
+	if len(called) != 1 || called[0] != "https://a.com/x" {
+		t.Fatalf("递给系统的地址不对：%v", called)
+	}
+}
