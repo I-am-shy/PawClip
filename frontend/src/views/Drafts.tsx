@@ -37,7 +37,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { T as TFn } from '../i18n'
 import { call, type DraftList, type DraftRow } from '../api'
-import { findAutoLinks, htmlToMd, mdToHtml, safeHref } from '../md'
+import { IMG_MIN_W, findAutoLinks, htmlToMd, mdToHtml, safeHref } from '../md'
 import { formatDateTime, formatRelative, formatTime } from '../format'
 import { useInterval } from '../hooks'
 import {
@@ -127,6 +127,11 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
   const [marks, setMarks] = useState({ bold: false, italic: false, underline: false })
   const [dragFrom, setDragFrom] = useState<number | null>(null)
   const [dragOver, setDragOver] = useState<number | null>(null)
+  // 被选中的图片与它右下角缩放把手的位置（相对 .draft-editwrap 的左上角）。
+  // 把手的位置要现算而不是跟着图片走：它是一个绝对定位的**兄弟**节点，
+  // 见下面 imgHandle 那段的说明。
+  const [imgSel, setImgSel] = useState<HTMLImageElement | null>(null)
+  const [imgBox, setImgBox] = useState<{ left: number; top: number } | null>(null)
 
   // ── refs ──────────────────────────────────────────────────────
   //
@@ -151,6 +156,11 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
   const savedRangeRef = useRef<Range | null>(null)
   // linkEditRef 非空表示链接浮层正在"编辑这条已有的链接"而不是新建。
   const linkEditRef = useRef<HTMLAnchorElement | null>(null)
+  // 编辑区的包裹层：缩放把手挂在它上面（不能挂进 contenteditable，见 imgHandle）。
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  // imgSel 的镜像。事件回调（mousemove / scroll / resize）不在 React 的
+  // 渲染闭包里，读 state 只会读到登记那一刻的值。
+  const imgSelRef = useRef<HTMLImageElement | null>(null)
 
   const debounceMs = list?.autoSaveDebounceMs ?? 500
   const maxImageLabel = list?.maxImageLabel ?? ''
@@ -228,6 +238,123 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
     if (node) setBodyEmpty(node.textContent === '' && node.querySelector('img') == null)
   }, [])
 
+  // ── 图片缩放 ──────────────────────────────────────────────────
+  //
+  // 宽度存在 img 的 `width` **属性**上，也就是 md 里 `![alt|300](…)` 的那个
+  // 300（见 md.ts 的 splitImgAlt）。为什么不用内联 style：style 是浏览器与
+  // 用户代理随时会改写的东西，让它参与存储等于让"存下来的宽度"取决于
+  // 渲染环境。
+  //
+  // 把手是一个绝对定位的**兄弟**节点，挂在 .draft-editwrap 上，而不是
+  // 塞进 contenteditable 里。两条理由，任一条都足够：
+  //   · contenteditable 的子树会被 htmlToMd 逐节点读一遍，往里加节点等于
+  //     往存储格式里加东西；
+  //   · 那片子树是"React 不管、我们手改 innerHTML"的，React 的 children
+  //     变更会去 patch 一个已经被改乱的 DOM 树。
+  // 代价是图片滚动 / 重排后位置要自己重算（placeImgHandle）。
+  //
+  // 这一块定义在 openDraft 之前：openDraft 的依赖数组里要引用 selectImg，
+  // 而依赖数组是在渲染时**立即求值**的，放到后面就是一次 TDZ 报错。
+
+  /** placeImgHandle 把把手摆到当前选中图片的右下角。 */
+  const placeImgHandle = useCallback(() => {
+    const img = imgSelRef.current
+    const wrap = wrapRef.current
+    if (!img || !wrap || !img.isConnected) {
+      setImgBox(null)
+      return
+    }
+    const r = img.getBoundingClientRect()
+    const b = wrap.getBoundingClientRect()
+    setImgBox({ left: r.right - b.left, top: r.bottom - b.top })
+  }, [])
+
+  /**
+   * refreshImgSel 在内容变化后重新校准：图片被删掉（选中它按删除键）或被
+   * 重排（上方文字增删、窗口改宽）时，把手要么消失、要么跟上去。
+   */
+  const refreshImgSel = useCallback(() => {
+    if (imgSelRef.current && !imgSelRef.current.isConnected) {
+      imgSelRef.current = null
+      setImgSel(null)
+      setImgBox(null)
+      return
+    }
+    placeImgHandle()
+  }, [placeImgHandle])
+
+  /** selectImg 记住选中的图片，并在它身上打一个标记供 CSS 描边。 */
+  const selectImg = useCallback(
+    (img: HTMLImageElement | null) => {
+      const prev = imgSelRef.current
+      if (prev && prev !== img) prev.removeAttribute('data-sel')
+      img?.setAttribute('data-sel', '1')
+      imgSelRef.current = img
+      setImgSel(img)
+      if (img) placeImgHandle()
+      else setImgBox(null)
+    },
+    [placeImgHandle],
+  )
+
+  const onEditorMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    const el = e.target instanceof HTMLImageElement ? e.target : null
+    selectImg(el)
+    if (el) {
+      // 位置要等浏览器把这一轮的布局做完。这里**不** preventDefault——
+      // 拦住的话图片拿不到浏览器的选中态，接着按删除键就删不掉它。
+      requestAnimationFrame(placeImgHandle)
+    }
+  }
+
+  /** 双击图片清掉显式宽度，回到"按容器宽自适应"。 */
+  const onEditorDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const el = e.target
+    if (!(el instanceof HTMLImageElement) || !el.hasAttribute('width')) return
+    e.preventDefault()
+    el.removeAttribute('width')
+    placeImgHandle()
+    markDirty()
+    void flush()
+  }
+
+  /**
+   * startImgResize 拖动右下角把手改宽度。
+   *
+   * 上限取编辑区的可视宽度：拖过边界的话图片会被 CSS 的 `max-width: 100%`
+   * 压回来，而存下来的那个宽度是用户永远看不到的数。
+   */
+  const startImgResize = (e: React.MouseEvent<HTMLSpanElement>) => {
+    const img = imgSelRef.current
+    const ed = nodeRef.current
+    if (!img || !ed) return
+    e.preventDefault()
+    e.stopPropagation()
+    selectImg(img)
+    const startX = e.clientX
+    const startW = img.getBoundingClientRect().width
+    const maxW = Math.max(IMG_MIN_W, Math.round(ed.clientWidth) - 8)
+    const move = (ev: MouseEvent) => {
+      const w = Math.max(IMG_MIN_W, Math.min(maxW, Math.round(startW + (ev.clientX - startX))))
+      img.setAttribute('width', String(w))
+      placeImgHandle()
+    }
+    const up = () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+      markDirty()
+      void flush()
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
+
+  // 面板宽度可以拖（§4.4.5），图片会跟着重排。
+  useEffect(() => {
+    window.addEventListener('resize', refreshImgSel)
+    return () => window.removeEventListener('resize', refreshImgSel)
+  }, [refreshImgSel])
+
   // 第 2 层：连续打字时防抖永不触发，靠这个 5 秒的 tick 强制落盘。
   useInterval(() => {
     if (dirtyRef.current) void flush()
@@ -287,6 +414,8 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
         setChars(d.md.length)
         setSaveState('idle')
         setConfirmPurge(null)
+        // 换了一篇正文，之前选中的那张图已经不在树上了。
+        selectImg(null)
         lastSavedRef.current = d.md
         dirtyRef.current = false
         if (nodeRef.current) {
@@ -299,7 +428,7 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
         onToast(t('err.generic', { err: e instanceof Error ? e.message : String(e) }))
       }
     },
-    [flush, onToast, t, fireTitle],
+    [flush, onToast, t, fireTitle, selectImg],
   )
 
   const refresh = useCallback(async (): Promise<DraftList | null> => {
@@ -733,6 +862,8 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
 
   const onInput = (e: React.FormEvent<HTMLDivElement>) => {
     syncEmpty()
+    // 文字增删会把图片挤到别处，把手要跟上去（没有选中图片时这一步是空转）。
+    refreshImgSel()
     // 触发链接识别：敲下空格 / 回车，且不在输入法组词中——
     // 组词里的空格是选字动作，不是分隔符。
     const ne = e.nativeEvent
@@ -825,8 +956,8 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
                       <button
                         type="button"
                         className="iconbtn"
-                        title={t('action.delete')}
-                        aria-label={t('action.delete')}
+                        title={t('draft.archiveOne')}
+                        aria-label={t('draft.archiveOne')}
                         onClick={(e) => {
                           // 不然点击会先触发 li 的 openDraft。
                           e.stopPropagation()
@@ -862,42 +993,66 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
                   <>
                     <div className="dim draft-note">{t('draft.archivedNote', { d: ttlDays })}</div>
                     <ul className="draft-toc-list">
-                      {archived.map((it) => (
-                        <li key={it.id} className="draft-toc-item draft-toc-arch">
-                          <span className="draft-toc-main">
-                            <span className="draft-toc-title">{it.title || t('draft.untitled')}</span>
-                            <span className="draft-toc-sub">
-                              {formatDateTime(it.archivedAt ?? it.updatedAt)}
+                      {archived.map((it) =>
+                        confirmPurge === it.id ? (
+                          /* 彻底删除的确认。这里**不能只靠"图标变红、再点一下"**：
+                             这是全应用唯一不可恢复的破坏性动作，而"再点一下"
+                             那层约定屏幕上没有任何文字说明它存在。所以整条
+                             就地换成一句问句 + 两个写明动作的按钮，
+                             取消放在左边（危险动作不放第一位）。 */
+                          <li key={it.id} className="draft-toc-item draft-toc-confirm">
+                            <span className="draft-toc-main">
+                              <span className="draft-toc-title">{t('draft.purgeTitle')}</span>
+                              <span className="draft-toc-sub">{t('draft.purgeBody')}</span>
                             </span>
-                          </span>
-                          <span className="draft-arch-acts">
-                            <button
-                              type="button"
-                              className="iconbtn"
-                              title={t('action.restore')}
-                              aria-label={t('action.restore')}
-                              onClick={() => void restoreDraft(it.id)}
-                            >
-                              <IconRestore size={13} />
-                            </button>
-                            <button
-                              type="button"
-                              className={`iconbtn ${confirmPurge === it.id ? 'iconbtn-danger' : ''}`}
-                              title={confirmPurge === it.id ? t('draft.purgeConfirm') : t('action.purge')}
-                              aria-label={confirmPurge === it.id ? t('draft.purgeConfirm') : t('action.purge')}
-                              onClick={() => {
-                                // 两步确认而不是弹原生 confirm()：WKWebView 里
-                                // 原生对话框要后端实现代理才能出来，而这只是
-                                // 一个"再点一下"的动作。
-                                if (confirmPurge === it.id) void purgeDraft(it.id)
-                                else setConfirmPurge(it.id)
-                              }}
-                            >
-                              <IconTrash size={13} />
-                            </button>
-                          </span>
-                        </li>
-                      ))}
+                            <span className="draft-confirm-acts">
+                              <button
+                                type="button"
+                                className="linkbtn"
+                                onClick={() => setConfirmPurge(null)}
+                              >
+                                {t('common.cancel')}
+                              </button>
+                              <button
+                                type="button"
+                                className="linkbtn draft-danger"
+                                onClick={() => void purgeDraft(it.id)}
+                              >
+                                {t('action.purge')}
+                              </button>
+                            </span>
+                          </li>
+                        ) : (
+                          <li key={it.id} className="draft-toc-item draft-toc-arch">
+                            <span className="draft-toc-main">
+                              <span className="draft-toc-title">{it.title || t('draft.untitled')}</span>
+                              <span className="draft-toc-sub">
+                                {formatDateTime(it.archivedAt ?? it.updatedAt)}
+                              </span>
+                            </span>
+                            <span className="draft-arch-acts">
+                              <button
+                                type="button"
+                                className="iconbtn"
+                                title={t('action.restore')}
+                                aria-label={t('action.restore')}
+                                onClick={() => void restoreDraft(it.id)}
+                              >
+                                <IconRestore size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                className="iconbtn"
+                                title={t('action.purge')}
+                                aria-label={t('action.purge')}
+                                onClick={() => setConfirmPurge(it.id)}
+                              >
+                                <IconTrash size={13} />
+                              </button>
+                            </span>
+                          </li>
+                        ),
+                      )}
                     </ul>
                   </>
                 )}
@@ -1076,24 +1231,39 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
                 </div>
               )}
 
-              <div
-                ref={attachNode}
-                className="draft-editor"
-                contentEditable
-                suppressContentEditableWarning
-                spellCheck={false}
-                role="textbox"
-                aria-multiline="true"
-                aria-label={t('draft.bodyPlaceholder')}
-                data-placeholder={t('draft.bodyPlaceholder')}
-                data-empty={bodyEmpty ? '1' : '0'}
-                onInput={onInput}
-                onPaste={onPaste}
-                onBlur={() => void flush()}
-                onKeyUp={syncMarks}
-                onMouseUp={rememberSelection}
-                onFocus={rememberSelection}
-              />
+              {/* 编辑区外面包一层，只为放图片的缩放把手（见 placeImgHandle）。 */}
+              <div className="draft-editwrap" ref={wrapRef}>
+                <div
+                  ref={attachNode}
+                  className="draft-editor"
+                  contentEditable
+                  suppressContentEditableWarning
+                  spellCheck={false}
+                  role="textbox"
+                  aria-multiline="true"
+                  aria-label={t('draft.bodyPlaceholder')}
+                  data-placeholder={t('draft.bodyPlaceholder')}
+                  data-empty={bodyEmpty ? '1' : '0'}
+                  onInput={onInput}
+                  onPaste={onPaste}
+                  onBlur={() => void flush()}
+                  onKeyUp={syncMarks}
+                  onMouseUp={rememberSelection}
+                  onMouseDown={onEditorMouseDown}
+                  onDoubleClick={onEditorDoubleClick}
+                  onScroll={refreshImgSel}
+                  onFocus={rememberSelection}
+                />
+                {imgSel && imgBox && (
+                  <span
+                    className="draft-imgresize"
+                    style={{ left: imgBox.left, top: imgBox.top }}
+                    title={t('draft.imageResize')}
+                    aria-hidden="true"
+                    onMouseDown={startImgResize}
+                  />
+                )}
+              </div>
 
               <div className="draft-foot dim">{t('draft.chars', { n: chars })}</div>
             </>

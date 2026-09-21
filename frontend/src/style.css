@@ -1759,11 +1759,37 @@ select.input {
   opacity: 1;
 }
 
-/* 第二步确认：把图标染成危险色，与"直接执行"区分开。 */
-.iconbtn-danger,
-.iconbtn-danger:hover {
+/* 归档区的"彻底删除"确认条。它**就地替换**掉那一条目录，而不是弹浮层：
+   侧栏总共 180 px，浮层没有落点，而就地替换不会让下面的条目跳位。
+
+   为什么值得单独一条：这是全应用唯一不可恢复的破坏性动作。原来的做法是
+   "点一次图标变红、再点一次执行"——那层约定屏幕上没有任何文字说明它存在。 */
+.draft-toc-confirm {
+  flex-wrap: wrap;
+  row-gap: 4px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+/* 占满一整行：按钮组被挤到第二行，问句才不会被切成一堆省略号。 */
+.draft-toc-confirm .draft-toc-main {
+  flex: 1 1 100%;
+}
+
+.draft-toc-confirm .draft-toc-title {
   color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.draft-confirm-acts {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-size: 11.5px;
+}
+
+.draft-danger {
+  color: var(--danger);
 }
 
 .draft-main {
@@ -1918,6 +1944,35 @@ select.input {
   display: none;
 }
 
+/* 编辑区的包裹层。存在的唯一理由是给图片缩放把手一个绝对定位的落点：
+   把手不能塞进 contenteditable（那片子树会被 htmlToMd 读一遍，而且是
+   React 不管、我们手改 innerHTML 的地方）。 */
+.draft-editwrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* 图片滚出可视区时把手要跟着消失，而不是浮到下面的字数栏上。 */
+  overflow: hidden;
+}
+
+/* 选中图片后右下角的缩放把手。它改的是 img 的 width 属性（px），
+   也就是 md 里 `![alt|300](…)` 的那个 300。 */
+.draft-imgresize {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  /* 让把手的**中心**压在图片右下角：图片角上多出一个方块会挡住它
+     最后那几个像素。 */
+  margin: -7px 0 0 -7px;
+  border: 1.5px solid var(--bg);
+  border-radius: 3px;
+  background: var(--accent);
+  cursor: nwse-resize;
+  z-index: 3;
+}
+
 /* 编辑区。它是**内容**，所以选择、光标、换行都要放开——body 上那把
    user-select: none 在这里必须显式推翻，否则连光标都点不出来。 */
 .draft-editor {
@@ -1956,6 +2011,13 @@ select.input {
   /* 图片是内容，不该被拖出去当文件拖走——拖拽在面板里已经用于目录排序，
      两种拖拽混在一起会让人误操作。 */
   -webkit-user-drag: none;
+}
+
+/* 选中的图片描一圈边：否则把手孤零零浮在图片角上，看不出它在调哪张图
+   （一篇正文里可以有好几张）。data-sel 是编辑期标记，不进存储。 */
+.draft-editor img[data-sel='1'] {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .draft-editor a {

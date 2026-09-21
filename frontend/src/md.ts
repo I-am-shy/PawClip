@@ -14,6 +14,7 @@
 //   `<u>下划线</u>`   <u>             （Markdown 没有下划线，走内联 HTML）
 //   `[文字](url)`     <a>
 //   `![alt](url)`     <img>
+//   `![alt|300](url)` <img width="300">（`|宽` 是尾部宽度后缀，见 splitImgAlt）
 //   段落              空行分隔
 //   换行              段落内的单个 \n（对应 <br>）
 //
@@ -76,6 +77,52 @@ function htmlEsc(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+}
+
+/**
+ * unescapeText 是 escapeText 的逆：把 `\x` 还原成字面量 x。
+ *
+ * 只有图片 alt 这一处在读入时用它——正文文字不走这条路（mdInline 逐字符
+ * 边扫边还原）。为什么 alt 需要：alt 是**整段**取出来当属性值的，
+ * 不还原的话 `![a\*b](…)` 会把反斜杠一起显示出来，而且每保存一次
+ * 就多一层转义（`a\*b` → `a\\\*b` → …），这是个会自己长大的错。
+ */
+export function unescapeText(s: string): string {
+  let out = ''
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && i + 1 < s.length) {
+      out += s[i + 1]
+      i++
+    } else {
+      out += s[i]
+    }
+  }
+  return out
+}
+
+/** 图片宽度的合法范围（像素）。超出这个范围的后缀不当宽度，当 alt 的一部分。 */
+export const IMG_MIN_W = 16
+export const IMG_MAX_W = 4096
+
+/**
+ * splitImgAlt 把图片的 alt 拆成「说明文字」与「宽度后缀」。
+ *
+ * 宽度写成 alt 尾部的 `|数字`：`![说明|300](blob/…)`。为什么不挂在 URL 上
+ * ——URL 那一段会被 Go 侧的 `rewriteMDRefs` 逐字符扫成**文件引用**
+ * （它认到空白或 `(` `)` 为止），往上加任何东西都会让引用集合与真实文件
+ * 对不上，孤儿回收随后就会删掉还有人在用的图片。alt 里没有第二个读者，
+ * 是这套方言里唯一能安全扩展的位置。
+ *
+ * 认的位置是**最后一个** `|数字`（`.*` 贪婪），所以说明文字里本来就有 `|`
+ * 也不会被切错。代价是"说明文字恰好以 `|300` 结尾"会被当成宽度——这条可
+ * 接受：alt 只在图片加载失败时可见，而宽度是用户显式拖出来的。
+ */
+export function splitImgAlt(alt: string): { alt: string; width: number } {
+  const m = /^(.*)\|(\d{1,5})$/.exec(alt)
+  if (!m) return { alt, width: 0 }
+  const w = Number(m[2])
+  if (w < IMG_MIN_W || w > IMG_MAX_W) return { alt, width: 0 }
+  return { alt: m[1], width: w }
 }
 
 // ── URL 安全 ────────────────────────────────────────────────────
@@ -302,7 +349,13 @@ export function mdInline(src: string): string {
         const src2 = safeImgSrc(m.url)
         // 源不安全时整段丢掉而不是渲染成破图：正文里留一个必然加载失败的
         // <img> 只会显示成一个裂图标，比"这里什么都没有"更让人困惑。
-        if (src2) out += `<img src="${htmlEsc(src2)}" alt="${htmlEsc(m.text)}">`
+        if (src2) {
+          const { alt, width } = splitImgAlt(unescapeText(m.text))
+          out +=
+            `<img src="${htmlEsc(src2)}" alt="${htmlEsc(alt)}"` +
+            (width > 0 ? ` width="${width}"` : '') +
+            '>'
+        }
         i = m.end
         continue
       }
@@ -405,6 +458,20 @@ const BLOCKS = new Set([
 const NODE_ELEMENT = 1
 const NODE_TEXT = 3
 
+/**
+ * imgWidthOf 读出一张图片的显式宽度（像素），没有就返回 0。
+ *
+ * 只认 `width` **属性**：mdToHtml 与编辑区的拖拽把手都写它，读回来才对得上。
+ * 内联 `style` 里的宽度故意不认——样式是浏览器与用户代理随时会改的东西，
+ * 让存储值取决于渲染环境，同一份正文在两台机器上就会存出两个结果。
+ */
+function imgWidthOf(node: DomLike): number {
+  const raw = (node.getAttribute?.('width') ?? '').trim()
+  if (!/^\d+$/.test(raw)) return 0
+  const w = Number(raw)
+  return w >= IMG_MIN_W && w <= IMG_MAX_W ? w : 0
+}
+
 export function htmlToMd(root: DomLike): string {
   const lines: string[] = []
   let cur = ''
@@ -484,8 +551,9 @@ export function htmlToMd(root: DomLike): string {
       case 'IMG': {
         const src = safeImgSrc(node.getAttribute?.('src') ?? '')
         if (src === '') return
-        const alt = node.getAttribute?.('alt') ?? ''
-        cur += '![' + escapeText(alt) + '](' + encodeUrl(src) + ')'
+        const alt = unescapeText(node.getAttribute?.('alt') ?? '')
+        const w = imgWidthOf(node)
+        cur += '![' + escapeText(alt) + (w > 0 ? '|' + w : '') + '](' + encodeUrl(src) + ')'
         return
       }
       case 'CODE':

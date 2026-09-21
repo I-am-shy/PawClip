@@ -151,6 +151,31 @@ eq('斜体', mdToHtml('*斜*'), '<p><em>斜</em></p>')
 eq('下划线走内联 HTML', mdToHtml('<u>线</u>'), '<p><u>线</u></p>')
 eq('链接', mdToHtml('[t](https://a.com/b)'), '<p><a href="https://a.com/b">t</a></p>')
 eq('图片', mdToHtml('![a](blob/9f/2a/x.png)'), '<p><img src="blob/9f/2a/x.png" alt="a"></p>')
+
+// 图片宽度的方言（`|宽` 后缀，见 md.ts 的 splitImgAlt）。
+//
+// 为什么单独立一组：这个后缀挂在 alt 那一段上，而 alt 会被原样写回 md——
+// 切错了不会报错，只会让"拖出来的宽度"在下次打开时变成 alt 里的一串数字。
+eq(
+  '图片带宽度后缀',
+  mdToHtml('![a|300](blob/9f/2a/x.png)'),
+  '<p><img src="blob/9f/2a/x.png" alt="a" width="300"></p>'
+)
+eq(
+  '只有宽度没有说明文字',
+  mdToHtml('![|300](blob/9f/2a/x.png)'),
+  '<p><img src="blob/9f/2a/x.png" alt="" width="300"></p>'
+)
+eq(
+  '宽度不在合法区间时不算宽度（当 alt 的一部分）',
+  mdToHtml('![a|5](blob/9f/2a/x.png)'),
+  '<p><img src="blob/9f/2a/x.png" alt="a|5"></p>'
+)
+eq(
+  'alt 里的转义被还原（否则每存一次多一层反斜杠）',
+  mdToHtml('![a\\*b](blob/9f/2a/x.png)'),
+  '<p><img src="blob/9f/2a/x.png" alt="a*b"></p>'
+)
 eq(
   '嵌套：粗体里带链接',
   mdToHtml('**[t](https://a.com)**'),
@@ -207,6 +232,28 @@ eq(
   'img',
   htmlToMd(root(el('img', [], { src: 'blob/9f/2a/x.png', alt: 'a' }))),
   '![a](blob/9f/2a/x.png)'
+)
+eq(
+  'img 的 width 属性写成宽度后缀',
+  htmlToMd(root(el('img', [], { src: 'blob/9f/2a/x.png', alt: '', width: '300' }))),
+  '![|300](blob/9f/2a/x.png)'
+)
+// 宽度按"像素整数"这一个形状读。别的形状（0、空、`100%`、被别的东西塞进来的
+// 垃圾）一律当没有——写回去一个它认不出来的值，下次读出来只会更乱。
+eq(
+  'width 不合法就当作没有',
+  htmlToMd(root(el('img', [], { src: 'blob/9f/2a/x.png', alt: 'a', width: '0' }))),
+  '![a](blob/9f/2a/x.png)'
+)
+eq(
+  'width 是百分比时当作没有',
+  htmlToMd(root(el('img', [], { src: 'blob/9f/2a/x.png', alt: 'a', width: '100%' }))),
+  '![a](blob/9f/2a/x.png)'
+)
+eq(
+  'alt 里的 ] 与 * 照旧转义（与宽度无关）',
+  htmlToMd(root(el('img', [], { src: 'blob/9f/2a/x.png', alt: 'a]b*c' }))),
+  '![a\\]b\\*c](blob/9f/2a/x.png)'
 )
 eq('未知内联元素穿透（span）', htmlToMd(root(el('span', [tx('x')]))), 'x')
 eq(
@@ -265,6 +312,8 @@ for (const md of [
   '<u>下划线</u>',
   '[链接](https://a.com/b)',
   '![图](blob/9f/2a/x.png)',
+  '![图|280](blob/9f/2a/x.png)',
+  '![说明\\*星号\\*|120](blob/9f/2a/x.png)',
   '多段\n\n第二段\n\n第三段',
   '**粗**里带 [链接](https://a.com)',
   '转义：\\*literal\\* 与 \\]brace',
