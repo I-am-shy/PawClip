@@ -47,6 +47,11 @@ const (
 	KeyUICloseOnBlur          = "ui.closeOnBlur"
 	KeyUIPanelWidth           = "ui.panelWidth"
 	KeyUIPanelHeight          = "ui.panelHeight"
+	KeyUILastView             = "ui.lastView"
+	KeyUIDraftTOCCollapsed    = "ui.draftTocCollapsed"
+
+	KeyDraftAutoSaveDebounceMs = "draft.autoSaveDebounceMs"
+	KeyDraftImageMaxBytes      = "draft.imageMaxBytes"
 
 	KeyStorageCleanShutdownMarker = "storage.cleanShutdownMarker"
 	KeyStorageWALCheckpointEvery  = "storage.walCheckpointEvery"
@@ -54,6 +59,32 @@ const (
 	KeyBackupManifestFormat = "backup.manifestFormat"
 	KeyBackupIncludeExpired = "backup.includeExpired"
 )
+
+// 视图名（ui.lastView 的取值域）。与 frontend/src/App.tsx 的 View 联合一一对应。
+//
+// 之所以在 Go 侧也定义一遍而不是存任意字符串：这个值会被用来决定
+// "下次启动进哪个页面"，写进去一个前端不认识的名字就等于启动后
+// 停在空白页。有常量 + normalize，坏值只可能退化成默认的历史页。
+const (
+	ViewPanel    = "panel"
+	ViewDrafts   = "drafts"
+	ViewStats    = "stats"
+	ViewBackup   = "backup"
+	ViewSettings = "settings"
+)
+
+// NormalizeLastView 把 ui.lastView 收敛到已知取值。
+//
+// 未知值一律落回历史页（ViewPanel）——**不是**落回原值：
+// 一个改过名的旧视图名会让首屏停在一个不存在的页面上。
+func NormalizeLastView(v string) string {
+	switch v {
+	case ViewPanel, ViewDrafts, ViewStats, ViewBackup, ViewSettings:
+		return v
+	default:
+		return ViewPanel
+	}
+}
 
 // 设置值的取值域常量。
 const (
@@ -128,6 +159,36 @@ type UISettings struct {
 	// 也不想认识——这里只存整数）。
 	PanelWidth  int `json:"panelWidth"`
 	PanelHeight int `json:"panelHeight"`
+
+	// LastView 是"上次停在哪一页"（取值域见 ViewXxx 常量）。
+	//
+	// ⚠️ 这条是**改动过的既有决策**（2026-09-21）：原先的策略是"每次呼出
+	// 都回到剪贴板历史"，理由是"按热键时用户要的是看看我刚复制的东西"。
+	// 现在的规则换成：**只有草稿本粘滞**，其余页面（历史/统计/导出导入/设置）
+	// 一律回落到历史。理由见 docs/DESIGN.md §4.4 末段——草稿是"正在写的
+	// 东西"，把它换掉等于把用户的工作台收走；而设置页不是。
+	LastView string `json:"lastView"`
+
+	// DraftTOCCollapsed 是草稿本目录（目录树）的收起状态。
+	//
+	// 它不是交互偏好：面板默认宽 560、硬上限 760（panel.ClampPanelSize），
+	// 560 下"左目录 180 + 右编辑"只剩 380 逻辑点，富文本排版放不下。
+	// 所以这个开关是**布局必需**，值要活过这次运行。
+	DraftTOCCollapsed bool `json:"draftTocCollapsed"`
+}
+
+// DraftSettings ← draft.*
+//
+// 草稿本自己的两个参数。刻意**不复用** capture.imageMaxBytes：
+// 那个值的语义是"自动捕获时超过多大就不记"，用户为了减少噪音把它调小
+// （比如 1 MB）是个合理的意图，而草稿贴图是用户主动放进来的内容，
+// 不该跟着一起被拒。同一类参数被两件不同的事共用，改动一处就会
+// 在另一处造成说不通的后果。
+type DraftSettings struct {
+	// AutoSaveDebounceMs 是实时保存的防抖窗口。
+	AutoSaveDebounceMs int `json:"autoSaveDebounceMs"`
+	// ImageMaxBytes 是单张草稿贴图的大小上限。
+	ImageMaxBytes int64 `json:"imageMaxBytes"`
 }
 
 // StorageSettings ← storage.*
@@ -150,6 +211,7 @@ type Settings struct {
 	UI        UISettings        `json:"ui"`
 	Storage   StorageSettings   `json:"storage"`
 	Backup    BackupSettings    `json:"backup"`
+	Draft     DraftSettings     `json:"draft"`
 }
 
 // DefaultSettings 是 docs/DESIGN.md §9 的默认值表。默认值只在这一个地方写死。
@@ -191,6 +253,9 @@ func DefaultSettings() *Settings {
 			// 这个值只在"用户从没拖过边缘"时生效，一旦拖过就以库里的为准。
 			PanelWidth:  560,
 			PanelHeight: 760,
+			// 首次启动进历史页；之后由使用过程写回。
+			LastView:          ViewPanel,
+			DraftTOCCollapsed: false,
 		},
 		Storage: StorageSettings{
 			CleanShutdownMarker: true,
@@ -199,6 +264,14 @@ func DefaultSettings() *Settings {
 		Backup: BackupSettings{
 			ManifestFormat: ManifestJSON,
 			IncludeExpired: false,
+		},
+		Draft: DraftSettings{
+			// 500ms 是"停手就存"与"别把写连接占满"之间的折中：
+			// 低于 300ms 时逐句输入会打成一串写事务（store 是单写串行，
+			// 捕获线程也在排同一条队），高于 1s 则断电丢掉的篇幅明显变多。
+			// 前端另有一条 5s 的强制落盘兜住"一直在打字"的情况。
+			AutoSaveDebounceMs: 500,
+			ImageMaxBytes:      10 * 1024 * 1024,
 		},
 	}
 }
@@ -242,6 +315,11 @@ func (s *Settings) bindings() []binding {
 		{KeyUICloseOnBlur, &s.UI.CloseOnBlur},
 		{KeyUIPanelWidth, &s.UI.PanelWidth},
 		{KeyUIPanelHeight, &s.UI.PanelHeight},
+		{KeyUILastView, &s.UI.LastView},
+		{KeyUIDraftTOCCollapsed, &s.UI.DraftTOCCollapsed},
+
+		{KeyDraftAutoSaveDebounceMs, &s.Draft.AutoSaveDebounceMs},
+		{KeyDraftImageMaxBytes, &s.Draft.ImageMaxBytes},
 
 		{KeyStorageCleanShutdownMarker, &s.Storage.CleanShutdownMarker},
 		{KeyStorageWALCheckpointEvery, &s.Storage.WALCheckpointEvery},
@@ -310,6 +388,10 @@ func LoadSettingsInto(ctx context.Context, d *DB, s *Settings) error {
 		d.log.Warn("some settings rows are not valid JSON; using defaults for them",
 			"keys", badKeys)
 	}
+	// 视图名收敛在**读完的第一时间**做，而不是在用它的时候：
+	// 它决定下次启动进哪一页，坏值（改过名的旧视图、手改库写进去的乱串）
+	// 必须在离开这个函数之前就变成已知取值。
+	s.UI.LastView = NormalizeLastView(s.UI.LastView)
 	return nil
 }
 

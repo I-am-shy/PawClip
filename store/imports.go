@@ -142,13 +142,26 @@ func scanImport(row importScanner) (*ImportRow, error) {
 	return &r, nil
 }
 
-// DeleteImportItems 删掉某批次导入的**全部条目**（§8.5 一键回滚）。
+// DeleteImportItems 删掉某批次导入的**全部内容**（§8.5 一键回滚）：
+// items 条目与 drafts 草稿都算，因为用户按下的是"撤销这次导入"，
+// 不是"撤销这次导入的剪贴板部分"。
 //
 // ⚠️ 与 Purge 一样**不删 blob 文件**：blobs/ 是内容寻址的，同一份字节
-// 可能被别的条目引用。文件回收交给 GC 的孤儿扫描。
-// 返回删掉的条数；同时把批次标记成 rolled_back。
+// 可能被别的条目或别的草稿引用。文件回收交给 GC 的孤儿扫描。
+// 返回删掉的**条目**条数（不含草稿，UI 上的主数字一直是条目数）；
+// 同时把批次标记成 rolled_back。
+//
+// ⚠️ 两次 DELETE 必须在同一个事务里。分两次各自提交时，第二次失败会
+// 留下"条目没了、草稿还在"的半截状态——而批次已经被标成 rolled_back，
+// 用户再也找不到入口去撤掉那些草稿。
 func (d *DB) DeleteImportItems(ctx context.Context, importID int64) (int64, error) {
-	res, err := d.w.ExecContext(ctx, "DELETE FROM items WHERE import_id = ?", importID)
+	tx, err := d.w.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("store: rollback import begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, "DELETE FROM items WHERE import_id = ?", importID)
 	if err != nil {
 		return 0, fmt.Errorf("store: delete import items: %w", err)
 	}
@@ -156,24 +169,34 @@ func (d *DB) DeleteImportItems(ctx context.Context, importID int64) (int64, erro
 	if err != nil {
 		return 0, fmt.Errorf("store: delete import items rows affected: %w", err)
 	}
-	if _, err := d.w.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx, "DELETE FROM drafts WHERE import_id = ?", importID); err != nil {
+		return 0, fmt.Errorf("store: delete import drafts: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE imports SET status = ?, finished_at = ? WHERE id = ?`,
 		ImportRolledBack, time.Now().Unix(), importID); err != nil {
 		return n, fmt.Errorf("store: mark import rolled back: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return n, fmt.Errorf("store: rollback import commit: %w", err)
 	}
 	return n, nil
 }
 
 // PruneImports 清理超过保留期的批次记录（§8.5：30 天后回滚入口消失）。
 //
-// 只删**记录**，不动 items：超过 30 天还能回滚才叫危险。
+// 只删**记录**，不动 items/drafts：超过 30 天还能回滚才叫危险。
 func (d *DB) PruneImports(ctx context.Context, before int64) (int64, error) {
-	// 先解除 items 对批次的引用，再把记录删掉——import_id 是
+	// 先解除 items / drafts 对批次的引用，再把记录删掉——import_id 是
 	// ON DELETE SET NULL，但显式做一遍更清楚，也避免触发外键级联的开销。
-	if _, err := d.w.ExecContext(ctx,
-		`UPDATE items SET import_id = NULL
-		  WHERE import_id IN (SELECT id FROM imports WHERE started_at < ?)`, before); err != nil {
-		return 0, fmt.Errorf("store: detach pruned imports: %w", err)
+	// 两处都要解：只解一处会让另一处依赖级联，而级联在
+	// `PRAGMA foreign_keys` 被关掉的连接上是静默失效的。
+	for _, tbl := range []string{"items", "drafts"} {
+		if _, err := d.w.ExecContext(ctx,
+			`UPDATE `+tbl+` SET import_id = NULL
+			  WHERE import_id IN (SELECT id FROM imports WHERE started_at < ?)`, before); err != nil {
+			return 0, fmt.Errorf("store: detach pruned imports from %s: %w", tbl, err)
+		}
 	}
 	res, err := d.w.ExecContext(ctx, "DELETE FROM imports WHERE started_at < ?", before)
 	if err != nil {

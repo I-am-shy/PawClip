@@ -101,6 +101,14 @@ type RowQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// RowsQuerier 是"查多行"的最小接口，与 RowQuerier 配成一对。
+//
+// 单独提出来而不是并进 Execer，理由与 RowQuerier 完全相同：
+// 导出路径只读，不该顺带拿到写能力。`*sql.DB` 与 `*sql.Tx` 都天然满足它。
+type RowsQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 // Execer 抽象 *sql.DB 与 *sql.Tx，让写入路径既能单条提交也能进合批事务。
 //
 // ⚠️ 事务内的写操作**必须**收 Execer（而不是在内部直接用 d.w）：

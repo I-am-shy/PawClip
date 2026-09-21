@@ -33,7 +33,8 @@ import (
 //
 //	1  全量建表（docs/DESIGN.md §4.1）
 //	2  items.pinyin（拼音首字母检索，docs/DESIGN.md §11 P2）+ FTS 加第三列
-const SchemaVersion = 2
+//	3  drafts（草稿本，docs/DESIGN.md §4.4）
+const SchemaVersion = 4
 
 // cleanShutdownMarker 是"上次没有正常退出"的标记文件名（放在数据库同目录）。
 const cleanShutdownMarker = "clean_shutdown"
@@ -292,6 +293,30 @@ var migrations = []func(*sql.Tx) error{
 		}
 		return nil
 	},
+
+	// 2 → 3：drafts（草稿本，docs/DESIGN.md §4.4）。
+	//
+	// 纯新增表，不动 items，所以这一步是安全的单向升级：
+	// 老库升级后草稿目录为空，其余行为一个字节都不变。
+	func(tx *sql.Tx) error {
+		_, err := tx.Exec(draftsDDL)
+		return err
+	},
+
+	// 3 → 4：drafts.import_id（草稿也能被 .clipbak 一键回滚，见 §8.5）。
+	//
+	// 为什么必须单独一列而不是"导入的草稿用 seq IS NULL 认出来"：
+	// 那个判据只是**当前**建草稿时会写编号，用户手工改过的 md、老库里的
+	// 无名草稿都可能撞上；而回滚是破坏性操作，判据必须由我们自己写死。
+	//
+	// ⚠️ SQLite 允许 ADD COLUMN 带 REFERENCES，前提是默认值为 NULL
+	// （我们正是这样建的）。也正因为默认 NULL，老库里的既有草稿升级后
+	// 一律"不属于任何批次"，不会被任何一次回滚误删。
+	func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			`ALTER TABLE drafts ADD COLUMN import_id INTEGER REFERENCES imports(id) ON DELETE SET NULL`)
+		return err
+	},
 }
 
 func (d *DB) migrate() error {
@@ -412,6 +437,51 @@ CREATE TABLE IF NOT EXISTS settings (
   value      TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+`
+
+// draftsDDL 是草稿本的建表 DDL（docs/DESIGN.md §4.4）。
+//
+// 三条刻意的决定，都属于"数据模型"而不是实现细节：
+//
+//  1. **`md` 是唯一真源。** 不另存 HTML / JSON：富文本（contenteditable）
+//     是编辑态，Markdown 是存储态。图片以 `blob/<分片路径>` 的相对 URL
+//     写在正文里，因此**不存在第二张"草稿引用了哪些 blob"的表**——
+//     有了它就会回到"删了正文但图片留着 / 图片删了但正文还引用"的经典不一致。
+//     孤儿回收改从正文里抽引用（见 DraftBlobRefsInMD）。
+//
+//  2. **没有 expires_at，也不进 TTL / 条数与容量淘汰。** §5.2 那套三级 TTL
+//     是为"自动捕获的剪贴板数据"设计的；草稿是用户手写的内容，被 GC
+//     定时收走是灾难性的。只有 `archived_at`（软删除）会到期，且到期后
+//     进的是**草稿自己的**归档区，不混进剪贴板回收站。
+//
+//  3. **`seq` 是"默认名里的那个数字"，与标题解耦。** 默认名要取"最小未占用
+//     正整数"而不是"数量 + 1"（否则删掉草稿 2 再新建就撞名），但标题是
+//     本地化的（中文"草稿 2" / 英文"Draft 2"），拿标题去反推数字在切语言后
+//     必然失效。所以编号单独存一列，显示名由前端按当前语言渲染。
+//     NULL 表示"没有编号"（导入进来的草稿），不参与"最小未占用"的计算。
+//
+// sort_order 用 INTEGER 而不是 REAL（分数索引）：本功能的规模是"几百条"，
+// 拖拽后整表重编号只花一次事务，而分数索引会引入"精度用尽后仍需重排"
+// 这条更难的路径。
+//
+// ⚠️ 这里的 CREATE TABLE 是 **v3 当时的形状**，不含 `import_id`——
+// 那一列由 3 → 4 的 ALTER 加上（与 items.pinyin 同一套做法）。
+// 新装与升级两条路径最终得到同一张表；改这里时别忘了 migrations 里
+// 那一步也得跟着改，否则两条路径会分叉。
+const draftsDDL = `
+CREATE TABLE IF NOT EXISTS drafts (
+  id          INTEGER PRIMARY KEY,
+  title       TEXT    NOT NULL,
+  md          TEXT    NOT NULL DEFAULT '',
+  seq         INTEGER,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  archived_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_drafts_alive    ON drafts(sort_order, id) WHERE archived_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_drafts_archived ON drafts(archived_at)     WHERE archived_at IS NOT NULL;
 `
 
 // ftsDDL 是与 items 同步的 FTS5 表。

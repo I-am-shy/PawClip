@@ -432,17 +432,28 @@ func (d *DB) Vacuum(ctx context.Context) error {
 // 这是孤儿扫描的判据：不在这个集合里、且 mtime 超过 1 天的文件就是孤儿。
 // 用存活条目（含回收站）而不是"只有时间线上的"——回收站里的条目还能恢复，
 // 它的 blob 不能被当成孤儿删掉。
+//
+// ⚠️ **草稿引用的 blob 也必须在这个集合里。** 这条曾经是个真实缺陷：
+// 原实现只扫 items，于是草稿里贴的图片会在超过一天后的第一次 GC 里
+// 被当孤儿删掉，表现成"草稿里的图偶发消失"。它的复现条件很刁钻
+// （剪贴板历史非空 + 图片贴了超过一天 + GC 跑过），所以当初没被发现。
+//
+// 引用来自 `drafts.md` 正文的**全文扫描**，而不是一张 `draft_blobs` 表：
+// 建表就等于给"草稿引用了哪些图片"造第二个真源，于是必然出现
+// "删了正文里的图但表里还引用着"（图片永不回收）与"表里没有但正文还有"
+// （图片被误删）这两种不一致。md 是唯一真源这条不能破，代价只是这里
+// 多一次子串扫描——它是流式的（forEachDraftMD），内存不随草稿总量增长。
 func (d *DB) AllBlobRefs(ctx context.Context) (map[string]struct{}, error) {
 	rows, err := d.r.QueryContext(ctx,
 		`SELECT rtf_path, image_path, thumb_path FROM items`)
 	if err != nil {
 		return nil, fmt.Errorf("store: read blob refs: %w", err)
 	}
-	defer rows.Close()
 	out := make(map[string]struct{}, 256)
 	for rows.Next() {
 		var rtf, img, thumb *string
 		if err := rows.Scan(&rtf, &img, &thumb); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("store: scan blob ref: %w", err)
 		}
 		for _, p := range []*string{rtf, img, thumb} {
@@ -451,7 +462,23 @@ func (d *DB) AllBlobRefs(ctx context.Context) (map[string]struct{}, error) {
 			}
 		}
 	}
-	return out, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, fmt.Errorf("store: iterate blob refs: %w", err)
+	}
+
+	// 草稿。归档（软删除）的草稿同样算引用：它还能恢复，
+	// 与上面"回收站里的条目也要算"是同一条理由。
+	if err := d.forEachDraftMD(ctx, func(md string) error {
+		for _, rel := range DraftBlobRefsInMD(md) {
+			out[rel] = struct{}{}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // TagItemIDs 返回某标签下的全部条目 id（导出/统计用）。

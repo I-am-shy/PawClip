@@ -31,7 +31,7 @@ func TestOpen_CreatesSchema(t *testing.T) {
 	}
 
 	for _, name := range []string{
-		"items", "categories", "tags", "item_tags", "imports", "settings", "items_fts",
+		"items", "categories", "tags", "item_tags", "imports", "settings", "items_fts", "drafts",
 	} {
 		var n int
 		err := db.Reader().QueryRowContext(ctx,
@@ -568,5 +568,78 @@ func TestFTSMirrorsWholeItemsTableNotJustAlive(t *testing.T) {
 	if len(pg.Rows) != 0 {
 		t.Errorf("软删除的条目被搜出来了 %d 条——查询侧丢了 deleted_at IS NULL 过滤"+
 			"（FTS 索引里留着软删除的行是正常的，但查询必须挡住）", len(pg.Rows))
+	}
+}
+
+// ── 迁移 ────────────────────────────────────────────────────────
+
+// TestMigrate_V3ToV4_KeepsDrafts 钉住草稿的升级路径。
+//
+// 3 → 4 是给 drafts 加 import_id（备份的"一键回滚"要靠它认批次）。
+// 这条迁移的风险不在"加列失败"——那是立刻报错的那种错——而在
+// **加列时把既有草稿弄丢**：ALTER TABLE ADD COLUMN 的默认值必须是
+// NULL，于是老草稿的 import_id 全是 NULL，也就"不属于任何批次"，
+// 不会被任何一次回滚误删。这个不变量值得一条测试盯着。
+//
+// 造老库的办法是直接照着 v3 当时的形状建：ddlV1 + draftsDDL +
+// user_version = 3。刻意不复制一份"v3 版本的 schema.go"进来——
+// 那样测试会跟着代码一起漂移，就不再是"老库"了。
+func TestMigrate_V3ToV4_KeepsDrafts(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	pkgPath := filepath.Join(dir, "pawclip.db")
+
+	// ① 手工造一个 v3 库。
+	registerDrivers()
+	raw, err := sql.Open(driverRW, dsnWith(pkgPath, false))
+	if err != nil {
+		t.Fatalf("打开裸连接: %v", err)
+	}
+	for _, stmt := range []string{ddlV1, draftsDDL, "PRAGMA user_version = 3"} {
+		if _, err := raw.ExecContext(ctx, stmt); err != nil {
+			_ = raw.Close()
+			t.Fatalf("建 v3 库（%s）: %v", stmt, err)
+		}
+	}
+	if _, err := raw.ExecContext(ctx,
+		`INSERT INTO drafts (title, md, seq, sort_order, created_at, updated_at)
+		 VALUES ('升级前就有的', '正文', 1, 1, 1700000000, 1700000000)`); err != nil {
+		_ = raw.Close()
+		t.Fatalf("写老草稿: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("关闭裸连接: %v", err)
+	}
+
+	// ② 正常打开 → 应当升到 4，且老草稿还在。
+	db, err := Open(Options{Path: pkgPath, Logger: testLogger()})
+	if err != nil {
+		t.Fatalf("Open（升级）: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	var ver int
+	if err := db.Reader().QueryRowContext(ctx, "PRAGMA user_version").Scan(&ver); err != nil {
+		t.Fatalf("读 user_version: %v", err)
+	}
+	if ver != SchemaVersion {
+		t.Fatalf("升级后 user_version = %d，期望 %d", ver, SchemaVersion)
+	}
+
+	rows, err := db.ListDrafts(ctx)
+	if err != nil {
+		t.Fatalf("ListDrafts: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Title != "升级前就有的" {
+		t.Fatalf("升级后草稿 = %+v，期望那条老草稿还在", rows)
+	}
+	// 老草稿不属于任何批次（默认 NULL）——这正是"升级后不会被回滚误删"的依据。
+	var importID sql.NullInt64
+	if err := db.Reader().QueryRowContext(ctx,
+		"SELECT import_id FROM drafts WHERE title = '升级前就有的'").Scan(&importID); err != nil {
+		t.Fatalf("读 import_id: %v", err)
+	}
+	if importID.Valid {
+		t.Errorf("升级后老草稿的 import_id = %d，期望 NULL", importID.Int64)
 	}
 }
