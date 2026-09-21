@@ -56,7 +56,7 @@ type LogConfig struct {
 //
 // 两份版本号曾经是各写各的（plist 说 0.1.0、日志说 0.1.0-m1），后果是用户
 // 报问题时无法确认他手上的构建，所以特意收敛成一份。
-var Version = "0.1.0-dev"
+var Version = "0.1.1-dev"
 
 // appDirName 是数据目录名（同时也是 config.toml 所在目录名）。
 const appDirName = "PawClip"
