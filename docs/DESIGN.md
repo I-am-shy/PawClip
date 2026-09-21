@@ -1218,6 +1218,7 @@ pawclip/
 19. 下载后 Gatekeeper 拦截，README 写明：`xattr -dr com.apple.quarantine /Applications/PawClip.app`。
 20. Windows SmartScreen → "更多信息" → "仍要运行"。
 21. GitHub Actions 矩阵：`macos-14`（arm64）与 `macos-13`（x86_64）分别构建，或在单个 `macos-14` runner 上直接 `wails build -platform darwin/universal` 出通用二进制；`windows-2022` 出 NSIS 安装包。
+    - **CI 的前端层必须覆盖 `windows-2022`。** 发布时的 `frontend:build` 是在 Windows runner 上跑的（`release.yml` 的 windows 矩阵项），而 `check-i18n.mjs` / `check-md.mjs` 都是"按路径读文件、按路径 import"的 node 脚本——**路径处理恰好是最容易只在 Windows 上坏掉的一类代码**。2026-09-21 发 v0.1.1 就是这么炸的：`check-md.mjs` 用 `import(join(...))` 加载 `md.ts`，POSIX 上合法、Windows 上必抛 `ERR_UNSUPPORTED_ESM_URL_SCHEME`（`import()` 吃的是 URL，不是路径）；当时 CI 里跑 `npm run build` 的只有 ubuntu 那一格，于是 mac 全绿、Windows 红、Release 被跳过，错误一路漏到打完 tag 才出现。现在 `frontend` job 是 `ubuntu-latest` + `windows-2022` 两格（`fail-fast: false`）。
 22. `.gitignore` 排除 `build/bin/`（Wails 产物）、`frontend/dist/`、`node_modules/`、`*.dmg` / `*.exe` / `*.msi`、`*.clipbak`、本地 `pawclip.db*` 与 `blobs/`。**发布产物只进 Release，不进仓库。**
     - **例外**：`assets/icon/dist/`（约 3.3 MB）**要入库**——它是 Wails 的构建**输入**（appicon + 托盘图都从这里取），不是发布产物。入库才能保证 `git clone && wails build` 开箱即用、不依赖 Node 工具链。若将来嫌体积大，可改为忽略整个目录并在构建前跑一次 `node scripts/build-icons.cjs`（§15.4）。
 
