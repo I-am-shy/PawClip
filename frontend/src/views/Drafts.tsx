@@ -40,6 +40,7 @@ import { call, type DraftList, type DraftRow } from '../api'
 import { IMG_MIN_W, externalHref, findAutoLinks, htmlToMd, mdToHtml, safeHref } from '../md'
 import { formatDateTime, formatRelative, formatTime } from '../format'
 import { useInterval } from '../hooks'
+import { ConfirmModal } from '../components/ConfirmModal'
 import {
   IconChevron,
   IconGrip,
@@ -390,22 +391,8 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
     return () => window.removeEventListener('resize', refreshImgSel)
   }, [refreshImgSel])
 
-  // 彻底删除确认框里的 Esc = 取消。
-  //
-  // 必须用**捕获**阶段：App 那一层也在 window 上听 Esc（非面板视图 = 返回），
-  // 不先把它截下来的话，用户按 Esc 会"连同弹窗一起"退回历史页——弹窗关了、
-  // 草稿本也关了，像是按了一次按钮。
-  useEffect(() => {
-    if (confirmPurge == null) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      e.preventDefault()
-      e.stopPropagation()
-      setConfirmPurge(null)
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [confirmPurge])
+  // 弹窗自己的 Esc / 键盘隔离由 ConfirmModal 负责（那里在捕获阶段接管了
+  // 整个 keydown，App 的"Esc = 返回"这一层因此收不到，不会连草稿本一起关掉）。
 
   // 第 2 层：连续打字时防抖永不触发，靠这个 5 秒的 tick 强制落盘。
   useInterval(() => {
@@ -1299,52 +1286,18 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
       </div>
 
       {/* 彻底删除的确认框。
-          用模态而不是"就地替换掉那一条目录"：这是全应用唯一不可恢复的动作，
-          而侧栏总共 180 px，一句完整的话在那里会被切成省略号——最要紧的那半句
-          （删的是哪一条）恰好是被切掉的那半句。 */}
+          用模态而不是"就地替换掉那一条目录"：这是草稿本里唯一不可恢复的
+          动作，而侧栏总共 180 px，一句完整的话在那里会被切成省略号——
+          最要紧的那半句（删的是哪一条）恰好是被切掉的那半句。 */}
       {purgeTarget && (
-        <div
-          className="modal-mask"
-          role="presentation"
-          onMouseDown={(e) => {
-            // 点遮罩 = 取消。用 mousedown 而不是 click，是为了让"在弹窗里按下、
-            // 拖到外面松手"这种误操作不会把它关掉。
-            if (e.target === e.currentTarget) setConfirmPurge(null)
-          }}
-        >
-          <div
-            className="modal"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="draft-purge-title"
-            aria-describedby="draft-purge-body"
-          >
-            <div className="modal-title" id="draft-purge-title">
-              {t('draft.purgeTitle')}
-            </div>
-            <div className="modal-body" id="draft-purge-body">
-              {t('draft.purgeBody', { name: purgeTarget.title || t('draft.untitled') })}
-            </div>
-            <div className="modal-acts">
-              {/* 取消拿到焦点：这个弹窗的默认动作必须是"不发生任何事"。 */}
-              <button
-                type="button"
-                className="btn btn-quiet"
-                autoFocus
-                onClick={() => setConfirmPurge(null)}
-              >
-                {t('common.cancel')}
-              </button>
-              <button
-                type="button"
-                className="btn btn-danger"
-                onClick={() => void purgeDraft(purgeTarget.id)}
-              >
-                {t('action.purge')}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmModal
+          title={t('draft.purgeTitle')}
+          body={t('draft.purgeBody', { name: purgeTarget.title || t('draft.untitled') })}
+          confirmLabel={t('action.purge')}
+          cancelLabel={t('common.cancel')}
+          onCancel={() => setConfirmPurge(null)}
+          onConfirm={() => void purgeDraft(purgeTarget.id)}
+        />
       )}
     </div>
   )

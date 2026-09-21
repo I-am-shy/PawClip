@@ -20,6 +20,7 @@ import {
   type PrecheckResult,
 } from '../api'
 import { formatBytes, formatDateTime, formatDuration } from '../format'
+import { ConfirmModal } from '../components/ConfirmModal'
 
 export type BackupProps = {
   t: TFn
@@ -264,9 +265,14 @@ function ImportPane({
     [onToast, t],
   )
 
+  // 撤销导入是破坏性的（那批条目会被删掉），所以先弹确认框。
+  // 以前这里是 window.confirm —— 见 ConfirmModal 顶部：WKWebView 里那个
+  // 对话框根本不会出现，`if (!confirm(...)) return` 会让这个按钮**点了没反应**。
+  const [askRollback, setAskRollback] = useState(false)
+
   const rollback = async () => {
     if (!latest || !latest.rollbackPossible) return
-    if (!window.confirm(t('backup.rollbackConfirm'))) return
+    setAskRollback(false)
     setBusy(true)
     try {
       const n = await call('RollbackImport', latest.id)
@@ -408,7 +414,7 @@ function ImportPane({
               type="button"
               className="btn btn-quiet"
               disabled={busy || !latest.rollbackPossible}
-              onClick={() => void rollback()}
+              onClick={() => setAskRollback(true)}
             >
               {t('backup.rollback')}
             </button>
@@ -417,6 +423,17 @@ function ImportPane({
           <span className="dim">{t('backup.noLastImport')}</span>
         )}
       </div>
+
+      {askRollback && (
+        <ConfirmModal
+          title={t('backup.rollbackTitle')}
+          body={t('backup.rollbackConfirm')}
+          confirmLabel={t('backup.rollback')}
+          cancelLabel={t('common.cancel')}
+          onCancel={() => setAskRollback(false)}
+          onConfirm={() => void rollback()}
+        />
+      )}
     </div>
   )
 

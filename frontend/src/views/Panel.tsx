@@ -24,7 +24,17 @@ import { Preview } from '../components/Preview'
 import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu'
 import { ContentViewer } from '../components/ContentViewer'
 import { SearchBar, buildOpts } from '../components/SearchBar'
+import { ConfirmModal } from '../components/ConfirmModal'
 import { IconChevron, IconRestore, IconTrash } from '../components/Icons'
+
+/**
+ * 需要先确认再执行的破坏性动作。
+ *
+ * 存"要删哪些 id"而不是一个布尔：单条（行内按钮 / Backspace）、批量
+ * （批处理条）、清空回收站（清的是全部，与筛选无关）走同一个弹窗，
+ * 弹窗只需要知道文案与条数。
+ */
+type PendingConfirm = { kind: 'purge'; ids: number[] } | { kind: 'empty' }
 
 export type PanelProps = {
   t: TFn
@@ -88,6 +98,8 @@ export function Panel(p: PanelProps) {
   // 那个是"选中这条时顺便看看"，这个是"专门弹出来看清楚"。
   const [viewerId, setViewerId] = useState<number | null>(null)
   const [showHint, setShowHint] = useState(false)
+  // 待确认的破坏性动作（null = 没有弹窗）。确认框住在 ConfirmModal 里。
+  const [pending, setPending] = useState<PendingConfirm | null>(null)
 
   const inputRef = useRef<HTMLInputElement>(null)
   // 请求序号：防抖之后仍可能有多个请求在飞（键入快 + 后端慢），
@@ -302,8 +314,10 @@ export function Panel(p: PanelProps) {
     [p, t, refresh],
   )
 
-  const purge = useCallback(
+  /** runPurge 执行彻底删除。确认已经由弹窗做过，这里不再问第二遍。 */
+  const runPurge = useCallback(
     async (ids: number[]) => {
+      setPending(null)
       try {
         await call('Purge', ids)
         setRows((prev) => prev.filter((r) => !ids.includes(r.id)))
@@ -314,11 +328,25 @@ export function Panel(p: PanelProps) {
     [p, t],
   )
 
-  const emptyTrash = useCallback(async () => {
-    if (!window.confirm(t('trash.emptyConfirm'))) return
+  /**
+   * askPurge 是"彻底删除"的唯一入口：先弹确认，再执行。
+   *
+   * 之所以不把确认写进 runPurge 里：调用点有三种（行内按钮、批处理条、
+   * Backspace），确认必须**一个都不漏**，那就只能让它成为必经之路，
+   * 而不是靠每个调用点自觉。
+   */
+  const askPurge = useCallback((ids: number[]) => {
+    if (ids.length > 0) setPending({ kind: 'purge', ids })
+  }, [])
+
+  /** runEmptyTrash 清空回收站（同样，确认已做过）。 */
+  const runEmptyTrash = useCallback(async () => {
+    setPending(null)
     try {
       const n = await call('EmptyTrash')
-      p.onToast(t('trash.restored', { n }))
+      // 这句以前复用的是 trash.restored（"已恢复 {n} 条"）——清空之后说
+      // "已恢复"是反的，而且那是唯一一处能告诉用户"到底删掉了多少"的地方。
+      p.onToast(t('trash.emptied', { n }))
       refresh()
     } catch (e: unknown) {
       p.onToast(t('err.generic', { err: msg(e) }))
@@ -426,7 +454,9 @@ export function Panel(p: PanelProps) {
       if ((e.key === 'Backspace' || e.key === 'Delete') && !inInput) {
         if (activeId == null) return
         e.preventDefault()
-        if (trashed) void purge([activeId])
+        // 回收站里 Backspace = 彻底删除，所以一样要过确认：这条高速通路
+        // 原先没有任何确认，而它恰好是最容易被连按的那一条。
+        if (trashed) askPurge([activeId])
         else void remove(activeId)
         return
       }
@@ -435,7 +465,7 @@ export function Panel(p: PanelProps) {
     return () => window.removeEventListener('keydown', onKey)
   }, [
     rows, activeId, text, selectedIds, previewId, quickPasteCount,
-    paste, remove, purge, removeMany, trashed, p,
+    paste, remove, askPurge, removeMany, trashed, p,
     seq, nextInSequence,
   ])
 
@@ -527,7 +557,7 @@ export function Panel(p: PanelProps) {
               onTogglePin={togglePin}
               onDelete={remove}
               onRestore={(id) => void restore([id])}
-              onPurge={(id) => void purge([id])}
+              onPurge={(id) => askPurge([id])}
               onLoadMore={loadMore}
             />
 
@@ -539,7 +569,7 @@ export function Panel(p: PanelProps) {
                     <button type="button" className="btn" onClick={() => void restore(selected)}>
                       <IconRestore size={13} /> {t('action.restore')}
                     </button>
-                    <button type="button" className="btn danger" onClick={() => void purge(selected)}>
+                    <button type="button" className="btn danger" onClick={() => askPurge(selected)}>
                       <IconTrash size={13} /> {t('action.purge')}
                     </button>
                   </>
@@ -609,7 +639,11 @@ export function Panel(p: PanelProps) {
           {trashed ? (
             <>
               <span className="dim">{t('list.trash')}</span>
-              <button type="button" className="linkbtn danger" onClick={() => void emptyTrash()}>
+              <button
+                type="button"
+                className="linkbtn danger"
+                onClick={() => setPending({ kind: 'empty' })}
+              >
                 {t('trash.empty')}
               </button>
             </>
@@ -644,6 +678,29 @@ export function Panel(p: PanelProps) {
         onCopy={(id) => void copyOnly(id)}
         onRevealFile={(path) => void revealFile(path)}
       />
+
+      {/* 破坏性动作的确认框。三种彻底删除的入口（行内按钮 / 批处理条 /
+          Backspace）与"清空回收站"共用这一处渲染，文案按 pending.kind 选。
+
+          "清空回收站"刻意不写条数：那个数得按当前筛选算，而清空清的是
+          回收站里的**全部**——写一个"按筛选算出来的数"比不写更糟。 */}
+      {pending && (
+        <ConfirmModal
+          title={
+            pending.kind === 'empty'
+              ? t('trash.emptyTitle')
+              : t('trash.purgeTitle', { n: pending.ids.length })
+          }
+          body={pending.kind === 'empty' ? t('trash.emptyBody') : t('trash.purgeBody')}
+          confirmLabel={pending.kind === 'empty' ? t('trash.empty') : t('action.purge')}
+          cancelLabel={t('common.cancel')}
+          onCancel={() => setPending(null)}
+          onConfirm={() => {
+            if (pending.kind === 'empty') void runEmptyTrash()
+            else void runPurge(pending.ids)
+          }}
+        />
+      )}
     </div>
   )
 }

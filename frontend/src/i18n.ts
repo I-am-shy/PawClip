@@ -87,9 +87,17 @@ const zh: Dict = {
   'viewer.hintText': '⌘ 滚轮缩放字号 · 可直接选中文本 · Esc 关闭',
 
   'trash.empty': '清空回收站',
-  'trash.emptyConfirm': '清空回收站？其中的条目将被彻底删除，无法恢复。',
   'trash.restored': '已恢复 {n} 条',
   'trash.conflict': '有 {n} 条因指纹冲突未能恢复',
+  'trash.emptied': '已彻底删除 {n} 条',
+
+  // 破坏性动作的确认框（components/ConfirmModal.tsx）。
+  // 标题写问句、正文只说后果：正文里不重复"要不要做"——执行按钮上写的就是
+  // 那个动词，重复一遍只会让这段话更长而信息量不变。
+  'trash.purgeTitle': '彻底删除这 {n} 条记录？',
+  'trash.purgeBody': '删除后无法恢复。',
+  'trash.emptyTitle': '清空回收站？',
+  'trash.emptyBody': '回收站里的全部条目会被永久删除，无法恢复。',
 
 
 
@@ -231,7 +239,8 @@ const zh: Dict = {
   'backup.importing': '导入中…',
   'backup.importDone': '导入完成',
   'backup.rollback': '撤销上次导入',
-  'backup.rollbackConfirm': '撤销上次导入？那批导进来的条目会被删除。',
+  'backup.rollbackTitle': '撤销上次导入？',
+  'backup.rollbackConfirm': '那批导进来的条目会被删除，且无法恢复。',
   'backup.lastImport': '最近一次导入',
   'backup.noLastImport': '没有可撤销的导入批次',
   'backup.path': '路径',
@@ -398,9 +407,13 @@ const en: Dict = {
   'viewer.hintText': '⌘-scroll to zoom the text · selectable · Esc to close',
 
   'trash.empty': 'Empty trash',
-  'trash.emptyConfirm': 'Empty the trash? Those items will be permanently deleted.',
   'trash.restored': 'Restored {n}',
   'trash.conflict': '{n} could not be restored (fingerprint taken)',
+  'trash.emptied': 'Permanently deleted {n}',
+  'trash.purgeTitle': 'Permanently delete {n} items?',
+  'trash.purgeBody': 'This cannot be undone.',
+  'trash.emptyTitle': 'Empty the trash?',
+  'trash.emptyBody': 'Every item in the trash will be permanently deleted. This cannot be undone.',
 
 
 
@@ -543,7 +556,8 @@ const en: Dict = {
   'backup.importing': 'Importing…',
   'backup.importDone': 'Import finished',
   'backup.rollback': 'Undo last import',
-  'backup.rollbackConfirm': 'Undo the last import? Items from that batch will be deleted.',
+  'backup.rollbackTitle': 'Undo the last import?',
+  'backup.rollbackConfirm': 'Items from that batch will be deleted. This cannot be undone.',
   'backup.lastImport': 'Last import',
   'backup.noLastImport': 'No import batch available to undo',
   'backup.path': 'Path',
