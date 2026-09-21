@@ -6,7 +6,7 @@
 实测环境：macOS / Apple Silicon，2026-09-16（首轮）· 2026-09-21（M5 草稿本补测）。
 单测口径 `test/run.sh`（= `go test -tags sqlite_fts5 -p 1 -count=1 ./...`）；
 真机口径 `test/accept.sh`（对 `build/bin/pawclip.app` 实跑，真剪贴板、真磁盘、真 SIGKILL）。
-当前规模：**299 条用例 / 9 个包全绿**（另有一个无测试的工具包 `tools/genpinyin`）。
+当前规模：**300 条用例 / 9 个包全绿**（另有一个无测试的工具包 `tools/genpinyin`）。
 
 ---
 
@@ -35,13 +35,15 @@
 | 草稿往返 | 导出→清库→导入后逐字段一致，且**图片真的在 `blobs/` 里** | 标题/正文/创建时间/修改时间逐字段一致；包内引用已改写成 `blobs/…`、库内改回 `blob/…`；导入后 `os.Stat` 贴图命中 | `backup` `TestAcceptance3_DraftsRoundTrip` | ✅ |
 | 草稿回滚 | 一键回滚带走那批草稿，本机草稿不受影响 | 回滚后该批次草稿数为 0；归档草稿与 `import_id IS NULL` 的草稿不在删除面内 | 同上（测试后半段）+ `store` `TestDeleteImportItems_AlsoRemovesDrafts` / `TestPurgeDraft_DetachesFromImport` | ✅ |
 | 草稿图片存活 | 贴图跨过 24 h 门槛跑 3 轮 GC 仍在 | 3 轮 GC 后贴图仍在；另钉住「库里只有草稿、`items` 为空」时孤儿扫描**仍然执行** | `retention` `TestGC_DraftImagesSurviveOrphanSweep` / `TestGC_DraftOnlyLibrarySweepsOrphans` | ✅ |
-| 草稿归档到期回收 | 归档草稿超 `retention.trashTtlSec` 后被硬删 | 超期归档草稿被收走并计入 `Report.DraftsPurged` / `DraftsPurgedChars` | `retention` `TestGC_PurgesArchivedDrafts` | ✅ |
+| 草稿归档到期回收 | 归档草稿超 `draft.archiveTtlSec` 后被硬删 | 超期归档草稿被收走并计入 `Report.DraftsPurged` / `DraftsPurgedChars` | `retention` `TestGC_PurgesArchivedDrafts` | ✅ |
+| 归档保留期独立 | 回收站保留期调短不牵连草稿归档（反之亦然） | 回收站 1 h、草稿 30 天：超期回收站条目被删、刚归档草稿保留（两方向都断言） | `retention` `TestGC_DraftArchiveTtlIsIndependentOfTrashTtl` | ✅ |
 | 草稿目录规模 | 200 条时目录滚动流畅（列表不读正文全文） | **未做真机滚动取证**；纪律侧已钉住：`ListDrafts` 的 SQL 只取 `substr(md,1,120)` 摘要，不 SELECT 全文 | `store` `TestListDrafts_DoesNotLoadFullBody` | ⚠️ 见下 |
 | 草稿保存延迟 | 停手 ≤ 800 ms 落盘；持续打字 5 s 内必落一次 | **未做量化取证**（前端防抖 500 ms + 5 s 强制落盘，代码路径存在但无计时用例） | — | ⚠️ 见下 |
 | 草稿断电安全 | 编辑中强杀，重启后为最后一次落盘内容且库可开 | **未做真机取证**（沿用条目侧同一条 `capture` 用例的结论外推，不构成独立证据） | — | ⚠️ 见下 |
 
-草稿本的**格式与不变量**在单测层面是齐的（`test/check-md.mjs` 68 条断言钉住
-md ⇄ HTML 往返与转义契约；`store`/`backup`/`retention` 共 20 条草稿相关用例）。
+草稿本的**格式与不变量**在单测层面是齐的（`test/check-md.mjs` 81 条断言钉住
+md ⇄ HTML 往返、转义契约与裸 URL 识别规则；`store`/`backup`/`retention` 共
+21 条草稿相关用例）。
 上表三条 ⚠️ 是**缺真机取证**，不是发现缺陷——它们都需要在真实面板里手动操作
 （滚动、计时、强杀），`accept.sh` 目前不驱动 UI，所以自动验收覆盖不到。
 
