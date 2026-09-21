@@ -22,6 +22,23 @@ set -u
 
 cd "$(dirname "$0")/.."
 
+# ── locale 钉死：④⑥ 要靠 pbcopy 往真剪贴板写**中文** ────────────────
+#
+# pbcopy 按 LC_CTYPE 把 stdin 的字节解释成 NSString。locale 不是 UTF-8 时
+# 它对非 ASCII **静默写入空字符串**——剪贴板照旧有类型，长度却是 0。
+# 于是应用那边"什么都没捕获到"，看起来像捕获坏了。
+#
+# 实测（2026-09-21，从 IDE/自动化脚本里跑，LC_CTYPE=C）：
+#     printf '中文' | pbcopy && pbpaste     → 空
+#     osascript -e 'clipboard info'         → «class utf8», 0
+# 结果是 ④⑥ 双双假红，而 ⑤ 的图片走 osascript（绕开了 pbcopy）照样全绿。
+# 这个"文字全红、图片全绿"的分裂正是把方向指到这里的线索。
+#
+# 这两条用例要测的是应用，不是"谁的 shell 是什么 locale"，所以在脚本里钉死。
+# 想换语言环境用 PAWCLIP_ACCEPT_LOCALE 覆盖，不必改脚本。
+export LC_ALL="${PAWCLIP_ACCEPT_LOCALE:-en_US.UTF-8}"
+export LANG="$LC_ALL"
+
 APP=./build/bin/pawclip.app
 BIN=$APP/Contents/MacOS/PawClip
 WORK=$PWD/.workbuddy/tmp/pawclip-accept
@@ -181,19 +198,25 @@ else
   #
   # 这条判据分两级，因为它**已知达不到**：
   #   · ≤ 30 MB        → 达标（§12 原目标）
-  #   · 31–80 MB       → warn 已知差距（Wails 单窗口模型的代价，docs/ACCEPTANCE.md 有归因）
-  #   · > 80 MB        → bad  回归（稳态实测 54 MB，涨到 80 以上说明真的多占了东西）
+  #   · 31–90 MB       → warn 已知差距（Wails 单窗口模型的代价，docs/ACCEPTANCE.md 有归因）
+  #   · > 90 MB        → bad  回归
   #
   # 为什么不干脆一直算失败：一条"永远红"的判据会让人学会无视整张表——
   # 那它就再不报警了。这里保留的是**回归预警**：已知差距照实报，但一旦明显
-  # 恶化就翻红。80 MB 这个数是 54 MB 稳态留约 50% 余量得来的。
-  IDLE_REGRESSION_MB=80
+  # 恶化就翻红。
+  #
+  # 90 这个数（原为 80）的来历：2026-09-21 做对照实测时发现同一份二进制在
+  # 同一台机器上会在 **60–73 MB 之间摆动**（v0.1.0 对照 60/64/65，v0.1.1
+  # 65/66/67/73，差异来自 WebKit 在那一刻的状态，不是版本差异）。
+  # 80 只比实测最大值高 9%，一次正常抖动就会假红；而回归线的用途是抓
+  # "翻倍"级别的退化，不是抓 10%。§12 的 30 MB 目标**不受此影响**，仍是 warn。
+  IDLE_REGRESSION_MB=90
   if [ "${R2:-9999}" -ge 0 ] && [ "${R2:-9999}" -le 30 ]; then
     ok "空闲常驻内存 ${R2} MB ≤ 30 MB"
   elif [ "${R2:-9999}" -gt 30 ] && [ "${R2:-9999}" -le $IDLE_REGRESSION_MB ]; then
     warn "空闲常驻内存 ${R2} MB 未达 §12 的 30 MB —— 已知差距（Wails 单窗口模型，归因见 docs/ACCEPTANCE.md）"
   else
-    bad "空闲常驻内存 ${R2} MB > ${IDLE_REGRESSION_MB} MB —— 相对 54 MB 稳态明显回归"
+    bad "空闲常驻内存 ${R2} MB > ${IDLE_REGRESSION_MB} MB —— 相对 60–73 MB 的实测区间明显回归"
   fi
 
   if awk -v c="$IDLE_CPU" 'BEGIN { exit !(c < 1.0) }'; then
@@ -206,20 +229,39 @@ fi
 echo ""
 echo "④ 真实剪贴板捕获 · 文本"
 
-printf 'PawClip 验收 · 文本条目 alpha' | pbcopy
-sleep 1.5
-printf 'PawClip 验收 · 文本条目 beta' | pbcopy
-sleep 1.5
+TXT_A='PawClip 验收 · 文本条目 alpha'
+TXT_B='PawClip 验收 · 文本条目 beta'
 
-n=$(q "SELECT count(*) FROM items WHERE deleted_at IS NULL;")
-if [ "$n" = "2" ]; then
-  ok "两次复制都落库（count = $n）"
+# 断言的是"**这两次**复制都落库"，所以用增量而不是绝对条数：真实机器上随时
+# 可能有别的进程往剪贴板里放东西，绝对条数会把那种情况判成失败。
+BASE=$(q "SELECT count(*) FROM items WHERE deleted_at IS NULL;")
+BASE=${BASE:-0}
+
+printf '%s' "$TXT_A" | pbcopy
+
+# 先确认**我们真的写进去了**，再谈应用有没有收到（原因见文件头 locale 那段）。
+# 少了这一步，LC_CTYPE 不是 UTF-8 时这条用例的失败信息会把"harness 没写进去"
+# 报成"应用没捕获到"，方向正好是反的。
+if [ "$(pbpaste)" != "$TXT_A" ]; then
+  TEXT_CAP_OK=0
+  bad "pbcopy 写不进非 ASCII（LC_CTYPE=${LC_CTYPE:-未设}，读回「$(pbpaste)」）—— ④⑥ 与产品无关，先修环境"
 else
-  bad "两次复制后 count = $n，想要 2"
+  TEXT_CAP_OK=1
+  sleep 1.5
+  printf '%s' "$TXT_B" | pbcopy
+  sleep 1.5
+
+  n=$(q "SELECT count(*) FROM items WHERE deleted_at IS NULL;")
+  n=${n:-0}
+  if [ "$((n - BASE))" = "2" ]; then
+    ok "两次复制都落库（count $BASE → $n）"
+  else
+    bad "两次复制后新增 $((n - BASE)) 条（$BASE → $n），想要 2"
+  fi
 fi
 
-preview=$(q "SELECT preview FROM items ORDER BY id LIMIT 1;")
-info "首条 preview = $preview"
+preview=$(q "SELECT preview FROM items WHERE text_content = '$TXT_B';")
+info "beta 的 preview = $preview"
 
 # ── ⑤ 捕获：图片 ─────────────────────────────────────────────────
 echo ""
@@ -275,25 +317,31 @@ wait_use() {
   return 1
 }
 
-printf '%s' "$DEDUP" | pbcopy
-if ! wait_use 1; then
-  bad "第一次复制后 use_count 没变成 1"
+if [ "$TEXT_CAP_OK" != "1" ]; then
+  # ⑥ 与 ④ 走的是同一个 pbcopy 通路。④ 的前置检查已经证明"写不进去"，
+  # 再跑一遍只会把同一件事报成"去重坏了"。跳过并说明，不制造第二条假红。
+  info "跳过：④ 的前置检查显示 pbcopy 写不进非 ASCII（LC_CTYPE=${LC_CTYPE:-未设}）"
 else
-  for n in $(seq 2 100); do
-    printf '%s' "$DEDUP" | pbcopy
-    if ! wait_use "$n"; then
-      bad "第 $n 次复制后 use_count 没涨到 $n（当前 $(use_count)）"
-      break
-    fi
-  done
-fi
+  printf '%s' "$DEDUP" | pbcopy
+  if ! wait_use 1; then
+    bad "第一次复制后 use_count 没变成 1"
+  else
+    for n in $(seq 2 100); do
+      printf '%s' "$DEDUP" | pbcopy
+      if ! wait_use "$n"; then
+        bad "第 $n 次复制后 use_count 没涨到 $n（当前 $(use_count)）"
+        break
+      fi
+    done
+  fi
 
-rows=$(q "SELECT count(*) FROM items WHERE text_content = '$DEDUP';")
-uses=$(use_count)
-if [ "$rows" = "1" ] && [ "$uses" = "100" ]; then
-  ok "1 行且 use_count = 100"
-else
-  bad "rows = $rows（想要 1），use_count = $uses（想要 100）"
+  rows=$(q "SELECT count(*) FROM items WHERE text_content = '$DEDUP';")
+  uses=$(use_count)
+  if [ "$rows" = "1" ] && [ "$uses" = "100" ]; then
+    ok "1 行且 use_count = 100"
+  else
+    bad "rows = $rows（想要 1），use_count = $uses（想要 100）"
+  fi
 fi
 
 
