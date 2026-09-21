@@ -242,6 +242,14 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          # 自动附上本版相对上一个 tag 的变更列表，接在下面这段固定正文之后。
+          #
+          # 为什么值得开：Release 页面是用户唯一会读的地方（README 在下载页
+          # 后面），而 v0.1.0 的正文里只说"怎么下载、怎么绕过 Gatekeeper"，
+          # 没有任何一句说这一版改了什么。用户想知道"我要不要更新"时，
+          # 那正是他找不到的信息。提交历史本来就是 Conventional Commits
+          # （docs/HANDOFF-PROMPT.md 的提交纪律），自动生成的列表可读性够用。
+          generate_release_notes: true
           # 正文里给出 §14 第 19/20 条要求的两条"下载后怎么办"：
           # 这是用户唯一会看的地方，写在 README 里等于没写。
           body: |
