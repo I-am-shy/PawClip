@@ -3,7 +3,7 @@
 一条命令跑全部：
 
 ```bash
-test/run.sh              # 格式 → 静态检查 → 单测 → 前端检查（约 45 秒）
+test/run.sh              # 格式 → 静态检查 → 单测 → 前端检查 → 跨平台编译（约 45 秒）
 test/run.sh --short      # 同上，跳过规模测试（约 10 秒）
 test/run.sh --build --accept   # 再加：重新出包 + 对产物做真机验收（发布前的完整口径）
 ```
@@ -21,7 +21,8 @@ test/run.sh --build --accept   # 再加：重新出包 + 对产物做真机验�
 | `demo-m1.sh` | **端到端演示**：起真 App → 真复制几样东西 → 把落库结果摊开给你看 | `scripts/build.sh && test/demo-m1.sh` |
 | `check-i18n.mjs` | 前端 i18n 一致性（两份字典键集相同、没有死键） | `npm --prefix frontend run check:i18n` |
 
-`run.sh` 里除 `--build` 外**都不需要先构建**：前三层是纯 Go、第四层是纯前端。
+`run.sh` 里除 `--build` 外**都不需要先构建**：第 ①②③ 层与第 ⑤ 层是纯 Go
+（⑤ 只是交叉编译，不需要目标平台在本地），第 ④ 层是纯前端。
 
 ## 二、为什么 Go 单测不在这个目录里（重要）
 
@@ -32,15 +33,16 @@ Go 要求 `*_test.go` 与被测包**同目录**——连 `package foo_test` 这�
 跑"，而是**编译失败**：本仓库的测试大量访问包内未导出符号（`listSQL`、
 `chooseFTSPlan`、`newApp`、`msgErr`…），出了包一个都够不着。
 
-所以 32 个测试文件仍分布在各包目录里：
+所以 37 个测试文件仍分布在各包目录里（2026-09-23 重数）：
 
 ```
-.                       6 个    app / boot / config / i18n / messages / resources
-store/                  8 个    schema / items / writer / fts / plan / pinyin / latency / testutil
+.                       8 个    app / boot / config / dialogs / hotkey_setting / i18n / messages / resources
+store/                  9 个    drafts / fts / items / latency / pinyin / plan / schema / testutil / writer
 clipboard/              7 个    normalize（含 html/dib/dropfiles）/ filter / filter_apply / guard
 capture/                5 个    capture / acceptance / acceptance_real_darwin / latency / testutil
 backup/                 2 个    backup / yaml
-panel/ pinyin/ retention/ transform/   各 1 个
+panel/                  3 个    geometry / hotkey / size
+pinyin/ retention/ transform/   各 1 个
 ```
 
 能集中到 `test/` 的只有**独立可执行的测试资产**——也就是上表那四个。
@@ -53,16 +55,24 @@ panel/ pinyin/ retention/ transform/   各 1 个
 |---|---|---|
 | ① 格式 `gofmt -l` | 代码走没走 gofmt。只列不改，只读 | 全仓 `*.go` |
 | ② 静态检查 `go vet -tags sqlite_fts5` | 类型/格式串/锁拷贝一类静态问题 | 全仓 |
-| ③ 单元测试 | **逻辑正确**：注入假剪贴板后端，确定性、可重复 | 上表 32 个文件 |
+| ③ 单元测试 | **逻辑正确**：注入假剪贴板后端，确定性、可重复 | 上表 37 个文件 |
 | ③′ 规模测试（`--short` 跳过） | **指标达标**：10 万条下检索延迟、5 MB 图片落库 | `store/latency_test.go`、`capture/latency_test.go` |
 | ④ 前端检查 | 两份 i18n 字典键集一致、无死键；TS 类型正确 | `test/check-i18n.mjs`、`tsc --noEmit` |
-| ⑤ 产物验收（`--accept`） | **这个 `.app` 真能跑**：签名、`LSUIElement`、真剪贴板捕获、断电安全 | `test/accept.sh` |
-| ⑤′ 演示（`--demo`） | 链路真的走通——给人看的，不判对错 | `test/demo-m1.sh` |
+| ⑤ 跨平台编译 | **Windows / Linux 的代码编得出来**。②③ 只编译本机平台，`panel/windows.go`、`clipboard` 的 windows 实现这些文件在本机**一次都不会被编译到** | `GOOS=windows/linux go build`，与 ci.yml 的 `compile-check` 同口径 |
+| ⑥ 产物验收（`--accept`） | **这个 `.app` 真能跑**：签名、`LSUIElement`、真剪贴板捕获、断电安全 | `test/accept.sh` |
+| ⑥′ 演示（`--demo`） | 链路真的走通——给人看的，不判对错 | `test/demo-m1.sh` |
 
-**③ 和 ⑤ 缺一不可。** 单测全绿而产物发不出去（签名坏了、`Info.plist` 丢了
+**③ 和 ⑥ 缺一不可。** 单测全绿而产物发不出去（签名坏了、`Info.plist` 丢了
 `LSUIElement`、构建漏了标签）是最常见的发布事故，而它**一条单测都不会红**。
 反过来，`accept.sh` 也抓不到边界条件——它只走一遍正常路径。
 验收的实际结果与已知差距见 `docs/ACCEPTANCE.md`。
+
+**⑤ 为什么值得占一层：** 这个仓库有一批代码只能在目标平台上编译
+（`panel/windows.go` 的全部 Win32 调用、`clipboard` 的 windows 后端）。
+本机是 macOS，②③ 看不见它们——改坏了本机全绿、CI 才红，而"等 CI"是个很慢的
+反馈回路。⑤ 把这件事提前到本地，代价是两次交叉编译（有缓存时不到一秒）。
+它证明的仍然只有"编得出来"：**行为**对不对只能在真机上验，见 `docs/ACCEPTANCE.md`
+的「已知遗留」。
 
 ## 四、三条硬口径（照抄就对了）
 
@@ -83,7 +93,8 @@ go test -tags sqlite_fts5 -p 1 -count=1 ./...
 参数顺序也有讲究：构建标签必须写在**包路径之前**。`go build ./... -tags x` 不是
 "传标签"，而是把 `-tags` 和 `x` 当成两个包路径解析（`malformed import path
 "-tags"`）。`go test` 对包后面参数有兼容处理，所以同样的写法在测试那一步能过——
-这个不对称正是最容易抄错的地方，带 `compile-check` 的 job 就是为它设的。
+这个不对称正是最容易抄错的地方。CI 里带 `compile-check` 的 job 就是为它设的，
+本机对应的就是上面第 ⑤ 层（两条命令逐字一致，一边改了另一边也要改）。
 
 ## 五、`accept.sh` 的三种结论
 

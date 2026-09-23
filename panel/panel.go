@@ -135,17 +135,23 @@ type Config struct {
 
 // 面板尺寸边界（逻辑点）。
 //
-// ⚠️ 这是**唯一**一份边界定义，三处都从它取：
+// ⚠️ 这是**唯一**一份边界定义，三个平台相关的地方都从它取：
 //
-//	① 原生侧把它设成窗口的 contentMinSize / contentMaxSize（darwin.go 传给
-//	   paw_attach，Windows 侧同样吃这一份）；
-//	② 上层在"把设置里的尺寸交给面板"之前夹取（app.go attachPanel）——
+//	① macOS：darwin.go 把 Min/Max 传给 paw_attach，成为 NSPanel 的
+//	   contentMinSize / contentMaxSize（拖动边缘时的边界）。
+//	② Windows：**不是**在 panel 包这里落实的，而是由 main.go 转发进
+//	   Wails 的 options.App.Min/MaxWidth/Height，再由 Wails 的
+//	   winc.Form 在 WM_GETMINMAXINFO 里按窗口 DPI 换算成
+//	   ptMinTrackSize/ptMaxTrackSize。
+//	   （原来这里写的是"Windows 侧同样吃这一份"，那句话在 2026-09-23 之前
+//	   一直是假的：Windows 侧根本没设过边界，因为面板当时压根不可缩放。）
+//	③ 上层在"把设置里的尺寸交给面板"之前夹取（app.go attachPanel）——
 //	   库里的值可能是老版本写进去的、或者被人手改过；
-//	③ 落库前再夹一次（app.go persistPanelSize），免得把窗口实际被系统
+//	④ 落库前再夹一次（app.go persistPanelSize），免得把窗口实际被系统
 //	   限制过的尺寸之外的怪值写回去。
 //
-// 下限的理由是布局：380pt 以下分类树 + 列表就挤碎了；上限的理由是形态，
-// 再大就不是"浮在别人窗口上的轻量面板"了。
+// 下限的理由是布局：§4.4.5 的草稿版式（左目录 + 右编辑）在 380 以下会挤碎；
+// 上限的理由是形态，再大就不是"浮在别人窗口上的轻量面板"了。
 const (
 	MinPanelWidth  = 380
 	MaxPanelWidth  = 760

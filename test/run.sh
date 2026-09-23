@@ -22,11 +22,12 @@ usage() {
   cat <<'EOF'
 用法：test/run.sh [选项]
 
-默认跑这四层（都不需要先构建）：
+默认跑这五层（都不需要先构建）：
   ① 格式      gofmt -l .
   ② 静态检查  go vet -tags sqlite_fts5 ./...
   ③ 单元测试  go test -tags sqlite_fts5 -p 1 -count=1 ./...
   ④ 前端检查  npm run check:i18n + check:md + check:types
+  ⑤ 跨平台编译 GOOS=windows/linux go build -tags sqlite_fts5 ./...
 
 选项：
   --short     跳过规模测试（10 万条检索延迟、5 MB 图片落库）
@@ -128,10 +129,32 @@ layer_frontend() {
   npm --prefix frontend run --silent check:types
 }
 
+# ⑤ 跨平台编译。与 ci.yml 的 compile-check job **逐字同口径**
+#（同样的 GOOS/GOARCH/CGO_ENABLED 三个环境变量、同样的标签位置）。
+#
+# 为什么本机也必须跑：本机是 macOS，`go vet` 与 `go test` 只编译当前平台
+# ——panel/windows.go、clipboard 的 windows 实现这些文件**在本机一次都不会
+# 被编译到**（这正是这个仓库"Windows 只能靠 CI"的老账）。把它提前到本机，
+# 代价是两次交叉编译：有缓存时不到一秒，冷缓存也就十几秒，
+# 换回来的是"改坏 Windows 专属代码当场就红"，而不是等推上去看 CI。
+#
+# ⚠️ 标签必须写在包路径**之前**（`./... -tags x` 会被当成三个包路径解析，
+# 报 malformed import path）。ci.yml 里对这条有长注释，两边一起看。
+layer_cross() {
+  local goos rc=0
+  for goos in windows linux; do
+    echo "  GOOS=$goos GOARCH=amd64 CGO_ENABLED=0 go build -tags sqlite_fts5 ./..."
+    GOOS=$goos GOARCH=amd64 CGO_ENABLED=0 \
+      go build -tags sqlite_fts5 ./... || rc=1
+  done
+  return $rc
+}
+
 run_layer "格式（gofmt）"                layer_fmt
 run_layer "静态检查（go vet）"           go vet -tags sqlite_fts5 ./...
 run_layer "单元测试（go test）"          layer_gotest
 run_layer "前端检查（i18n + 类型）"      layer_frontend
+run_layer "跨平台编译（windows + linux）" layer_cross
 
 if [ "$WANT_BUILD" = 1 ]; then
   run_layer "构建产物（scripts/build.sh）" scripts/build.sh -platform darwin/universal

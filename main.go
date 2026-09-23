@@ -20,11 +20,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	"github.com/zego/pawclip/panel"
 )
 
 // assets 是前端构建产物。
@@ -48,6 +50,11 @@ const (
 	// 掏空的原窗口上"，所以尺寸一律以 panel.Config 为准。
 	//
 	// 这里跟默认值保持一致，纯粹是为了避免创建瞬间出现一个尺寸不对的窗口。
+	//
+	// ⚠️ Windows 上这两个值只是"Attach 之前的临时尺寸"：那边的面板就是这个
+	// 窗口，真正的尺寸由 panel/windows.go 在 Attach 里从 settings 读出来设上去
+	// （macOS 上则由 paw_attach 直接把 settings 的尺寸交给 NSPanel）。
+	// 改默认尺寸请改 store.DefaultSettings，不要改这里。
 	panelWidth  = 560
 	panelHeight = 760
 )
@@ -118,7 +125,7 @@ func main() {
 	// 跑这一遍是廉价且安全的。真正的初始化在 startup 里。见 app.go 的说明。
 	app := newApp(boot, cfgPath, log, bootWarn)
 
-	err = wails.Run(&options.App{
+	appOptions := &options.App{
 		Title:  "PawClip · 喵喵贴",
 		Width:  panelWidth,
 		Height: panelHeight,
@@ -136,10 +143,16 @@ func main() {
 		Frameless:   true,
 		AlwaysOnTop: true,
 
-		// 这一项只作用于这个永远隐藏的宿主窗口。用户真正看到的面板是
-		// panel/ 在 startup 之后自建的 NSPanel，那边是可拖动、可缩放的
-		//（panel_darwin.m：Resizable styleMask + 380×480~760×1100 的边界），
-		// 与这里的取值无关。
+		// ⚠️ 这一项在**两个平台上含义完全不同**，别只看这一行：
+		//
+		//	macOS：只作用于这个永远隐藏的宿主窗口。用户真正看到的面板是
+		//	       panel/ 在 startup 之后自建的 NSPanel，那边可拖动、可缩放
+		//	       （panel_darwin.m：Resizable styleMask + 380×480~760×1100
+		//	       的边界），与这里的取值无关。true 是 M0 PoC 验过的组合，
+		//	       不要动。
+		//	Windows：这个窗口**就是**面板（没有 NSPanel 这种东西），
+		//	       所以 true 会让面板**完全不可缩放**——而 mac 上是能拖
+		//	       边缘的。下面按平台分流的代码会把它改成 false。
 		DisableResize: true,
 
 		// ⚠️ 这一行是"缩略图能不能显示"的总开关。
@@ -179,7 +192,41 @@ func main() {
 				Message: "跨平台剪贴板历史管理器\n本地存储，无账号，无同步。",
 			},
 		},
-	})
+	}
+
+	// ── 窗口选项的平台分流 ───────────────────────────────────────
+	//
+	// 上面那一大坨是**照 macOS 写的**：那边的面板是 panel/ 自建的 NSPanel，
+	// 这里的窗口只是个"建出来就别管"的空壳，所以"能不能缩放"之类的取值
+	// 对用户看到的东西没有影响。
+	//
+	// Windows 没有 NSPanel，**这个窗口就是用户看到的面板**。于是同一组取值
+	// 会直接变成面板的行为，不在这里分一次流就会出现"mac 上能拖边缘、
+	// Windows 上拖不动"这类不一致：
+	//
+	//	DisableResize: false
+	//	  Wails 会据此注入 window.wails.flags.enableResize = true
+	//	  （windows/frontend.go 的 navigationCompleted）。那是它自带的
+	//	  无边框边缘缩放：光标变成 nw/se-resize、按下时发一条 resize:<edge>
+	//	  消息、Go 侧再送 WM_NCLBUTTONDOWN 进系统的 SC_SIZE 循环。
+	//	  保持 true 就等于把面板钉死在一个尺寸上。
+	//
+	//	Min/MaxWidth/Height
+	//	  拖动时的尺寸边界。它由 Wails 的 winc.Form 在 WM_GETMINMAXINFO 里
+	//	  落实成 ptMinTrackSize/ptMaxTrackSize（并按窗口 DPI 换算），
+	//	  所以**不需要**我们自己子类化窗口过程。值的唯一真源是 panel 包那组
+	//	  常量（panel.go 里写明"三处都从它取"），这里只做转发。
+	//
+	// macOS 一律不动：DisableResize: true 是 M0 验过的组合，而且那边面板的
+	// 缩放能力由 NSPanel 的 styleMask 自己决定（panel_darwin.m），
+	// 与这里的取值无关。见 docs/DESIGN.md §8 第 11 条。
+	if runtime.GOOS == "windows" {
+		appOptions.DisableResize = false
+		appOptions.MinWidth, appOptions.MinHeight = panel.MinPanelWidth, panel.MinPanelHeight
+		appOptions.MaxWidth, appOptions.MaxHeight = panel.MaxPanelWidth, panel.MaxPanelHeight
+	}
+
+	err = wails.Run(appOptions)
 	if err != nil {
 		// wails.Run 返回时窗口已经关了；先把后台链路收干净再退出。
 		app.Shutdown()

@@ -96,7 +96,7 @@ FTS5 的 `trigram` 分词器要求查询词 **≥ 3 字符**，1–2 字（含�
 ```bash
 scripts/dev.sh                 # 本地开发（wails dev + 热重载 + 隔离数据目录）
 scripts/build.sh               # 出包（唯一正确方式）
-test/run.sh                    # 格式 → 静态检查 → 单测 → 前端检查
+test/run.sh                    # 格式 → 静态检查 → 单测 → 前端检查 → 跨平台编译
 test/run.sh --build --accept   # 发布前的完整口径
 ```
 
