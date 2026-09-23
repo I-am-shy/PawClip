@@ -349,9 +349,17 @@ function ImportPane({
           {pre.totalDrafts > 0 && (
             <KV k={t('backup.draftsNew')} v={String(pre.willImportDrafts)} />
           )}
-          <KV k={t('backup.total')} v={`${formatBytes(pre.uncompressedBytes)} → ${t('stats.aliveBytes')} ${formatBytes(pre.needBytes)}`} />
+          {/* 体积行。标签必须是「包内解压体积」而不是「包内条目」——
+              上一行已经叫「包内条目」了，两行同名会让用户以为是重复渲染。
+              后半段的 needBytes 是**磁盘需要空间**（解压体积 × 1.3，见
+              backup/reader.go），不是库里的登记占用，所以不能用
+              stats.aliveBytes（那是统计页的另一个量）。 */}
+          <KV k={t('backup.uncompressedBytes')} v={`${formatBytes(pre.uncompressedBytes)} → ${t('backup.needBytes')} ${formatBytes(pre.needBytes)}`} />
+          {/* 这一行是**本机可用空间**，不是图片来源占用。原先错贴成
+              stats.diskBytes（"图片实际占用"），于是"图片实际占用"显示的
+              其实是剩余磁盘空间（121.9 GB），看着像一个荒诞的统计值。 */}
           {pre.availableBytes >= 0 && (
-            <KV k={t('stats.diskBytes')} v={formatBytes(pre.availableBytes)} />
+            <KV k={t('backup.availableDisk')} v={formatBytes(pre.availableBytes)} />
           )}
           {pre.warnings && pre.warnings.length > 0 && (
             <ul className="warnlist">

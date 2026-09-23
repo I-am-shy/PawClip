@@ -213,6 +213,17 @@ const zh: Dict = {
   'backup.prechecking': '预检中…',
   'backup.precheckTitle': '确认导入',
   'backup.total': '包内条目',
+  // 确认页的三个体积量。**不要**复用 stats.* 下的键：那边的 aliveBytes
+  // 是「库里登记占用」、diskBytes 是「blobs 目录实占」，和这里的
+  // 「包内解压体积 / 需占用（含 30% 余量）/ 本机可用空间」是六个不同的量。
+  //
+  // 2026-09-23 修：这一页原来借用了 stats.diskBytes / stats.aliveBytes，
+  // 于是把「本机可用空间」标成了「图片实际占用」——用户看到「图片实际占用
+  // 121.9 GB」正是剩余磁盘空间，因为那个值本来就是它（backup/reader.go 的
+  // availableDiskBytes）。标签贴错，数值没错。
+  'backup.uncompressedBytes': '包内解压体积',
+  'backup.needBytes': '需占用',
+  'backup.availableDisk': '本机可用空间',
   'backup.willImport': '将导入',
   'backup.skipDup': '重复跳过',
   'backup.skipExpired': '已过期跳过',
@@ -533,6 +544,9 @@ const en: Dict = {
   'backup.prechecking': 'Pre-checking…',
   'backup.precheckTitle': 'Confirm import',
   'backup.total': 'Items in archive',
+  'backup.uncompressedBytes': 'Payload unpacked',
+  'backup.needBytes': 'needs',
+  'backup.availableDisk': 'Free space on disk',
   'backup.willImport': 'Will import',
   'backup.skipDup': 'Duplicate, skipped',
   'backup.skipExpired': 'Expired, skipped',
