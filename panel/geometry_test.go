@@ -173,3 +173,75 @@ func TestRecenterInMatchesDarwin(t *testing.T) {
 		}
 	}
 }
+
+// planName 只为断言失败时好读（PanelSizePlan 不导出 String）。
+func planName(p PanelSizePlan) string {
+	switch p {
+	case PanelSizeInvalid:
+		return "Invalid"
+	case PanelSizeKeep:
+		return "Keep"
+	case PanelSizeSet:
+		return "Set"
+	case PanelSizeNudge:
+		return "Nudge"
+	default:
+		return "?"
+	}
+}
+
+// TestPlanPanelSize 钉住"尺寸已经一致时也必须逼出一次 WM_SIZE"这条判断。
+//
+// 它存在的理由：这是 Windows 上那条"呼出时把几何再断言一次"的恢复路径
+// **唯一**会失效的地方，而失效的样子极其安静——代码确实执行了、日志里也有，
+// 就是没有效果：
+//
+//	Win32 只在尺寸真的变了的时候发 WM_SIZE，Wails 又只在 WM_SIZE 里刷新
+//	WebView2 的视口。尺寸早在 Attach 里就成了目标值，于是那一次 SetWindowPos
+//	什么都没发。真机上表现为"UI 缩在窗口一角 + 右/下边缘拖不动"
+//	（Wails 的边缘热区是在 WebView2 里按视口算的），而开发机上一条断言都不会红。
+//
+// Windows 侧没有开发机，所以这条判断必须在"所有平台都会跑测试"的这一半里被钉住
+// —— 与 RecenterIn 同一个理由（见 geometry.go 开头的说明）。
+func TestPlanPanelSize(t *testing.T) {
+	cases := []struct {
+		name                     string
+		curW, curH, wantW, wantH int
+		force                    bool
+		want                     PanelSizePlan
+	}{
+		{"尺寸一致且不要求刷新：什么都不做", 560, 760, 560, 760, false, PanelSizeKeep},
+
+		// 这一格是核心：尺寸一致 + force 必须走 nudge（退 1px 再设回）。
+		// 少了它，恢复路径在默认配置下永远不会真的动手。
+		{"尺寸一致但要求刷新：必须 1px 往返", 560, 760, 560, 760, true, PanelSizeNudge},
+
+		{"尺寸不一致：设成目标值（这次变化本身就发 WM_SIZE）", 600, 800, 560, 760, false, PanelSizeSet},
+		{"尺寸不一致且要求刷新：仍然只是设成目标值", 600, 800, 560, 760, true, PanelSizeSet},
+
+		// 1px 差异也要算"不一致"：DPI 往返的余数正好落在这个量级上，
+		// 而"算成一致"会让面板的尺寸永远差着那 1px 落库。
+		{"只差 1px 也算不一致", 560, 761, 560, 760, false, PanelSizeSet},
+		{"只差 1px 且要求刷新", 560, 761, 560, 760, true, PanelSizeSet},
+
+		// 读不到窗口矩形时 windowPoints 返回 0×0：0 是"读不到"，不是"窗口
+		// 就是 0×0"，此刻唯一安全的动作是把目标尺寸设上去。
+		{"读不到当前尺寸：照设", 0, 0, 560, 760, false, PanelSizeSet},
+		{"读不到当前尺寸且要求刷新：照设", 0, 0, 560, 760, true, PanelSizeSet},
+
+		// 目标尺寸不可用：nudge 要能退一个点，所以 1 及以下一律不动手
+		// （真机上的下限是 380×480，见 ClampPanelSize）。
+		{"目标尺寸为 0：不可用", 560, 760, 0, 0, true, PanelSizeInvalid},
+		{"目标尺寸为 1：不可用（退不出 1px）", 1, 480, 1, 480, true, PanelSizeInvalid},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := PlanPanelSize(c.curW, c.curH, c.wantW, c.wantH, c.force)
+			if got != c.want {
+				t.Fatalf("PlanPanelSize(cur=%d×%d, want=%d×%d, force=%t) = %s，期望 %s",
+					c.curW, c.curH, c.wantW, c.wantH, c.force, planName(got), planName(c.want))
+			}
+		})
+	}
+}

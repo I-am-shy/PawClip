@@ -67,3 +67,51 @@ func RecenterIn(work Rect, winW, winH int) (int, int) {
 	}
 	return x, y
 }
+
+// PanelSizePlan 是"把窗口对齐到目标尺寸"这一步该走的动作。
+type PanelSizePlan int
+
+const (
+	// PanelSizeInvalid 目标尺寸不可用（调用方没拿到有效值）：什么都别做。
+	PanelSizeInvalid PanelSizePlan = iota
+	// PanelSizeKeep 尺寸已经一致，且不需要逼 WM_SIZE：什么都不做。
+	PanelSizeKeep
+	// PanelSizeSet 尺寸不一致：设成目标值。这次真实变化本身会产生 WM_SIZE。
+	PanelSizeSet
+	// PanelSizeNudge 尺寸已经一致，但**必须**产生一次 WM_SIZE：
+	// 退一个逻辑点再设回来（见 windows.go 的 syncPanelSize）。
+	PanelSizeNudge
+)
+
+// PlanPanelSize 决定把窗口对齐到 wantW×wantH 该走哪一步。
+//
+// 抽成纯函数是为了**能在开发机上被钉住**。这里唯一容易写错、又最难在真机上
+// 复现的判断是"尺寸已经一致时不能什么都不做"：
+//
+//	Win32 只在尺寸**真的变了**的时候才发 WM_SIZE，而 Wails 把 WebView2 的
+//	视口刷新挂在 mainWindow.OnSize 上（windows/frontend.go）。于是"再设一次
+//	同样的尺寸"是一个不产生任何效果的空转 —— 而它看起来完全正确：代码确实
+//	调了 SetWindowPos，日志里也真的执行了。
+//
+// 这条恢复路径在 Windows 上就是这么失效的：注释写着"呼出时再断言一次尺寸"，
+// 尺寸却早在 Attach 里就成了目标值，于是 WebView2 一直停在 Embed 时的视口上
+// ——"UI 缩在窗口一角"，而且 Wails 那段边缘缩放热区是在 WebView2 里按视口算
+// 的，视口比窗口小的时候右/下边缘在数学上不可达，"边缘拖不动"。
+//
+// force 的语义：调用方知道"这一次必须让 WebView2 重算视口"（首次呼出、窗口
+// 还没显示出来的时候），于是即便尺寸已经对了也走一次 PanelSizeNudge。
+//
+// wantW/wantH 必须 > 1：nudge 要退一个点，1 个点或更小的目标值本身就不是
+// 一个可用的面板尺寸（真机上是 380×480 起，见 panel.go 的 ClampPanelSize）。
+func PlanPanelSize(curW, curH, wantW, wantH int, force bool) PanelSizePlan {
+	if wantW <= 1 || wantH <= 1 {
+		return PanelSizeInvalid
+	}
+	if curW == wantW && curH == wantH {
+		if force {
+			return PanelSizeNudge
+		}
+		return PanelSizeKeep
+	}
+	return PanelSizeSet
+}

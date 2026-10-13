@@ -71,8 +71,19 @@ const (
 	// 面板装了一个"双击就铺满整屏"的机关。面板是浮层，不该能最大化。
 	wsMaximizeBox = 0x00010000
 
-	swShowNoActivate = 6
-	swHide           = 0
+	// ⚠️ ShowWindow 的 nCmdShow 一律从 x/sys 取，**不要再手写数字**。
+	//
+	// 这里曾经是 `swShowNoActivate = 6`：SW_SHOWNOACTIVATE 是 **4**，
+	// 而 6 是 **SW_MINIMIZE**（"最小化该窗口，并激活 Z 序里的下一个顶层窗口"）。
+	// 于是 Show() 每次呼出都先把面板最小化 —— Windows 上的表现就是
+	// "界面坍缩 / 边缘抓不住"，而 mac 的 Show 走 orderFrontRegardless +
+	// makeKeyWindow，根本没有这条路，所以它只在 Windows 出现。
+	//
+	// 之所以能一直藏着：本文件带 //go:build windows，开发机（macOS）上
+	// vet / go test / 单测**一次都不会编译到它**，CI 也只做交叉编译。
+	// 值交给 x/sys 之后，"名字与值对不上"这类错在编译期就不存在了。
+	swShowNoActivate = windows.SW_SHOWNOACTIVATE
+	swHide           = windows.SW_HIDE
 
 	swpNoActivate = 0x0010
 	swpShowWindow = 0x0040
@@ -560,6 +571,11 @@ func roundFromDPI(v, dpi int) int {
 }
 
 // clientPoints 读窗口客户区当前的**逻辑点**尺寸；读不到或非正返回 (0,0)。
+//
+// 客户区是 WebView2 真正拿到的尺寸，所以它在 Diag 里有用（"UI 缩在窗口一角"
+// 的第一手证据）。但**几何落实与落库不要用它**，用 windowPoints —— 理由见
+// 那里。注意 Wails 的无边框 WM_NCCALCSIZE 会把客户区底部多算 1px
+// （windows/window.go 的 rgrc.Bottom += 1），它不是零成本的一个别名。
 func clientPoints(hwnd windows.Handle) (int, int) {
 	var r rect
 	if ret, _, _ := procGetClientRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&r))); ret == 0 {
@@ -571,6 +587,79 @@ func clientPoints(hwnd windows.Handle) (int, int) {
 	}
 	dpi := windowDPI(hwnd)
 	return roundFromDPI(w, dpi), roundFromDPI(h, dpi)
+}
+
+// windowPoints 读**窗口矩形**当前的逻辑点尺寸；读不到或非正返回 (0,0)。
+//
+// 几何一律以窗口矩形为准（applyPanelSize 设的、Size() 报的、placed 反推比的），
+// 三个理由：
+//
+//   - **往返必须闭合**。applyPanelSize 走的是 SetWindowPos，设的是窗口矩形；
+//     而 Wails 的无边框 WM_NCCALCSIZE 把客户区底部加了 1px。拿客户区回来
+//     比对/落库就等于每往返一次多 1px：存 h+1 → 下次设 h+1 → 再读 h+2 ……
+//     面板每个显隐循环长高一点，一路顶到 1100 的上限。
+//   - **placed 的反推要准**。见 Show 里那段"尺寸和我要的不一样就是用户拖过"：
+//     判据两边不同源时这 1px 会让它**恒真**，于是面板从第二次呼出起就不再
+//     回到鼠标所在显示器 —— 正是 §8 第 11 条要避免的那种"呼出后不知道去哪"。
+//   - **与 mac 对齐**。darwin 的 Size() 读的是 NSPanel 的 frame（panel_darwin.m）：
+//     "窗口"才是面板，客户区只是面板里的那块 WebView。
+func windowPoints(hwnd windows.Handle) (int, int) {
+	var r rect
+	if ret, _, _ := procGetWindowRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&r))); ret == 0 {
+		return 0, 0
+	}
+	w, h := int(r.Right-r.Left), int(r.Bottom-r.Top)
+	if w <= 0 || h <= 0 {
+		return 0, 0
+	}
+	dpi := windowDPI(hwnd)
+	return roundFromDPI(w, dpi), roundFromDPI(h, dpi)
+}
+
+// syncPanelSize 把窗口对齐到目标逻辑尺寸，并在需要时**逼出一次真实的
+// WM_SIZE**；返回一句给 geomNote / Diag 看的说明。
+//
+// 为什么"再设一次"不等于"一定会生效"：Win32 只在尺寸**真的变了**的时候才发
+// WM_SIZE，而 Wails 把 WebView2 的尺寸刷新挂在 mainWindow.OnSize 上
+// （windows/frontend.go）。尺寸已经等于目标值时，SetWindowPos 就是一个不产生
+// WM_SIZE 的空转 —— 而"呼出时再断言一次尺寸"这条恢复路径，恰恰在它最该
+// 出手的那一刻（Attach 已经把尺寸设成功、值已经一致）什么都没做。
+//
+// 要兜的缝是：Wails 的 Run 里 setupChromium（Embed 时按当时的客户区初始化
+// WebView2）与 mainWindow.OnSize 的绑定之间只隔几十微秒，而 Attach 是 50ms
+// 轮询找窗口的——它改尺寸那一下可能正好落在缝里，那次变化就没有人接：
+// 窗口是新的，WebView2 还停在 Embed 时的尺寸上。表现是"UI 缩在窗口一角"；
+// 更麻烦的是 Wails 运行时那段边缘缩放热区是**在 WebView2 里**按自己的视口
+// 算的（`window.outerWidth - e.clientX < 6`），视口比窗口小的时候，右/下
+// 边缘的热区在数学上不可达——于是"边缘拖不动、放大范围小得离谱"。
+//
+// force=false：只在尺寸不一致时动手（Attach 用，落实用户存的尺寸）。
+// force=true ：尺寸一致也要一次"退 1px 再设回来"——两次真实变化必然产生
+// 两次 WM_SIZE，WebView2 无条件重算。调用点在 ShowWindow 之前，窗口不可见。
+func syncPanelSize(hwnd windows.Handle, w, h int, force bool) (string, error) {
+	curW, curH := windowPoints(hwnd)
+	switch PlanPanelSize(curW, curH, w, h, force) {
+	case PanelSizeInvalid:
+		return "", fmt.Errorf("panel: 目标尺寸 %d×%d 不可用", w, h)
+	case PanelSizeKeep:
+		return fmt.Sprintf("尺寸已是 %d×%d", w, h), nil
+	case PanelSizeNudge:
+		if err := applyPanelSize(hwnd, w-1, h); err != nil {
+			return "", err
+		}
+		if err := applyPanelSize(hwnd, w, h); err != nil {
+			return "", err
+		}
+		if aw, ah := windowPoints(hwnd); aw != w || ah != h {
+			return "", fmt.Errorf("panel: 1px 往返后尺寸仍不是 %d×%d（读到 %d×%d）", w, h, aw, ah)
+		}
+		return fmt.Sprintf("尺寸已是 %d×%d；已用 1px 往返逼出 WM_SIZE 以刷新 WebView2 视口", w, h), nil
+	default: // PanelSizeSet
+		if err := applyPanelSize(hwnd, w, h); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("尺寸 %d×%d → %d×%d", curW, curH, w, h), nil
+	}
 }
 
 // recenterToCursorMonitor 把面板放到**鼠标所在显示器**的顶部居中。
@@ -662,8 +751,14 @@ func (c *winController) Attach(cfg Config) error {
 		// 不设的话用户拖出来的尺寸在 Windows 上永远不生效，
 		// 两个平台的面板每次都长得不一样。
 		if w > 0 && h > 0 {
-			if err := applyPanelSize(hwnd, w, h); err != nil {
+			// force=false：这里只负责落实用户存的尺寸。真正"逼出一次 WM_SIZE
+			// 去刷新 WebView2 视口"的那一下放在首次 Show —— 那时候 Wails 一定
+			// 已经绑好 OnSize，缝已经不在了。见 syncPanelSize。
+			note, err := syncPanelSize(hwnd, w, h, false)
+			if err != nil {
 				c.setGeomNote(fmt.Sprintf("设置面板尺寸失败（沿用建窗值）：%v", err))
+			} else {
+				c.setGeomNote("Attach：" + note)
 			}
 		} else {
 			c.setGeomNote("设置里没有可用的面板尺寸，沿用建窗值")
@@ -712,20 +807,27 @@ func (c *winController) Show() error {
 	if !shown {
 		// 首次呼出：把几何断言一次再显示。
 		//
-		// 尺寸在 Attach 里已经设过，这里再设一次不是冗余，它兜的是两类事：
+		// ⚠️ 这里必须是 syncPanelSize(force=true)，不能只是"再设一次尺寸"。
 		//
-		//   · 客户区退化成 0×0（DPI 切换、WebView2 初始化失败、别的程序动过
-		//     窗口）。WebView2 的尺寸只在 Wails 收到 WM_SIZE 时才刷新，所以
-		//     只要这一次 SetWindowPos 没被吞掉，它就会重新撑开——这正是
-		//     "面板只剩一圈死边框"的恢复路径。
-		//   · Attach 改尺寸时**太早**：Wails 的 Run 里 setupChromium（它会
-		//     用当时的客户区尺寸初始化 WebView2）与 mainWindow.OnSize 的绑定
-		//     之间存在一个几十微秒的缝隙（见 windows/frontend.go）。我们的
-		//     Attach 是轮询找窗口的，理论上可能正好落在里面——那一次尺寸
-		//     变化就没有人接。呼出时再设一次，等于把那条缝补上。
-		if w > 0 && h > 0 {
-			if err := applyPanelSize(hwnd, w, h); err != nil {
-				c.setGeomNote(fmt.Sprintf("呼出时重设面板尺寸失败：%v", err))
+		// 曾经的写法是直接 applyPanelSize(w,h)，注释说它兜两类事。那两件事都
+		// 成立，但**做法兜不住**：Win32 只在尺寸真的变了才发 WM_SIZE，而尺寸在
+		// Attach 里已经设成了 w×h —— 于是这一次 SetWindowPos 什么都不发，
+		// WebView2 也就什么都没重算，恢复路径在默认配置下从未生效过。
+		//
+		// 它要兜的缝是真的存在：Wails 的 Run 里 setupChromium（Embed 时按当时
+		// 的客户区初始化 WebView2）与 mainWindow.OnSize 的绑定之间只隔几十
+		// 微秒（windows/frontend.go），而 Attach 是 50ms 轮询找窗口的，改尺寸
+		// 那一下可能正落在缝里——那次变化没有人接，WebView2 就一直停在 Embed
+		// 时的尺寸上，"UI 缩在窗口一角、右/下边缘还抓不住"就是这么来的。
+		//
+		// force 用"退 1px 再设回来"逼出两次真实 WM_SIZE，把这条缝补掉；
+		// 此刻窗口还没 ShowWindow，用户看不到这一步。细节见 syncPanelSize。
+		{
+			note, err := syncPanelSize(hwnd, w, h, true)
+			if err != nil {
+				c.setGeomNote(fmt.Sprintf("呼出时断言面板尺寸失败：%v", err))
+			} else {
+				c.setGeomNote("呼出：" + note)
 			}
 		}
 		if !placed {
@@ -743,7 +845,10 @@ func (c *winController) Show() error {
 		// 那边是拖动/缩放时直接置位，这里只能这么反推：Win32 没有"拖动
 		// 或缩放结束"的通知可挂（WM_EXITSIZEMOVE 属于非客户区循环，
 		// 而我们是把鼠标事件从 JS 侧转交进去的）。
-		if cw, ch := clientPoints(hwnd); cw > 0 && (cw != w || ch != h) {
+		// 判据两边必须同源：want 是窗口矩形的目标值，所以这里也读窗口矩形。
+		// 读客户区会让这 1px 差异把判据顶成恒真 —— 面板从此不再跟着鼠标回到
+		// 所在显示器，而用户从没拖过它。见 windowPoints。
+		if cw, ch := windowPoints(hwnd); cw > 0 && (cw != w || ch != h) {
 			c.mu.Lock()
 			c.placed = true
 			c.mu.Unlock()
@@ -814,11 +919,15 @@ func (c *winController) Drag() {
 //
 // ⚠️ 两条"不要落库"的路径都在这里（Controller.Size 的契约）：
 //
-//   - **面板还没被显示过**：此刻客户区里是 Wails 的建窗占位值
+//   - **面板还没被显示过**：此刻窗口里是 Wails 的建窗占位值
 //     （main.go 的 560×760），不是用户的选择。把它当尺寸写回去会覆盖掉
 //     用户在 macOS 上拖出来的尺寸 —— settings 是两个平台共用的，
 //     这种污染完全静默，而且用户只会觉得"mac 上的面板尺寸老是变回去"。
-//   - 拿不到或非正的客户区（窗口还没建出来 / 已经销毁）。
+//   - 拿不到或非正的窗口矩形（窗口还没建出来 / 已经销毁）。
+//
+// 读**窗口矩形**而不是客户区：applyPanelSize 设的就是窗口矩形，落库再用它设
+// 回去才能闭合。客户区被 Wails 的无边框 WM_NCCALCSIZE 多加了 1px（底部），拿
+// 它落库就是"每显隐一轮长高 1px"，一路涨到 1100 的上限。详见 windowPoints。
 //
 // Wails 的窗口带 DPI 缩放，所以这里读到的物理像素要折回逻辑点再落库
 // （两个方向都用四舍五入，见 roundFromDPI）。
@@ -829,7 +938,7 @@ func (c *winController) Size() (int, int) {
 	if hwnd == 0 || !shown {
 		return 0, 0
 	}
-	return clientPoints(hwnd)
+	return windowPoints(hwnd)
 }
 
 // RegisterHotkey 换绑热键（重启热键线程以切到新组合）。
@@ -1097,11 +1206,16 @@ func (c *winController) SetActivationPolicyAccessory() error { return nil }
 
 // Diag 返回诊断快照。
 //
-// 几何三项（want / live / placed）是刻意放进去的：面板"尺寸不对、位置乱跑"
-// 这类问题在真机上只能靠这几个数字定位，而 Windows 侧没有开发机，
-// 下一次取证很可能就要靠这一行 JSON。geomNote 记着几何落实失败的原因
-// ——它不会被当成启动错误（见那个字段的说明），但必须留痕，
-// 否则就成了"静默地沿用了一个错的尺寸"。
+// 几何这几项是刻意放进去的：面板"尺寸不对、位置乱跑"这类问题在真机上只能靠
+// 这几个数字定位，而 Windows 侧没有开发机，下一次取证很可能就要靠这一行 JSON。
+//
+//	live* = 窗口矩形（与 want* 同源）：不等 = 我们要的尺寸没设上。
+//	view* = 客户区（WebView2 真正拿到的）：明显小于 live* = 视口停在旧尺寸上，
+//	        也就是 Wails 没收到 WM_SIZE，正是"UI 缩在窗口一角"的签名。
+//
+// geomNote 记着最近一次几何落实的**结果**（成功路径也记：是"设成了 600×800"
+// 还是"尺寸已一致、逼了一次 WM_SIZE"，决定了下一步该查哪儿），失败不会被当成
+// 启动错误（见那个字段的说明），但必须留痕，否则就是"静默地沿用了一个错的尺寸"。
 func (c *winController) Diag() string {
 	c.mu.Lock()
 	hwnd, tray := c.hwnd, c.tray
@@ -1110,17 +1224,24 @@ func (c *winController) Diag() string {
 	note := c.geomNote
 	c.mu.Unlock()
 
-	// 在锁外读活尺寸：clientPoints 是系统调用，没必要占着锁。
+	// 在锁外读活尺寸：都是系统调用，没必要占着锁。
+	//
+	// live = 窗口矩形（与 want 同源）：两者不等 = 我们要的尺寸没设上。
+	// view = 客户区（WebView2 真正拿到的）：明显小于 live 就是"视口停在旧
+	// 尺寸上"，也就是 Wails 没收到 WM_SIZE —— 见 syncPanelSize。
 	liveW, liveH := 0, 0
+	viewW, viewH := 0, 0
 	if hwnd != 0 && shown {
-		liveW, liveH = clientPoints(hwnd)
+		liveW, liveH = windowPoints(hwnd)
+		viewW, viewH = clientPoints(hwnd)
 	}
 
 	return fmt.Sprintf(
 		`{"platform":"windows","windowClass":%q,"hwnd":%d,"tray":%t,`+
-			`"wantW":%d,"wantH":%d,"liveW":%d,"liveH":%d,"shown":%t,"placed":%t,"geomNote":%q}`,
+			`"wantW":%d,"wantH":%d,"liveW":%d,"liveH":%d,"viewW":%d,"viewH":%d,`+
+			`"shown":%t,"placed":%t,"geomNote":%q}`,
 		wailsDefaultWindowClass, uint64(hwnd), tray,
-		wantW, wantH, liveW, liveH, shown, placed, note)
+		wantW, wantH, liveW, liveH, viewW, viewH, shown, placed, note)
 }
 
 // Close 收摊。
