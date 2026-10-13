@@ -135,6 +135,7 @@ func newApp(boot BootstrapConfig, cfgPath string, log *slog.Logger, bootWarn err
 // 初始化顺序不能随意调换：
 //
 //	store.Open（建表 + 迁移 + FTS 自检 + 打 clean_shutdown 标记）
+//	  → CarryOverLegacySettings（把老版本写下的设置键搬到新键上）
 //	  → SeedSettings（缺键补默认值，只在首启用得上）
 //	  → LoadSettings（拿到运行时设置的强类型视图）
 //	  → 按设置纠正 clean_shutdown 标记开关
@@ -189,6 +190,11 @@ func (a *App) initialize(ctx context.Context) error {
 	a.db = db
 	a.initMu.Unlock()
 
+	// 老键搬运必须在 SeedSettings **之前**：那一步会给缺席的新键写默认值，
+	// 一旦写下去，旧键里用户的真实姿态就永远读不到了（见 CarryOverLegacySettings）。
+	if err := store.CarryOverLegacySettings(ctx, db); err != nil {
+		return err
+	}
 	if err := store.SeedSettings(ctx, db, boot.UI.Language); err != nil {
 		return err
 	}

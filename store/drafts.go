@@ -243,40 +243,75 @@ func (d *DB) CreateDraft(ctx context.Context, title string, seq int64) (int64, e
 	return id, nil
 }
 
-// SaveDraftMD 写正文，返回新的 updated_at（Unix 秒）。
+// SaveDraftMD 写正文，返回这一行的 updated_at（Unix 秒）。
 //
 // 这是实时保存的唯一入口，所以它是全仓最热的写路径之一。三条自我约束：
 //
 //   - **单条 UPDATE、只动 md 与 updated_at**，不重写整行、不碰 title/seq/sort_order；
+//
 //   - 允许写空串（用户真的把内容删光了，这是合法状态）；
-//   - 不判断"内容是否变化"——那由调用方比对后决定要不要调（见前端
-//     useDraftAutosave），因为"没变"的知识只有调用方有。
+//
+//   - **内容与库里一致就一个字节都不写**，并把原来的 updated_at 原样返回。
+//     比对放进 SQL 的 WHERE（`AND md <> ?`）而不是交给调用方：调用方手里
+//     的"上次写进去的是什么"可能过期，库里那份才是权威；也不能靠
+//     RowsAffected —— SQLite 的 changes() 数的是**匹配上的行**，同一份
+//     内容再写一次同样是 1 行。
+//
+//     这一条是用户报障换来的：点开一篇草稿看一眼（前端切草稿时会先
+//     flush 结算上一篇）就把时间顶成了"刚刚"，而这一列的语义是**最近
+//     修改**，不是最近保存过、更不是最近打开过。
 func (d *DB) SaveDraftMD(ctx context.Context, id int64, md string) (int64, error) {
 	now := time.Now().Unix()
 	res, err := d.w.ExecContext(ctx,
-		`UPDATE drafts SET md = ?, updated_at = ? WHERE id = ?`, md, now, id)
+		`UPDATE drafts SET md = ?, updated_at = ? WHERE id = ? AND md <> ?`, md, now, id, md)
 	if err != nil {
 		return 0, fmt.Errorf("store: save draft %d: %w", id, err)
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		// 草稿在编辑期间被删掉了（另一处入口，或另一台机器导入）。
-		// 明确报出来，而不是"保存成功"——前端要据此提示用户。
-		return 0, fmt.Errorf("%w: draft %d", ErrDraftGone, id)
+		// 0 行有两种可能：内容与库里一致（这次什么都不用做），或者草稿已经
+		// 被删了。用一次 SELECT 分开 —— 前者要把**原来的** updated_at 返回
+		// 给界面（前端拿它显示"已保存 · HH:MM"，返回 now 就又是"刚刚"了）。
+		var cur int64
+		err := d.r.QueryRowContext(ctx, `SELECT updated_at FROM drafts WHERE id = ?`, id).Scan(&cur)
+		switch {
+		case err == nil:
+			return cur, nil
+		case errors.Is(err, sql.ErrNoRows):
+			// 草稿在编辑期间被删掉了（另一处入口，或另一台机器导入）。
+			// 明确报出来，而不是"保存成功"——前端要据此提示用户。
+			return 0, fmt.Errorf("%w: draft %d", ErrDraftGone, id)
+		default:
+			return 0, fmt.Errorf("store: read draft %d: %w", id, err)
+		}
 	}
 	return now, nil
 }
 
 // RenameDraft 改标题。空标题是合法的（用户清空了输入框），
 // 界面上会显示成"未命名"，而不是替用户编一个名字。
+//
+// 与 SaveDraftMD 同一条纪律：**标题没变就不动 updated_at**。
+// 点开标题框、没改就移开焦点（或改回原样）不该让它跳到"刚刚"。
 func (d *DB) RenameDraft(ctx context.Context, id int64, title string) error {
 	res, err := d.w.ExecContext(ctx,
-		`UPDATE drafts SET title = ?, updated_at = ? WHERE id = ?`,
-		title, time.Now().Unix(), id)
+		`UPDATE drafts SET title = ?, updated_at = ? WHERE id = ? AND title <> ?`,
+		title, time.Now().Unix(), id, title)
 	if err != nil {
 		return fmt.Errorf("store: rename draft %d: %w", id, err)
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return fmt.Errorf("%w: draft %d", ErrDraftGone, id)
+		// 同 SaveDraftMD：0 行可能是"标题没变"，也可能是"草稿没了"。
+		// 后者仍然要明确报出来。
+		var exists int
+		err := d.r.QueryRowContext(ctx, `SELECT 1 FROM drafts WHERE id = ?`, id).Scan(&exists)
+		switch {
+		case err == nil:
+			return nil
+		case errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("%w: draft %d", ErrDraftGone, id)
+		default:
+			return fmt.Errorf("store: read draft %d: %w", id, err)
+		}
 	}
 	return nil
 }

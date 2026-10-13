@@ -27,6 +27,20 @@
 // **不销毁** WebView（§14 第 10 条：当前 Wails 版本没有销毁 API），
 // 所以隐藏本身不会丢数据——真正会丢的是进程退出，那由 beforeunload 兜。
 //
+// # "进编辑器"是一道必须显式过的关（pendingMdRef / loadedIdRef）
+//
+// 上面三层的前提是"DOM 里就是这条的正文"。首次**进入**视图时这个前提不成立：
+// 组件是重新挂载的、selectedId 初值为 null，所以编辑器此刻根本不在树上，
+// openDraft 里那句 `nodeRef.current.innerHTML = …` 会打在 null 上，
+// 正文一次都没进 DOM。之后编辑器挂载成**空的**，而卸载 flush 是 force 的
+// ——它会把空串写回库，**把库里的正文清空**。用户看到的是"切一下界面内容
+// 就没了"，根因却是"读到了但从没渲染出来，然后被当成真相写了回去"。
+//
+// 所以正文现在分两步落地：编辑器已在树上就直接灌，不在就先寄存
+// （pendingMdRef），由 attachNode 在挂载那一刻灌；同时用 loadedIdRef 记下
+// "正文真的进过编辑器的那个 id"，flush 只对得上号的草稿落盘——
+// 没灌过的草稿宁可这一次不存，也绝不拿一个空 DOM 去覆盖它。
+//
 // # 跨实例的 I/O 顺序（draftIO / sequenced）
 //
 // 卸载 flush 是异步的：它的 SaveDraft 还在路上时，用户切回草稿本，
@@ -141,11 +155,32 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
   // 所以只接受非空赋值，卸载后仍指着那个已脱离文档的节点——
   // htmlToMd 只读节点树、不需要布局，脱离文档照样能读。
   const nodeRef = useRef<HTMLDivElement | null>(null)
+  // pendingMdRef 是"读出来了、但还没能灌进编辑器的正文"。
+  //
+  // 首次进视图时编辑器**还没挂载**（它只在 selectedId != null 时才渲染），
+  // 而 openDraft 紧接着 setSelectedId 就写 innerHTML —— 那一刻 nodeRef 还是
+  // null，正文被静默丢掉：编辑器挂载成空的，用户看到的是"内容没了"，
+  // 紧接着的卸载 flush（force）再把空 DOM 写回库，库里那一条就真被清空了。
+  // 所以正文先寄存在这里，等 attachNode 真的拿到节点那一刻再灌进去。
+  const pendingMdRef = useRef<string | null>(null)
   const attachNode = useCallback((el: HTMLDivElement | null) => {
-    if (el) nodeRef.current = el
+    if (!el) return
+    nodeRef.current = el
+    const md = pendingMdRef.current
+    if (md != null) {
+      pendingMdRef.current = null
+      el.innerHTML = mdToHtml(md)
+    }
   }, [])
 
   const selectedIdRef = useRef<number | null>(null)
+  // loadedIdRef 是"正文真的进过编辑器的那个草稿 id"。
+  //
+  // 它是 flush 的兜底闸门：**没灌过就绝不落盘**。否则任何一次"读到了但没
+  // 渲染成"（首次挂载的时序、Draft(id) 读失败、节点被别处换掉）都会让卸载时
+  // 的 force flush 把库里的正文覆盖成空串——那是不可恢复的数据丢失，
+  // 而它的表现只是"界面闪了一下"。
+  const loadedIdRef = useRef<number | null>(null)
   const lastSavedRef = useRef('')
   const dirtyRef = useRef(false)
   const saveTimerRef = useRef<number | null>(null)
@@ -184,6 +219,9 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
       const id = selectedIdRef.current
       const node = nodeRef.current
       if (id == null || !node) return
+      // 这一条的正文还没进过编辑器：此刻 DOM 里的东西不是它的正文，
+      // 写回去等于把库里的内容清空（见 loadedIdRef）。
+      if (loadedIdRef.current !== id) return
 
       const md = htmlToMd(node)
       if (!opts?.force && md === lastSavedRef.current) {
@@ -457,10 +495,13 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
         selectImg(null)
         lastSavedRef.current = d.md
         dirtyRef.current = false
-        if (nodeRef.current) {
-          nodeRef.current.innerHTML = mdToHtml(d.md)
-          setBodyEmpty(d.md.trim() === '')
-        }
+        // 编辑器已经在树上就直接灌；还没挂载（首次进视图就是这样）就寄存，
+        // 由 attachNode 在挂载那一刻灌进去 —— 见 pendingMdRef 的说明。
+        if (nodeRef.current) nodeRef.current.innerHTML = mdToHtml(d.md)
+        else pendingMdRef.current = d.md
+        // 只有到这里才算"这一条的正文进过编辑器了"，flush 才允许落盘。
+        loadedIdRef.current = id
+        setBodyEmpty(d.md.trim() === '')
         // 记住"上次打开的草稿"（值相同则后端不写库）。
         void sequenced(() => call('SetLastDraft', id)).catch(() => {})
       } catch (e: unknown) {
@@ -485,12 +526,13 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
 
   // 挂载：取目录。回到**上次打开的那条**草稿（而不是固定第一条）——
   // 多条草稿时固定回第一条，看起来就像"我刚写的东西没了"。
-  // 上次那条已被删除时回退到第一条。目录的收起状态也从设置里恢复。
+  // 上次那条已被删除时回退到第一条。侧边栏的开合状态也从设置里恢复
+  // （默认展开：新库里没有这个键，给出来的就是 true）。
   useEffect(() => {
     void (async () => {
       const l = await refresh()
       if (!l) return
-      setTocOpen(!l.tocCollapsed)
+      setTocOpen(l.tocOpen)
       const target = l.items.find((it) => it.id === l.lastDraftId) ?? l.items[0]
       if (target) await openDraft(target.id)
     })()
@@ -581,12 +623,18 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
     }
   }
 
-  // 目录的收起状态是**布局必需**（面板只有 560 逻辑点），所以要落库，
+  // 侧边栏的开合状态是**布局必需**（面板只有 560 逻辑点），所以要落库，
   // 活过重启。值相同 SetSetting 不会重复写（键值层去重）。
+  //
+  // 写进去的就是 tocOpen 本身：键名（ui.draftTocOpen）与读取端同一极性，
+  // 谁都不用取反。它曾经叫 ui.draftTocCollapsed（"收起"）而这里写的是
+  // 展开状态、读取端又取反一次 —— 两处各自都自洽，合起来是"每次重启看到
+  // 的都是上一次的反面"。**极性只在一处取反就是这类 bug 的温床**：宁可
+  // 把键名改成它真正的含义，也不要在中间补一次取反。
   const toggleToc = () => {
     setTocOpen((v) => {
       const nv = !v
-      void call('SetSetting', 'ui.draftTocCollapsed', String(nv)).catch(() => {})
+      void call('SetSetting', 'ui.draftTocOpen', String(nv)).catch(() => {})
       return nv
     })
   }

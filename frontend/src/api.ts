@@ -217,8 +217,8 @@ export type DraftList = {
   archiveTtlSec: number
   /** 上次打开的草稿（ui.lastDraftId）：重进草稿本时回到它；可能已被删，须校验存在。 */
   lastDraftId: number
-  /** 目录的收起状态（ui.draftTocCollapsed）。 */
-  tocCollapsed: boolean
+  /** 侧边栏（目录树）是否展开（ui.draftTocOpen）；默认 true。 */
+  tocOpen: boolean
   maxImageBytes: number
   /** 上限的人读形式（"10 MB"）。后端给，避免两处各算一遍。 */
   maxImageLabel: string
@@ -447,8 +447,8 @@ export type SettingsShape = {
     lastView: string
     /** 上次打开的草稿（0 = 未记录）。重进草稿本时回到它。 */
     lastDraftId: number
-    /** 草稿本目录的收起状态。 */
-    draftTocCollapsed: boolean
+    /** 草稿本侧边栏（目录树）是否展开；默认 true。 */
+    draftTocOpen: boolean
   }
   storage: {
     cleanShutdownMarker: boolean

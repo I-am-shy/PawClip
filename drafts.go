@@ -42,8 +42,12 @@ type DraftList struct {
 	// LastDraftID 是"上次打开的草稿"（ui.lastDraftId）：重新进入草稿本时
 	// 回到它，而不是固定回第一条。指向的草稿可能已删，前端必须校验存在。
 	LastDraftID int64 `json:"lastDraftId"`
-	// TocCollapsed 是目录的收起状态（ui.draftTocCollapsed）。
-	TocCollapsed bool `json:"tocCollapsed"`
+	// TocOpen 是草稿本侧边栏（目录树）是否展开（ui.draftTocOpen）。
+	//
+	// 极性是"展开"：读它、写它的前端都不取反。它曾经叫 TocCollapsed，
+	// 而设置层那边写进去的其实是展开状态 —— 名字与内容相反，于是用户每次
+	// 重启看到的都是上一次的反面（详见 store/settings.go 的旧键说明）。
+	TocOpen bool `json:"tocOpen"`
 	// MaxImageBytes 是单张贴图上限，ImageMaxMB 是它的人读形式。
 	//
 	// 两个都给：前端要拿数字做预检，要拿文本拼错误提示。
@@ -106,7 +110,7 @@ func (a *App) Drafts() (*DraftList, error) {
 	if s := a.Settings(); s != nil {
 		out.ArchiveTtlSec = s.Draft.ArchiveTTLSec
 		out.LastDraftID = s.UI.LastDraftID
-		out.TocCollapsed = s.UI.DraftTOCCollapsed
+		out.TocOpen = s.UI.DraftTOCOpen
 		out.MaxImageBytes = s.Draft.ImageMaxBytes
 		out.MaxImageLabel = humanBytes(s.Draft.ImageMaxBytes)
 		out.AutoSaveDebounceMs = s.Draft.AutoSaveDebounceMs

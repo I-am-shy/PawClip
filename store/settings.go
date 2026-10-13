@@ -49,7 +49,16 @@ const (
 	KeyUIPanelHeight          = "ui.panelHeight"
 	KeyUILastView             = "ui.lastView"
 	KeyUILastDraftId          = "ui.lastDraftId"
-	KeyUIDraftTOCCollapsed    = "ui.draftTocCollapsed"
+	KeyUIDraftTOCOpen         = "ui.draftTocOpen"
+
+	// KeyUIDraftTOCCollapsedLegacy 是 0.1.3 及更早用的键名，只为兼容而读。
+	//
+	// ⚠️ 它的**名字**说"收起"，可老版本往里写的是**展开**状态（写入端一直
+	// 按展开写，见 frontend/src/views/Drafts.tsx 的 toggleToc）：名字与内容
+	// 相反，正是"每次重启得到的都是上一次的反面"的根因。所以这里**原样
+	// 沿用、不取反** —— 取反只会让两处错误互相抵消，下一个读它的人照样踩。
+	// 新写入一律走 ui.draftTocOpen；这个键在某个版本之后可以删掉。
+	KeyUIDraftTOCCollapsedLegacy = "ui.draftTocCollapsed"
 
 	KeyDraftAutoSaveDebounceMs = "draft.autoSaveDebounceMs"
 	KeyDraftImageMaxBytes      = "draft.imageMaxBytes"
@@ -171,12 +180,17 @@ type UISettings struct {
 	// 东西"，把它换掉等于把用户的工作台收走；而设置页不是。
 	LastView string `json:"lastView"`
 
-	// DraftTOCCollapsed 是草稿本目录（目录树）的收起状态。
+	// DraftTOCOpen 是草稿本侧边栏（目录树）**是否展开**；默认 true。
 	//
 	// 它不是交互偏好：面板默认宽 560、硬上限 760（panel.ClampPanelSize），
 	// 560 下"左目录 180 + 右编辑"只剩 380 逻辑点，富文本排版放不下。
 	// 所以这个开关是**布局必需**，值要活过这次运行。
-	DraftTOCCollapsed bool `json:"draftTocCollapsed"`
+	//
+	// 极性是"展开"：读它、写它的前端都不取反。它曾经叫 DraftTOCCollapsed
+	// （"收起"），而写入端写的是展开状态 —— 每一处单独看都自洽，合起来
+	// 就是"收起记不住、展开过的下次反而收起"。默认 true 就是产品上要的
+	// "草稿本默认打开侧边栏"。
+	DraftTOCOpen bool `json:"draftTocOpen"`
 
 	// LastDraftID 是"上次打开的草稿"（ui.lastView 的草稿粒度）。
 	//
@@ -271,8 +285,8 @@ func DefaultSettings() *Settings {
 			PanelWidth:  560,
 			PanelHeight: 760,
 			// 首次启动进历史页；之后由使用过程写回。
-			LastView:          ViewPanel,
-			DraftTOCCollapsed: false,
+			LastView:     ViewPanel,
+			DraftTOCOpen: true,
 		},
 		Storage: StorageSettings{
 			CleanShutdownMarker: true,
@@ -336,7 +350,7 @@ func (s *Settings) bindings() []binding {
 		{KeyUIPanelHeight, &s.UI.PanelHeight},
 		{KeyUILastView, &s.UI.LastView},
 		{KeyUILastDraftId, &s.UI.LastDraftID},
-		{KeyUIDraftTOCCollapsed, &s.UI.DraftTOCCollapsed},
+		{KeyUIDraftTOCOpen, &s.UI.DraftTOCOpen},
 
 		{KeyDraftAutoSaveDebounceMs, &s.Draft.AutoSaveDebounceMs},
 		{KeyDraftImageMaxBytes, &s.Draft.ImageMaxBytes},
