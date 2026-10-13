@@ -266,7 +266,7 @@ type Image struct {
 }
 ```
 
-goroutine 模型（共 4 条）：
+goroutine 模型（捕获链路 4 条 + 每日备份 1 条）：
 
 ```
 [监听 goroutine]  macOS: 0.2s / 1s 自适应轮询  |  Windows: 消息窗口收 WM_CLIPBOARDUPDATE
@@ -278,9 +278,12 @@ goroutine 模型（共 4 条）：
 [GC goroutine]    每 60s：TTL 过期 → 回收站 → 硬删；条数 / 容量淘汰
       │
 [Wails 主 goroutine] 绑定方法：搜索、回贴、CRUD、导入导出
+
+[每日备份 goroutine] 启动时 + 每小时复查：距上一份满 20h 就写一份 full 包到
+                     backups/，保留 7 份，静默（只在日志里留痕，§6 / §7 第 9 条）
 ```
 
-Go 的并发模型在这里很省心：四个 `go func()` + `chan` 就够，不需要手写状态机。
+Go 的并发模型在这里很省心：四条流水线 `go func()` + `chan` 就够，不需要手写状态机；每日备份是第 5 条，独立于流水线（它只读库与 blob，不参与捕获）。
 
 **但有一条 Go + SQLite 的硬约束**：SQLite 的写操作必须串行化。用**单个写 goroutine 消费 channel**，或给 `*sql.DB` 设 `SetMaxOpenConns(1)`。否则并发写会撞 `SQLITE_BUSY`。推荐前者——写 goroutine 还能顺便实现 §14 的合批提交。
 
@@ -635,9 +638,17 @@ DOM 替换在 `Drafts.tsx` 里做并按"逻辑文本偏移"恢复光标；输入
 1. 前端**防抖 500 ms**（停手即存），另加 **5 s 强制落盘**——否则
    "一直在打字"就永不保存。
 2. **只在内容真变化时写**（拿上次已存内容比对）。纯光标移动、纯选中
-   不触发写。
+   不触发写。这条**在库那一侧也钉了一遍**（`AND md <> ?` 进 WHERE）：
+   调用方手里的"上次写进去的是什么"可能过期，库里那份才是权威；而
+   `updated_at` 的语义是**最近修改**时间，不是"最近保存过"、更不是
+   "最近打开过"——点开一篇看一眼就把它顶成"刚刚"，时间列就不可信了
+   （0.1.4 修的缺陷，见 `docs/ACCEPTANCE.md` 的产物级问题第 14 条）。
 3. 写入是**单条 `UPDATE`、只动 `md` 与 `updated_at`**
    （`store.SaveDraftMD`），不重写整行、不碰 title / seq / sort_order。
+   内容一致时**一个字节都不写**，并把原来的 `updated_at` 原样返回（前端
+   拿它显示"已保存 · HH:MM"，返回 now 就又是"刚刚"了）。判断不能靠
+   `RowsAffected`：SQLite 的 `changes()` 数的是**匹配上的行**，同一份内容
+   再写一次同样是 1 行——所以比对必须放进 WHERE。
 
 标题走单独的 `RenameDraft`，与正文两条路径分开：让"打字期间每 500 ms
 一次"的那条更新尽可能小，也避免自动保存顺手把用户正在改的标题覆盖回去。
@@ -879,6 +890,18 @@ blobs/
   它没有指纹，重导一次就新增一批，确认页必须如实写"将新增 N 条草稿"。
   回滚要**同时**删 items 与 drafts（同一事务），否则批次被标成 `rolled_back`
   之后用户再也找不到入口去撤掉那批草稿。
+- **每日自动备份**（§7 第 9 条的落地，`dailybackup.go`）：不是另一套格式，就是
+  上面这个包 —— 启动时查一次、之后每小时复查，距上一份满 **20 小时**就写一份
+  `backups/pawclip-backup-daily-<YYYYMMDD-HHMMSS>.clipbak`（`scope = full`，含
+  草稿与 blob），只保留最新 **7** 份。三条边界要记住：
+  (1) **静默**：不发通知、不推事件，只在日志里留"已写入每日备份"或"每日备份
+  失败"，失败绝不影响记录剪贴板；
+  (2) **只删自己写的**：清理只认 `pawclip-backup-daily-*.clipbak`，用户手动
+  导出到同一个目录里的包（`pawclip-backup-full-…`）一律不碰；
+  (3) **可回滚成恢复路径**：包与手动导出一致，所以恢复就是走「导入备份」——
+  用 `backup.Precheck` 验过（`dailybackup_test.go` 的端到端用例）。
+  20 小时而不是 24 小时：这个间隔是"应用被打开的时刻"之间的间隔，24h 会让
+  "昨天 21:00 开过、今天 20:30 又开"这种最常见的节奏漏掉一整天。
 
 ---
 
@@ -894,7 +917,7 @@ blobs/
 | 6 | 分发方式 | **不做 Developer ID 签名、不做公证**（见 §0）。走 ad-hoc 签名 + README 说明 Gatekeeper 绕过；**不上架 App Store**（沙箱下无法任意落盘、全局热键受限） |
 | 7 | 隐藏 Dock 图标 | 必须把激活策略设为 Accessory。两条路径：① `build/darwin/Info.plist` 加 `LSUIElement = true`（**推荐**，进程启动前生效，避免开机抢一次焦点）；② cgo 调 `NSApp.setActivationPolicy(NSApplicationActivationPolicyAccessory)`。**注意：这不只是"隐藏 Dock 图标"的美观需求——M0 实测证明它是免抢焦点面板的必要条件**（见 §0.2） |
 | 8 | 通用二进制 | `wails build -platform darwin/universal`；同时设 `LSMinimumSystemVersion = 12.0` |
-| 9 | 数据库损坏 | WAL + `clean_shutdown` 标记文件（正常退出删除；启动时**发现标记存在才**跑 `PRAGMA integrity_check`，见 §14 第 6 条）+ 每日备份到 `backups/` 保留 7 份 |
+| 9 | 数据库损坏 | WAL + `clean_shutdown` 标记文件（正常退出删除；启动时**发现标记存在才**跑 `PRAGMA integrity_check`，见 §14 第 6 条）+ 每日备份到 `backups/` 保留 7 份（启动时 + 每小时复查、20h 最小间隔、`scope = full` 含草稿与 blob；实现与边界见 §6 最后一条与 `dailybackup.go`） |
 | 10 | 点了面板以外的地方，面板赖着不走 | 判据**不能**用 `NSApp.isActive`：面板是 NonactivatingPanel——它拿键盘却不激活 App（第 3 条），所以"用户点走了"只能看**窗口自己的 key 状态**。听两条通知：`NSWindowDidResignKeyNotification`（点别的 App / 桌面 / 别的窗口，主路径）与 `NSApplicationDidResignActiveNotification`（Spotlight、切 Space，此时面板可能连 key 都没拿到）。判定**延后 80ms 复核**：合并同一轮的多条通知、挡掉 key 瞬间抖动，并且**有模态窗口时不收起**（导出/导入要弹系统文件面板，那一刻收起等于把用户的操作上下文弄丢）。原生只负责"识别时机"，收不收由 `ui.closeOnBlur` 决定，策略留在 Go 侧 |
 | 11 | 打开文件管理器后出现一个"透明窗口" | 面板窗口是**非不透明**的（`setOpaque:NO` + `clearColor`，为的是让系统投影跟着圆角卡片走），它自己一个像素都不画，可见性完全依赖 WKWebView 合成内容。于是"透明窗口"只有一种成因：**窗口可见，但内容没合成**。最容易踩进去的是"把路径交给访达/资源管理器"这条路——`open` 让访达激活，本 App 随即失去活跃，而失焦自动收起（第 10 条）要等 80ms 复核才发现，`orderOut` 于是落在 **App 已不活跃**的时刻，窗口再被呼出时 WebKit 未必马上重新合成。处理分两层：① `revealAndStepBack`（dialogs.go）在交给系统**之前**先收起面板，避开那个时序；② **构造性消除**——内容层垫一块**不透明的圆角底座**（panel_darwin.m `g_cardLayer`，圆角/裁剪从 WebView 层挪到底座层），颜色由 hide/show 时机用 `evaluateJavaScript` 从 DOM 的 body 背景色同步（整个函数 `@try` 包裹，旁路逻辑不允许带崩显隐；初值按系统外观猜）。这样"内容没合成"的最坏结果是一块底色卡片，**不再存在透明洞**；呼出时 `invalidateShadow` 防投影残影。排查手段：窗口状态探针（`PAWCLIP_PANEL_DIAG=1` 从终端起），每次显隐/失焦判定打一行 `visible/key/appActive/modal/webInPanel/frame/screens/alpha`——`webInPanel=0` 说明 WebView 已不在面板视图树里，是另一种成因；`screens` 用于多显示器（AppKit frame 是主屏**左下**原点，截图工具 `-R` 是**左上**原点）。⚠️ 取证教训：本机终端没有"屏幕录制"权限时，macOS 对截图**只合成壁纸**，`screencapture -l` 对任何 App 的窗口都报 "could not create image from window"——先拿别的 App 窗口做对照验证权限，再相信截图结论（2026-09-18 实测踩坑） |
 | 12 | 对 Wails 的 `WailsWebView` 调视图方法会崩 | `WailsWebView` 声明继承 `WKWebView`，但实测对它调 `isDescendantOfView:` 运行时抛 `unrecognized selector` 并 SIGABRT（2026-09-18，SIGABRT 栈落在 dispatch 主队列块里）。所以"找 WebView 并校验它还在视图树上"这种写法不能用：**每次现找**（浅层 `subviews` 递归，成本可忽略）、调用前 `respondsToSelector:`、整体 `@try`——见 `PawClip_WKWebView` / `PawClip_SyncBackdropFromDom` |
@@ -968,7 +991,7 @@ TOML 解析用 `github.com/BurntSushi/toml`（约 100 KB、无传递依赖）。
 | `ui.language` | `"system"` | `system` / `zh-CN` / `en`。解析顺序：本机设置 → 系统区域 → 回退 `en` |
 | `ui.lastView` | `"panel"` | 上次所处的视图。**只有"草稿本"是粘滞的**：从草稿本收起面板、下次呼出仍回到草稿本；其余视图（统计 / 导出导入 / 设置）的呼出一律回到历史。理由与实现见 §4.4.8。取值域与内部视图标识一致（`panel` / `drafts` / `stats` / `backup` / `settings`），非法值回退 `panel` |
 | `ui.lastDraftId` | `0` | 上次打开的草稿（`ui.lastView` 的草稿粒度）。重进草稿本回到它而不是固定回第一条——多条草稿时固定回第一条，看起来就像"刚写的东西没了"。指向的草稿可能已被删，读取方必须校验存在性 |
-| `ui.draftTocCollapsed` | `false` | 草稿本目录的收起状态。**布局必需**而非偏好（面板 560 逻辑点下目录 + 编辑器摆不下），所以要活过重启 |
+| `ui.draftTocOpen` | `true` | 草稿本侧边栏（目录树）是否展开。**布局必需**而非偏好（面板 560 逻辑点下目录 + 编辑器摆不下），所以要活过重启。极性是"展开"，读写两侧都不取反；旧键 `ui.draftTocCollapsed`（0.1.3 及更早，值同样是展开状态）只在**新键缺席**时被沿用一次，值原样搬不取反 |
 | `ui.theme` | `"system"` | `light` / `dark` / `system` |
 | `ui.panelWidth` | `560` | 面板宽度（逻辑点）。**不是给用户填的参数**：面板边缘可拉伸，收起/退出时把当前 frame 写回这两项，下次启动照原样打开。取值域 `380–760`（`panel.ClampPanelSize`） |
 | `ui.panelHeight` | `760` | 面板高度（逻辑点）。取值域 `480–1100` |
@@ -1021,6 +1044,7 @@ pawclip/
 ├─ tray.go
 ├─ app.go                               # Wails App 绑定（前端可调方法都在这）
 ├─ bindings.go                          # 各视图的绑定方法（含草稿与备份）
+├─ dailybackup.go                       # 每日自动备份到 backups/，保留 7 份（§6 / §7 第 9 条）
 ├─ drafts.go                            # 草稿的绑定层（含贴图导入，§4.4）
 ├─ blobserver.go                        # blobs/ 的 AssetServer（绝不走 IPC，§14 A）
 ├─ config.go
