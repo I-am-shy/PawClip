@@ -313,6 +313,11 @@ func (a *App) initialize(ctx context.Context) error {
 	// 空闲 watcher 同理（它只读原子变量，开销可以忽略）。
 	go a.startIdleWatcher(ctx)
 
+	// 每日备份（§7 第 9 条）。放在这一段而不是 gc.Start() 旁边，是为了让它
+	// 和面板、托盘一样只出现在真实运行里：noPlatformUI 的测试进程不该往
+	// 临时目录里写备份包。它自己起 goroutine，所以不会拖慢这里。
+	a.startDailyBackup(ctx)
+
 	return nil
 }
 
