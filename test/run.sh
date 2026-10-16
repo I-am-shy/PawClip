@@ -81,7 +81,7 @@ run_layer() {
     PASSED+=("$name")
   else
     local rc=$?
-    FAILED+=("$name（退出码 $rc）")
+    FAILED+=("${name}（退出码 ${rc}）")
   fi
   return 0
 }

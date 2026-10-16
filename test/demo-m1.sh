@@ -25,7 +25,7 @@ WORK=$PWD/.workbuddy/tmp/pawclip-demo
 DB=$WORK/pawclip.db
 
 if [ ! -x "$APP" ]; then
-  echo "找不到 $APP，请先跑 scripts/build.sh" >&2
+  echo "找不到 ${APP}，请先跑 scripts/build.sh" >&2
   exit 1
 fi
 

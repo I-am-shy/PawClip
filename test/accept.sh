@@ -79,7 +79,7 @@ echo ""
 echo "① 产物自检"
 
 if [ ! -x "$BIN" ]; then
-  bad "找不到可执行文件 $BIN，先跑 scripts/build.sh"
+  bad "找不到可执行文件 ${BIN}，先跑 scripts/build.sh"
   exit 1
 fi
 ok "可执行文件存在（$(du -sh "$APP" | cut -f1)）"
@@ -87,7 +87,7 @@ ok "可执行文件存在（$(du -sh "$APP" | cut -f1)）"
 archs=$(lipo -archs "$BIN" 2>/dev/null)
 case "$archs" in
   *x86_64*arm64*|*arm64*x86_64*) ok "通用二进制：$archs" ;;
-  *) bad "不是通用二进制：$archs（docs/DESIGN.md §14 第 21 条要求 darwin/universal）" ;;
+  *) bad "不是通用二进制：${archs}（docs/DESIGN.md §14 第 21 条要求 darwin/universal）" ;;
 esac
 
 # §14 第 18 条：Apple Silicon 上内核只接受带签名的可执行文件，
@@ -254,9 +254,9 @@ else
   n=$(q "SELECT count(*) FROM items WHERE deleted_at IS NULL;")
   n=${n:-0}
   if [ "$((n - BASE))" = "2" ]; then
-    ok "两次复制都落库（count $BASE → $n）"
+    ok "两次复制都落库（count $BASE → ${n}）"
   else
-    bad "两次复制后新增 $((n - BASE)) 条（$BASE → $n），想要 2"
+    bad "两次复制后新增 $((n - BASE)) 条（$BASE → ${n}），想要 2"
   fi
 fi
 
@@ -274,17 +274,17 @@ if osascript -e "set the clipboard to (read (POSIX file \"$PWD/$SRC_PNG\") as «
   img=$(q "SELECT image_path FROM items ORDER BY id DESC LIMIT 1;")
   thumb=$(q "SELECT thumb_path FROM items ORDER BY id DESC LIMIT 1;")
   if [ "$kind" = "image" ] || [ "$kind" = "mixed" ]; then
-    ok "图片条目落库（kind=$kind）"
+    ok "图片条目落库（kind=${kind}）"
   else
-    bad "最新条目 kind=$kind，想要 image/mixed"
+    bad "最新条目 kind=${kind}，想要 image/mixed"
   fi
   if [ -n "$img" ] && [ -f "$WORK/blobs/$img" ]; then
-    ok "原图已落盘：$img（$(stat -f%z "$WORK/blobs/$img") 字节）"
+    ok "原图已落盘：${img}（$(stat -f%z "$WORK/blobs/$img") 字节）"
   else
     bad "原图未落盘：image_path=$img"
   fi
   if [ -n "$thumb" ] && [ -f "$WORK/blobs/$thumb" ]; then
-    ok "缩略图已落盘：$thumb（$(stat -f%z "$WORK/blobs/$thumb") 字节）"
+    ok "缩略图已落盘：${thumb}（$(stat -f%z "$WORK/blobs/$thumb") 字节）"
   else
     bad "缩略图未落盘：thumb_path=$thumb"
   fi
@@ -329,7 +329,7 @@ else
     for n in $(seq 2 100); do
       printf '%s' "$DEDUP" | pbcopy
       if ! wait_use "$n"; then
-        bad "第 $n 次复制后 use_count 没涨到 $n（当前 $(use_count)）"
+        bad "第 $n 次复制后 use_count 没涨到 ${n}（当前 $(use_count)）"
         break
       fi
     done
@@ -340,7 +340,7 @@ else
   if [ "$rows" = "1" ] && [ "$uses" = "100" ]; then
     ok "1 行且 use_count = 100"
   else
-    bad "rows = $rows（想要 1），use_count = $uses（想要 100）"
+    bad "rows = ${rows}（想要 1），use_count = ${uses}（想要 100）"
   fi
 fi
 
@@ -355,7 +355,7 @@ sleep 0.05   # 让它**正在写**的时候被杀，而不是写完再杀
 kill -9 "$APP_PID" 2>/dev/null
 wait "$APP_PID" 2>/dev/null
 APP_PID=""
-info "已 SIGKILL（退出前 count = $BEFORE）"
+info "已 SIGKILL（退出前 count = ${BEFORE}）"
 
 if [ -f "$WORK/clean_shutdown" ]; then
   ok "clean_shutdown 标记仍在（进程没走正常退出路径，下次启动会触发完整性自检）"
@@ -397,7 +397,7 @@ fi
 
 AFTER=$(q "SELECT count(*) FROM items WHERE deleted_at IS NULL;")
 if [ "${AFTER:-0}" -ge "${BEFORE:-0}" ]; then
-  ok "重启后条目数未倒退（$AFTER ≥ $BEFORE）"
+  ok "重启后条目数未倒退（$AFTER ≥ ${BEFORE}）"
 else
   bad "重启后条目数倒退：$AFTER < $BEFORE"
 fi
