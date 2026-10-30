@@ -320,7 +320,7 @@ pawclip/
 | 项 | 现状 | 影响 |
 |---|---|---|
 | 空闲内存 60–73 MB（目标 30 MB） | 面板"闲置销毁"在 Wails v2.16 的单窗口模型下做不了（只导出 `Show/Hide/Quit`，无窗口重建 API），当前实现是**闲置收起**而不是销毁 | 面板收起后 WebView 内存仍在。这是 §12 里唯一未达标的指标，归因见 [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) |
-| Windows 只做了首轮真机验收 | 2026-10-31 在 Windows 11 24H2 / 150% DPI 上实测了启动、热键、文本 / 图片捕获、搜索、快速回贴、去重、崩溃恢复；**v0.1.4 的文件类型不可用**（`CF_HDROP` 布局少了 `fNC`，已在源码修复并在本地 0.1.11 构建复测）；失焦收起、点击回焦、假焦点警告、窗口拖动已在 0.1.11 修复，快捷键注销/只呼出、尺寸上限在 0.1.12 修复，初始尺寸=最小值在 0.1.13 落地，托盘菜单/图标、文件选择器失焦、最小尺寸比例在 0.1.14 修复，单实例守卫在 0.1.15 补齐，草稿插图改系统对话框在 0.1.16 修复，托盘图标恢复可点击在 0.1.17 修复并复测，随 0.1.17 发布 | 详见 [`docs/ACCEPTANCE-WINDOWS.md`](docs/ACCEPTANCE-WINDOWS.md)。v0.1.4 上复制文件会被拆成单字符假文件；多显示器 / 托盘 / 自启 / 边缘缩放等仍未覆盖 |
+| Windows 只做了首轮真机验收 | 2026-10-31 在 Windows 11 24H2 / 150% DPI 上实测了启动、热键、文本 / 图片 / 文件捕获、搜索、快速回贴、去重、崩溃恢复；随后修复了 CF_HDROP 文件类型、焦点 / 失焦、拖动 / 缩放、热键注销与只呼出、托盘菜单 / 图标、单实例、草稿插图等问题，发布版 **0.1.5** 已复测 | 详见 [`docs/ACCEPTANCE-WINDOWS.md`](docs/ACCEPTANCE-WINDOWS.md)。多显示器 / 托盘键盘导航 / 自启 / 边缘缩放边界仍待继续覆盖 |
 | 未做代码签名与公证 | 既定取舍（不买证书） | 首次打开要手动绕过 Gatekeeper / SmartScreen |
 | Linux | 只有接口骨架，不参与编译 | 按设计边界，本期不做 |
 | 无自动更新 | 只从 Releases 手动下载 | 靠用户自己留意新版本 |
@@ -334,7 +334,7 @@ pawclip/
 | [`docs/DESIGN.md`](docs/DESIGN.md) | **唯一权威设计规格**（16 节 + 附录 A）：架构、数据模型与 DDL、过期策略、双平台踩坑、里程碑、优化清单 |
 | [`docs/README.md`](docs/README.md) | 开发文档索引：技术栈、已锁定决策、功能分期、开工三坑、构建与验收口径 |
 | [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) | §12 全项验收的实测结果、归因与已知遗留 |
-| [`docs/ACCEPTANCE-WINDOWS.md`](docs/ACCEPTANCE-WINDOWS.md) | Windows 首轮真机验收（v0.1.4 → 本地 0.1.17）：已验项、修复记录与未覆盖项 |
+| [`docs/ACCEPTANCE-WINDOWS.md`](docs/ACCEPTANCE-WINDOWS.md) | Windows 首轮真机验收（v0.1.4 → 发布 0.1.5）：已验项、修复记录与未覆盖项 |
 | [`test/README.md`](test/README.md) | 测试分层与验收口径：各层证明什么、`accept.sh` 的三种结论、三条硬口径 |
 | [`docs/BACKUP-FORMAT.md`](docs/BACKUP-FORMAT.md) | `.clipbak` 备份包格式规范（含第三方消费指南） |
 | [`docs/HANDOFF-PROMPT.md`](docs/HANDOFF-PROMPT.md) | M1 开工时的提示词存档（历史文件） |

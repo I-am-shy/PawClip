@@ -132,7 +132,7 @@ go test -tags sqlite_fts5 -p 1 -count=1 ./...
 - 所有脚本都在仓库内的临时目录里跑（`.workbuddy/tmp/pawclip-accept`），
   **不碰** `~/Library/Application Support/PawClip` 里的真实数据。
 - `test/` 不参与构建，也不进发布产物。
-- **Windows 已做首轮真机验收（v0.1.4，2026-10-31；本地 0.1.17 修复并复测）**，
+- **Windows 已做首轮真机验收（v0.1.4，2026-10-31；发布 0.1.5 修复并复测）**，
   结论与修复记录见 [`docs/ACCEPTANCE-WINDOWS.md`](../docs/ACCEPTANCE-WINDOWS.md)。
   Linux 仍只有接口骨架。
 - **Windows 上不要把被测 exe 放在 `%TEMP%` / `.workbuddy/tmp` 这类目录**：同一份
