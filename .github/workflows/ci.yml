@@ -45,7 +45,7 @@ jobs:
   # 全量，而 `test/run.sh --short` 会跳过 3 个规模测试——两者的范围不一样。
   go-test:
     name: Go tests
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -86,7 +86,7 @@ jobs:
   #
   # 那为什么还要跑：本仓库有大量按平台分文件的代码，而**编译**是唯一能
   # 在没有真机的情况下检查它们的办法。真正的可运行产物由 release.yml
-  # 在原生 runner（windows-2022 / macos-14，自带编译器和 cgo）上构建。
+  # 在原生 runner（windows-2022 / macos-15，自带编译器和 cgo）上构建。
   compile-check:
     name: Compile check (${{ matrix.goos }})
     runs-on: ubuntu-latest

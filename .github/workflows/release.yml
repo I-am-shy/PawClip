@@ -25,17 +25,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 单个 macos-14 runner 上直接出 arm64 + x86_64 的通用二进制。
+          # 单个 macos-15 runner 上直接出 arm64 + x86_64 的通用二进制。
           # §14 第 21 条给了两条路（两个 runner 分别构建 / 一个 runner 出
           # universal），这里选后者：产物只有一份，"用户该下哪个"这个问题
           # 就不存在了。
           #
-          # 注意 macos-14 是 arm64，出 universal 意味着 cgo 要走
+          # 注意 macos-15 是 arm64，出 universal 意味着 cgo 要走
           # `-arch arm64 -arch x86_64` 双架构链接（wails 会设好 CGO_CFLAGS，
           # Xcode 的 clang 支持多 -arch）。若某天这条链断了，退路是按
-          # §14 第 21 条的前半句拆成 macos-14 + macos-13 两个 job，
+          # §14 第 21 条的前半句拆成 macos-15 + macos-13 两个 job，
           # 各自出单架构包。
-          - os: macos-14
+          - os: macos-15
             label: macOS universal
             platform: darwin/universal
             artifact: PawClip-macos-universal
