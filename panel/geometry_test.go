@@ -230,7 +230,7 @@ func TestPlanPanelSize(t *testing.T) {
 		{"读不到当前尺寸且要求刷新：照设", 0, 0, 560, 760, true, PanelSizeSet},
 
 		// 目标尺寸不可用：nudge 要能退一个点，所以 1 及以下一律不动手
-		// （真机上的下限是 380×480，见 ClampPanelSize）。
+		// （真机上的下限是 640×487，见 ClampPanelSize）。
 		{"目标尺寸为 0：不可用", 560, 760, 0, 0, true, PanelSizeInvalid},
 		{"目标尺寸为 1：不可用（退不出 1px）", 1, 480, 1, 480, true, PanelSizeInvalid},
 	}

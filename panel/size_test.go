@@ -5,20 +5,19 @@ import "testing"
 // TestClampPanelSize 钉住尺寸夹取的行为。
 //
 // 它存在的理由：这个函数站在"库里存的旧值 / 人手改过的值"与"窗口尺寸"之间，
-// 错一档的后果是**静默的**——面板要么小到布局挤碎、要么大到超出屏幕，
-// 而这两种都只在真机上才看得出来。
+// 错一档的后果是**静默的**——面板要么小到布局挤碎、要么被莫名其妙截断。
+// 2026-10-31 起只有下限，没有上限：大尺寸必须原样通过。
 func TestClampPanelSize(t *testing.T) {
 	cases := []struct {
 		name         string
 		w, h         int
 		wantW, wantH int
 	}{
-		{"正常值原样通过", 560, 760, 560, 760},
+		{"正常值原样通过", 700, 760, 700, 760},
 		{"下界原样通过", MinPanelWidth, MinPanelHeight, MinPanelWidth, MinPanelHeight},
-		{"上界原样通过", MaxPanelWidth, MaxPanelHeight, MaxPanelWidth, MaxPanelHeight},
 		{"过小抬到下限", 100, 100, MinPanelWidth, MinPanelHeight},
-		{"过大压到上限", 5000, 5000, MaxPanelWidth, MaxPanelHeight},
-		{"宽合法高过小：各自独立夹取", 600, 10, 600, MinPanelHeight},
+		{"大尺寸不再截断", 5000, 5000, 5000, 5000},
+		{"宽合法高过小：各自独立夹取", 700, 10, 700, MinPanelHeight},
 		{"宽度为 0 视为没值", 0, 760, 0, 0},
 		{"高度为 0 视为没值", 560, 0, 0, 0},
 		{"负值视为没值", -1, -1, 0, 0},
@@ -44,13 +43,13 @@ func TestClampPanelSize(t *testing.T) {
 	}
 }
 
-// TestClampPanelSizeBoundsSane 钉住上下界本身的关系——写反了（下界 > 上界）
-// 会让夹取产出不可能满足的值，而表驱动用例仍会全绿（它只是拿常量跟自己比）。
-func TestClampPanelSizeBoundsSane(t *testing.T) {
-	if MinPanelWidth >= MaxPanelWidth {
-		t.Fatalf("宽度下界 %d 不小于上界 %d", MinPanelWidth, MaxPanelWidth)
-	}
-	if MinPanelHeight >= MaxPanelHeight {
-		t.Fatalf("高度下界 %d 不小于上界 %d", MinPanelHeight, MaxPanelHeight)
+// TestClampPanelSizeMinimumSane 只钉"下限本身是正数"这一条。
+//
+// 没有上限了，所以不再有"下界 > 上界"这种写反的可能；下限仍必须是正数，
+// 否则 0 会被当成"没值"，和零值语义撞车。
+func TestClampPanelSizeMinimumSane(t *testing.T) {
+	if MinPanelWidth <= 0 || MinPanelHeight <= 0 {
+		t.Fatalf("下限必须是正数：MinPanelWidth=%d MinPanelHeight=%d",
+			MinPanelWidth, MinPanelHeight)
 	}
 }

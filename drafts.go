@@ -13,11 +13,15 @@ package main
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/zego/pawclip/panel"
 	"github.com/zego/pawclip/store"
 )
 
@@ -84,6 +88,18 @@ type DraftImage struct {
 	// 不为此再引一个图像解析器。
 	Width  int `json:"width"`
 	Height int `json:"height"`
+}
+
+// DraftImagePick 是"从系统文件选择器选了一张图"的结果。
+//
+// 走 Go 侧系统对话框而不是 HTML `<input type=file>`：后者会拉起 WebView2
+// 自己的文件选择器，它抢前台时 closeOnBlur 会把面板收起来（2026-10-31
+// 反馈："草稿本里打开图片会导致界面关闭"）。Go 侧的对话框走 dialogDepth
+// 屏蔽，选择期间面板不会被误收。
+type DraftImagePick struct {
+	Name    string `json:"name"`
+	Mime    string `json:"mime"`
+	DataURL string `json:"dataUrl"`
 }
 
 // Drafts 返回目录（含归档区）与草稿本相关的几个设置值。
@@ -254,6 +270,17 @@ func (a *App) ReorderDrafts(ids []int64) error {
 //
 // base64 允许带 `data:image/png;base64,` 前缀：前端用 FileReader
 // 读剪贴板/文件得到的就是那个形式，收口在这里剥比让每个调用点都记得剥更可靠。
+func (a *App) draftImageMaxBytes() int64 {
+	maxBytes := int64(0)
+	if s := a.Settings(); s != nil {
+		maxBytes = s.Draft.ImageMaxBytes
+	}
+	if maxBytes <= 0 {
+		maxBytes = store.DefaultSettings().Draft.ImageMaxBytes
+	}
+	return maxBytes
+}
+
 func (a *App) ImportDraftImage(mime, dataBase64 string) (*DraftImage, error) {
 	// 只借 a.ready() 完成初始化（库句柄与 blob 存储都建起来），
 	// 这条路径不需要 db：图片落的是 blobs/ 目录，不写数据库行。
@@ -267,13 +294,7 @@ func (a *App) ImportDraftImage(mime, dataBase64 string) (*DraftImage, error) {
 		return nil, a.localizeErr(store.ErrNotFound)
 	}
 
-	maxBytes := int64(0)
-	if s := a.Settings(); s != nil {
-		maxBytes = s.Draft.ImageMaxBytes
-	}
-	if maxBytes <= 0 {
-		maxBytes = store.DefaultSettings().Draft.ImageMaxBytes
-	}
+	maxBytes := a.draftImageMaxBytes()
 
 	// 预估解码后的大小：base64 每 4 个字符表示 3 字节。先估后解，
 	// 免得为一个必然被拒的输入去分配几十 MB。
@@ -314,6 +335,78 @@ func (a *App) ImportDraftImage(mime, dataBase64 string) (*DraftImage, error) {
 		img.Width, img.Height = w, h
 	}
 	return img, nil
+}
+
+// PickDraftImage 用**系统文件选择器**选一张图，返回 data URL。
+//
+// 前端拿到后仍走 ImportDraftImage 落盘（那里有 mime/大小/扩展名三道校验）。
+// 这里提前读文件是为了把"选中的文件"变成同一条导入路径，避免再加一个
+// 按路径导入的绑定面。上限在读取前用 Stat 拦一次，免得为必然被拒的图
+// 分配几十 MB。
+func (a *App) PickDraftImage() (*DraftImagePick, error) {
+	if a.ctx == nil {
+		return nil, msgf(msgErrUINotReady, nil)
+	}
+
+	a.beginDialog()
+	defer a.endDialog()
+
+	opts := panel.DialogOptions{
+		Title:      a.T(msgPickDraftImage),
+		CanFiles:   true,
+		Extensions: []string{"png", "jpg", "jpeg", "gif", "webp"},
+	}
+	p, err := openNativeDialog(opts)
+	if errors.Is(err, panel.ErrUnsupported) {
+		// Windows 的 Wails 宿主窗口是正常窗口，回退安全；macOS 走原生。
+		p, err = openWailsDialog(a, opts)
+	}
+	if err != nil {
+		return nil, err
+	}
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return nil, nil // 用户取消
+	}
+
+	info, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if max := a.draftImageMaxBytes(); max > 0 && info.Size() > max {
+		return nil, a.localizeErr(msgf(msgErrDraftImageTooBig, nil, humanBytes(max)))
+	}
+
+	mime, ok := draftImageMime(p)
+	if !ok {
+		return nil, a.localizeErr(msgf(msgErrDraftImageType, nil))
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	return &DraftImagePick{
+		Name:    filepath.Base(p),
+		Mime:    mime,
+		DataURL: "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data),
+	}, nil
+}
+
+// draftImageMime 只按扩展名给出可接受的图片 mime；真正的类型校验仍由
+// ImportDraftImage 的 draftImageExt（读文件头）完成。
+func draftImageMime(p string) (string, bool) {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".png":
+		return "image/png", true
+	case ".jpg", ".jpeg":
+		return "image/jpeg", true
+	case ".gif":
+		return "image/gif", true
+	case ".webp":
+		return "image/webp", true
+	default:
+		return "", false
+	}
 }
 
 // SetLastView 记住"当前停在哪一页"。

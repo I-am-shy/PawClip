@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"io/fs"
+	"runtime"
 	"sync"
 )
 
@@ -26,24 +27,37 @@ var trayFS embed.FS
 const trayIconDir = "assets/icon/dist/tray"
 
 var (
-	trayOnce sync.Once
-	trayPNG  []byte
+	trayOnce  sync.Once
+	trayBytes []byte
 )
 
-// trayTemplatePNG 返回适合当前平台的托盘图标字节。
+// trayIcon 返回适合当前平台的托盘图标字节。
 //
-// 优先 @2x：macOS 菜单栏是 16pt（Retina 下就是 32px），§15.5 明确说
-// "16px 下细节会糊，而 32px 档位下剪贴板轮廓与猫脸均清晰可辨"。
-// 找不到 @2x 才退到 1x，再找不到返回 nil（平台侧会用一个空图标，
-// 至少不影响功能）。
-func trayTemplatePNG() []byte {
+// Windows 用 **tray-win.ico**（由 assets/icon/pawclip-source.png 生成）：
+// 保留原图标稿的圆角卡片 + 剪贴板 + 猫脸，去掉源图的白色外底（圆角透明）。
+// Win32 的 LoadImage(IMAGE_ICON) 不接受 PNG（实测对 PNG 返回 0，于是托盘
+// 落回 IDI_APPLICATION 的通用图标），所以必须先转成 ICO。
+//
+// ⚠️ ICO 只保留 16/20/24/32/40/48/64 这些托盘实际尺寸。带 128/256 大帧的
+// ICO 在 Windows 11 上会让 Shell_NotifyIcon 显示图标、但托盘项点不动
+// （2026-10-31 反馈"托盘图标又点不了了"；去掉大帧后左键菜单正常）。
+// macOS 用纯黑 + alpha 的模板 PNG——菜单栏按明暗自动反色，彩色图在深色
+// 菜单栏下会看不见（§15.5）。
+//
+// macOS 优先 @2x：菜单栏是 16pt（Retina 下就是 32px），16px 下细节会糊。
+// 找不到就返回 nil（平台侧用空图标，至少不影响功能）。
+func trayIcon() []byte {
 	trayOnce.Do(func() {
-		for _, name := range []string{"trayTemplate@2x.png", "trayTemplate.png"} {
+		names := []string{"trayTemplate@2x.png", "trayTemplate.png"}
+		if runtime.GOOS == "windows" {
+			names = []string{"tray-win.ico"}
+		}
+		for _, name := range names {
 			if b, err := fs.ReadFile(trayFS, trayIconDir+"/"+name); err == nil && len(b) > 0 {
-				trayPNG = b
+				trayBytes = b
 				return
 			}
 		}
 	})
-	return trayPNG
+	return trayBytes
 }

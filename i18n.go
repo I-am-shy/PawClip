@@ -73,6 +73,7 @@ const (
 	msgBackupReadmeWarning msgKey = "backup.readme.warning"
 	msgPasteAccessibility  msgKey = "paste.needsAccessibility"
 	msgPasteDegraded       msgKey = "paste.degraded"
+	msgPanelNoFocus        msgKey = "panel.noFocus"
 
 	// ── 回写路径上"给用户看的一句话"（§14 第 24 条的"错误提示"）──
 	//
@@ -133,6 +134,7 @@ const (
 	// 一句"给系统看的格式说明"，其实是**用户会读到的一句话**。
 	msgPickExportDir        msgKey = "dialog.pickExportDir"
 	msgPickBackupFile       msgKey = "dialog.pickBackupFile"
+	msgPickDraftImage       msgKey = "dialog.pickDraftImage"
 	msgDialogBackupFilter   msgKey = "dialog.backupFilter"
 	msgDialogAllFilesFilter msgKey = "dialog.allFilesFilter"
 
@@ -247,6 +249,7 @@ var allMsgKeys = []msgKey{
 	msgBackupReadmeWarning,
 	msgPasteAccessibility,
 	msgPasteDegraded,
+	msgPanelNoFocus,
 	msgNoteRTFMissing,
 	msgNoteImageMissing,
 	msgNoteSnapshotFailed,
@@ -280,6 +283,7 @@ var allMsgKeys = []msgKey{
 	msgConvFailed,
 	msgPickExportDir,
 	msgPickBackupFile,
+	msgPickDraftImage,
 	msgDialogBackupFilter,
 	msgDialogAllFilesFilter,
 	msgErrUINotReady,
@@ -354,6 +358,7 @@ var catalog = map[Lang]map[msgKey]string{
 		msgBackupReadmeWarning:  "本包含有你复制过的内容（可能包括密码、验证码）。请妥善保管，不要随手分享。",
 		msgPasteAccessibility:   "需要在「系统设置 → 隐私与安全性 → 辅助功能」里勾选 PawClip 才能自动粘贴",
 		msgPasteDegraded:        "没有「辅助功能」授权，已降级为只复制到剪贴板",
+		msgPanelNoFocus:         "面板已显示，但没能拿到键盘焦点；再按一次热键试试",
 		msgNoteRTFMissing:       "RTF 内容已丢失，本次只写文本",
 		msgNoteImageMissing:     "图片文件已丢失，本次不带图片",
 		msgNoteSnapshotFailed:   "原剪贴板未能读取，粘贴后不恢复",
@@ -387,6 +392,7 @@ var catalog = map[Lang]map[msgKey]string{
 		msgConvFailed:           "转换失败",
 		msgPickExportDir:        "选择导出位置",
 		msgPickBackupFile:       "选择要导入的备份包（.clipbak）",
+		msgPickDraftImage:       "选择要插入的图片",
 		msgDialogBackupFilter:   "PawClip 备份包 (*.clipbak)",
 		msgDialogAllFilesFilter: "所有文件 (*.*)",
 		msgErrUINotReady:        "界面还没准备好，请稍后再试",
@@ -454,6 +460,7 @@ var catalog = map[Lang]map[msgKey]string{
 		msgBackupReadmeWarning:  "This archive contains things you have copied (possibly passwords or codes). Keep it private.",
 		msgPasteAccessibility:   "Grant PawClip access in System Settings → Privacy & Security → Accessibility to auto-paste",
 		msgPasteDegraded:        "No Accessibility permission; falling back to copy-only",
+		msgPanelNoFocus:         "The panel is shown but could not take keyboard focus. Press the hotkey again.",
 		msgNoteRTFMissing:       "The RTF copy was lost; pasting text only",
 		msgNoteImageMissing:     "The image file was lost; pasting without it",
 		msgNoteSnapshotFailed:   "Could not read the previous clipboard, so it will not be restored",
@@ -487,6 +494,7 @@ var catalog = map[Lang]map[msgKey]string{
 		msgConvFailed:           "Conversion failed",
 		msgPickExportDir:        "Choose where to export",
 		msgPickBackupFile:       "Choose a backup archive to import (.clipbak)",
+		msgPickDraftImage:       "Choose an image to insert",
 		msgDialogBackupFilter:   "PawClip backups (*.clipbak)",
 		msgDialogAllFilesFilter: "All files (*.*)",
 		msgErrUINotReady:        "The interface is not ready yet — try again in a moment",

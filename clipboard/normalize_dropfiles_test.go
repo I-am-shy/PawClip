@@ -2,6 +2,7 @@ package clipboard
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 	"unsafe"
 )
@@ -11,17 +12,33 @@ import (
 // 它存在的唯一理由是：DROPFILES 的字段布局是对外协议，写错了**本进程内
 // 完全不报错**——只会和其它 Windows 程序互相读不懂。而 Windows 后端在
 // macOS 上跑不起来，所以布局与解析必须先在这里被钉死。
+//
+// ⚠️ 2026-10-31 的 Windows 真机验收证明这件事不能靠"结构体自洽"：
+// 那一版把结构体定义成 16 字节（漏了 fNC），本文件的
+// TestDROPFILES_LayoutMatchesWin32 也跟着断言 16 / fWide@12，于是测试
+// 全绿而真实 Explorer 复制被拆成一串单字符"文件"。修复后这里改成：
+//   - 布局断言以 Windows SDK（ShlObj_core.h）为准：20 字节、fWide@16；
+//   - 关键回归用例用**显式偏移写出的字节**（explorerDROPFILES），
+//     不再复用被测结构体，避免"实现错、测试跟着错"。
+//
+// 见 docs/ACCEPTANCE-WINDOWS.md §3.1。
 
 // TestDROPFILES_LayoutMatchesWin32 把结构体布局与 Win32 的 C 定义对齐。
 //
-// 一旦有人往 dropFiles 里加字段（历史上真的发生过：多了一个 FNC int32），
-// sizeof 会从 16 变成 20，fWide 会从偏移 12 滑到 16，这个测试立刻红。
+// 权威定义（Windows SDK ShlObj_core.h）：
+//
+//	typedef struct _DROPFILES {
+//	  DWORD pFiles;   // 0
+//	  POINT pt;       // 4  (8 字节)
+//	  BOOL  fNC;      // 12
+//	  BOOL  fWide;    // 16
+//	} DROPFILES;       // 20
 func TestDROPFILES_LayoutMatchesWin32(t *testing.T) {
-	if got := unsafe.Sizeof(dropFiles{}); got != 16 {
-		t.Fatalf("sizeof(DROPFILES) = %d，Win32 定义是 16", got)
+	if got := unsafe.Sizeof(dropFiles{}); got != 20 {
+		t.Fatalf("sizeof(DROPFILES) = %d，Win32 定义是 20（pFiles + pt + fNC + fWide）", got)
 	}
-	if got := DROPFILESHeaderSize; got != 16 {
-		t.Fatalf("DROPFILESHeaderSize = %d，想要 16", got)
+	if got := DROPFILESHeaderSize; got != 20 {
+		t.Fatalf("DROPFILESHeaderSize = %d，想要 20", got)
 	}
 	if got := unsafe.Offsetof(dropFiles{}.PFiles); got != 0 {
 		t.Errorf("pFiles 偏移 = %d，想要 0", got)
@@ -29,8 +46,11 @@ func TestDROPFILES_LayoutMatchesWin32(t *testing.T) {
 	if got := unsafe.Offsetof(dropFiles{}.Pt); got != 4 {
 		t.Errorf("pt 偏移 = %d，想要 4", got)
 	}
-	if got := unsafe.Offsetof(dropFiles{}.FWide); got != 12 {
-		t.Errorf("fWide 偏移 = %d，想要 12（这正是当年写错的那个字段）", got)
+	if got := unsafe.Offsetof(dropFiles{}.FNC); got != 12 {
+		t.Errorf("fNC 偏移 = %d，想要 12", got)
+	}
+	if got := unsafe.Offsetof(dropFiles{}.FWide); got != 16 {
+		t.Errorf("fWide 偏移 = %d，想要 16（少写 fNC 会让它滑到 12）", got)
 	}
 }
 
@@ -42,11 +62,22 @@ func TestBuildDROPFILES_HeaderAndPayload(t *testing.T) {
 		t.Fatalf("载荷太短：%d 字节", len(got))
 	}
 	df := (*dropFiles)(unsafe.Pointer(&got[0]))
-	if df.PFiles != 16 {
-		t.Errorf("pFiles = %d，想要 16（其它程序按 16 找载荷，写成 20 会吃掉第一个字符）", df.PFiles)
+	if df.PFiles != 20 {
+		t.Errorf("pFiles = %d，想要 20（其它程序按 20 找载荷）", df.PFiles)
+	}
+	if df.FNC != 0 {
+		t.Errorf("fNC = %d，想要 0（我们不在非客户区拖放）", df.FNC)
 	}
 	if df.FWide == 0 {
 		t.Error("fWide = 0：中文路径会被当成 ANSI 写出去")
+	}
+
+	// 显式按偏移复核一遍：fNC @12、fWide @16，避免只信结构体。
+	if v := binary.LittleEndian.Uint32(got[12:16]); v != 0 {
+		t.Errorf("header[12:16]（fNC）= %d，想要 0", v)
+	}
+	if v := binary.LittleEndian.Uint32(got[16:20]); v != 1 {
+		t.Errorf("header[16:20]（fWide）= %d，想要 1", v)
 	}
 
 	// 载荷：'C',':','\\','a','.','t','x','t' 的 UTF-16LE + NUL + 列表结束 NUL
@@ -83,20 +114,55 @@ func TestDROPFILES_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestParseDROPFILES_AsWrittenByExplorer 是关键回归用例。
+// TestParseDROPFILES_ExplorerGolden 是关键回归用例。
 //
-// 这里的字节是**手写的**，完全照资源管理器（以及任何守规范的 Windows 程序）
-// 的写法：16 字节头部、pFiles = 16、fWide = 1。当年的实现因为结构体多了一个
-// 字段，会从偏移 16 读 fWide（读到的是第一个路径的前两个字符），于是
-// 中文路径被按 Latin-1 透传成乱码。既然不能靠真机发现，就在这里拦住。
+// 字节按 Windows SDK 的布局**用显式偏移**写出来（20 字节头、fNC@12=0、
+// fWide@16=1），刻意不复用 dropFiles / buildDROPFILES。只要实现再把 fWide
+// 读回偏移 12，就会读到 fNC=0，于是 UTF-16 路径被按 ANSI 逐字节切开——
+// 正是 2026-10-31 真机验收里"一个文件变成 52 个单字符文件"的那个 bug。
+func TestParseDROPFILES_ExplorerGolden(t *testing.T) {
+	paths := []string{"C:\\Users\\shy\\报告.txt", "D:\\照片\\🐾.png"}
+	blob := explorerDROPFILES(t, paths)
+
+	// 先按偏移独立复核头部，确认测试数据本身是 SDK 布局。
+	if got := binary.LittleEndian.Uint32(blob[0:4]); got != 20 {
+		t.Fatalf("测试数据 pFiles = %d，想要 20", got)
+	}
+	if got := binary.LittleEndian.Uint32(blob[12:16]); got != 0 {
+		t.Fatalf("测试数据 fNC = %d，想要 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(blob[16:20]); got != 1 {
+		t.Fatalf("测试数据 fWide = %d，想要 1", got)
+	}
+
+	// 结构体必须读出同样的三个字段（fWide 不能在 12）。
+	df := (*dropFiles)(unsafe.Pointer(&blob[0]))
+	if df.PFiles != 20 || df.FNC != 0 || df.FWide != 1 {
+		t.Fatalf("结构体读到 pFiles=%d fNC=%d fWide=%d，想要 20/0/1",
+			df.PFiles, df.FNC, df.FWide)
+	}
+
+	got := parseDROPFILES(blob[20:], df.FWide != 0)
+	if len(got) != len(paths) {
+		t.Fatalf("解析出 %d 条：%v（想要 %d 条）", len(got), got, len(paths))
+	}
+	for i := range paths {
+		if got[i] != paths[i] {
+			t.Errorf("第 %d 条 = %q，想要 %q", i, got[i], paths[i])
+		}
+	}
+}
+
+// TestParseDROPFILES_AsWrittenByExplorer 是上面的"结构体版"兄弟：
+// 用 dropFiles 写头，确认解析链路在自洽之外也成立。
 func TestParseDROPFILES_AsWrittenByExplorer(t *testing.T) {
 	paths := []string{"C:\\Users\\zego\\文件.txt", "D:\\照片\\🐾.png"}
 
-	blob := handBuildDROPFILES(t, paths, 16 /* pFiles */, 1 /* fWide */)
+	blob := handBuildDROPFILES(t, paths, 20 /* pFiles */, 1 /* fWide */)
 
 	df := (*dropFiles)(unsafe.Pointer(&blob[0]))
-	if df.PFiles != 16 {
-		t.Fatalf("测试数据构造错误：pFiles = %d", df.PFiles)
+	if df.PFiles != 20 || df.FWide != 1 {
+		t.Fatalf("测试数据构造错误：pFiles=%d fWide=%d", df.PFiles, df.FWide)
 	}
 	got := parseDROPFILES(blob[df.PFiles:], df.FWide != 0)
 	if len(got) != 2 {
@@ -112,17 +178,16 @@ func TestParseDROPFILES_AsWrittenByExplorer(t *testing.T) {
 
 // TestParseDROPFILES_AsWrittenByExplorerANSI 是上面那条的 ANSI 兄弟。
 //
-// 它专门抓"fWide 读错位置"：fWide 落在偏移 12，若从 16 去读，读到的就是
-// 第一个路径的前 4 个字节（'C' ':' '\\' 'a' …），恒为非 0，于是 ANSI 载荷
-// 会被当成 UTF-16LE 解析成乱码。
+// 它专门抓"fWide 读错位置"：fWide 在偏移 16，若从 12 去读，读到的就是
+// fNC（0），于是 ANSI 载荷会被当成 UTF-16LE 解析成乱码（或者反过来）。
 func TestParseDROPFILES_AsWrittenByExplorerANSI(t *testing.T) {
 	paths := []string{"C:\\a.txt", "D:\\b c\\d.dat"}
 
-	blob := handBuildDROPFILES(t, paths, 16 /* pFiles */, 0 /* fWide: ANSI */)
+	blob := handBuildDROPFILES(t, paths, 20 /* pFiles */, 0 /* fWide: ANSI */)
 
 	df := (*dropFiles)(unsafe.Pointer(&blob[0]))
 	if df.FWide != 0 {
-		t.Fatalf("fWide 读成了 %d，应当是 0——说明读的位置不是偏移 12", df.FWide)
+		t.Fatalf("fWide 读成了 %d，应当是 0——说明读的位置不是偏移 16", df.FWide)
 	}
 	got := parseDROPFILES(blob[df.PFiles:], false)
 	if len(got) != 2 || got[0] != paths[0] || got[1] != paths[1] {
@@ -180,15 +245,37 @@ func TestEncodeUTF16LE(t *testing.T) {
 	}
 }
 
+// explorerDROPFILES 按 Windows SDK 的布局、用**显式偏移**写一份 CF_HDROP。
+//
+// 刻意不复用 dropFiles / buildDROPFILES：这组字节是"外部世界（Explorer）
+// 会写出来的东西"，用它才能发现"实现自己和自己的测试一起错"。
+func explorerDROPFILES(t *testing.T, paths []string) []byte {
+	t.Helper()
+
+	const headerSize = 20 // ShlObj_core.h 的 sizeof(DROPFILES)
+	blob := make([]byte, headerSize)
+	// pFiles @0 = 20；pt @4..11 全 0；fNC @12..15 = 0；fWide @16..19 = 1。
+	binary.LittleEndian.PutUint32(blob[0:4], headerSize)
+	binary.LittleEndian.PutUint32(blob[16:20], 1)
+
+	body := make([]byte, 0, 128)
+	for _, p := range paths {
+		body = append(body, encodeUTF16LE(p)...)
+	}
+	body = append(body, 0, 0) // 列表结束的双 NUL
+
+	return append(blob, body...)
+}
+
 // handBuildDROPFILES 按 Win32 规范手写一份 CF_HDROP，刻意不复用 buildDROPFILES，
 // 这样"被测实现"与"测试数据"才是两条独立的路径。
 func handBuildDROPFILES(t *testing.T, paths []string, pFiles uint32, fWide int32) []byte {
 	t.Helper()
 
-	header := make([]byte, 16)
-	// pFiles @0, pt @4..11（全 0）, fWide @12
-	header[0] = byte(pFiles)
-	header[12] = byte(fWide)
+	header := make([]byte, 20)
+	// pFiles @0, pt @4..11（全 0）, fNC @12（0）, fWide @16
+	binary.LittleEndian.PutUint32(header[0:4], pFiles)
+	binary.LittleEndian.PutUint32(header[16:20], uint32(fWide))
 
 	if fWide == 0 {
 		var body []byte

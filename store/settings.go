@@ -182,9 +182,9 @@ type UISettings struct {
 
 	// DraftTOCOpen 是草稿本侧边栏（目录树）**是否展开**；默认 true。
 	//
-	// 它不是交互偏好：面板默认宽 560、硬上限 760（panel.ClampPanelSize），
-	// 560 下"左目录 180 + 右编辑"只剩 380 逻辑点，富文本排版放不下。
-	// 所以这个开关是**布局必需**，值要活过这次运行。
+	// 它不是交互偏好：面板默认/最小宽 640（panel.ClampPanelSize），
+	// "左目录 180 + 右编辑"占 460 逻辑点，能并排但偏紧；用户可收起目录
+	// 给正文更多宽度。这个开关要活过这次运行。
 	//
 	// 极性是"展开"：读它、写它的前端都不取反。它曾经叫 DraftTOCCollapsed
 	// （"收起"），而写入端写的是展开状态 —— 每一处单独看都自洽，合起来
@@ -280,10 +280,12 @@ func DefaultSettings() *Settings {
 			Language:             LanguageSystem,
 			Theme:                ThemeSystem,
 			CloseOnBlur:          true,
-			// 560×760：420×520 太窄，分类树 + 列表一起放不下（用户实测反馈）。
+			// 640×487 = panel.MinPanelWidth/MinPanelHeight：2026-10-31 按用户
+			// 截图（1171×891）的比例把最小值放大；初始尺寸 = 最小值，面板只能
+			// 往上拉、不能再小。更小的尺寸会在 panel.ClampPanelSize 被抬回这里。
 			// 这个值只在"用户从没拖过边缘"时生效，一旦拖过就以库里的为准。
-			PanelWidth:  560,
-			PanelHeight: 760,
+			PanelWidth:  640,
+			PanelHeight: 487,
 			// 首次启动进历史页；之后由使用过程写回。
 			LastView:     ViewPanel,
 			DraftTOCOpen: true,

@@ -135,46 +135,41 @@ type Config struct {
 
 // 面板尺寸边界（逻辑点）。
 //
-// ⚠️ 这是**唯一**一份边界定义，三个平台相关的地方都从它取：
+// ⚠️ 只有**下限**，没有上限。2026-10-31 按用户反馈取消上限（"可以无限放大，
+// 符合一般应用的表现"）；下限的理由是布局：§4.4.5 的草稿版式
+// （左目录 + 右编辑）在 640 以下会挤碎。
 //
-//	① macOS：darwin.go 把 Min/Max 传给 paw_attach，成为 NSPanel 的
-//	   contentMinSize / contentMaxSize（拖动边缘时的边界）。
-//	② Windows：**不是**在 panel 包这里落实的，而是由 main.go 转发进
-//	   Wails 的 options.App.Min/MaxWidth/Height，再由 Wails 的
-//	   winc.Form 在 WM_GETMINMAXINFO 里按窗口 DPI 换算成
-//	   ptMinTrackSize/ptMaxTrackSize。
-//	   （原来这里写的是"Windows 侧同样吃这一份"，那句话在 2026-09-23 之前
-//	   一直是假的：Windows 侧根本没设过边界，因为面板当时压根不可缩放。）
+// 两个平台从同一份下限取值：
+//
+//	① macOS：darwin.go 把 Min 传给 paw_attach，成为 NSPanel 的
+//	   contentMinSize；max 传 0（不设置上限）。
+//	② Windows：main.go 把 Min 转发进 Wails 的 options.App.MinWidth/MinHeight，
+//	   由 winc.Form 在 WM_GETMINMAXINFO 里换算成 ptMinTrackSize；
+//	   MaxWidth/MaxHeight 保持 0（不限制）。
 //	③ 上层在"把设置里的尺寸交给面板"之前夹取（app.go attachPanel）——
 //	   库里的值可能是老版本写进去的、或者被人手改过；
-//	④ 落库前再夹一次（app.go persistPanelSize），免得把窗口实际被系统
-//	   限制过的尺寸之外的怪值写回去。
-//
-// 下限的理由是布局：§4.4.5 的草稿版式（左目录 + 右编辑）在 380 以下会挤碎；
-// 上限的理由是形态，再大就不是"浮在别人窗口上的轻量面板"了。
+//	④ 落库前再夹一次（app.go persistPanelSize）。
 const (
-	MinPanelWidth  = 380
-	MaxPanelWidth  = 760
-	MinPanelHeight = 480
-	MaxPanelHeight = 1100
+	// 640×487 与用户截图（1171×891）同比例，约 1.314。
+	// 2026-10-31 把 380×480 的最小尺寸放大：380 宽下草稿本目录 + 编辑区
+	// 摆不下，且初始尺寸就是最小值，所以直接给一个可用的横向比例。
+	MinPanelWidth  = 640
+	MinPanelHeight = 487
 )
 
-// ClampPanelSize 把一组尺寸夹进合法区间，0 或负值表示"没设置"，返回 0。
+// ClampPanelSize 把一组尺寸抬到合法下限；0 或负值表示"没设置"，返回 0。
 //
 // 返回 0 而不是最小值：调用方据此区分"用户设过尺寸"与"没有值、该用默认"。
+// **不设上限**：窗口可以拉到任意大（由用户/显示器决定，不由我们截断）。
 func ClampPanelSize(w, h int) (int, int) {
 	if w <= 0 || h <= 0 {
 		return 0, 0
 	}
 	if w < MinPanelWidth {
 		w = MinPanelWidth
-	} else if w > MaxPanelWidth {
-		w = MaxPanelWidth
 	}
 	if h < MinPanelHeight {
 		h = MinPanelHeight
-	} else if h > MaxPanelHeight {
-		h = MaxPanelHeight
 	}
 	return w, h
 }

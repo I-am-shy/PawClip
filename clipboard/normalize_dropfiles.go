@@ -11,26 +11,31 @@ import (
 // 放在这里就能在 macOS 上直接跑单测（docs/HANDOFF-PROMPT.md §五的明确要求），
 // 而 Windows 后端只负责"把 HGLOBAL 里的字节递进来"。
 //
-// ⚠️ 这个文件的存在是有代价换来的：早期版本把 DROPFILES 结构体直接写在
-// windows.go 里，结构体多了一个字段（`FNC int32`），于是
-//   - sizeof = 20 而不是 16
-//   - fWide 落在偏移 16 而不是 12
-// 后果是双向的：读 Explorer 写的 CF_HDROP 会拿到错误的 fWide（wide 路径被
-// 当成 ANSI 按 Latin-1 透传，中文路径直接变乱码），而我们写出去的 CF_HDROP
-// 头部 pFiles=20，其它程序按规范从 16 开始读，第一个路径的字符会被吃掉。
-// 抽成纯函数 + 单测之后，这类错误在 mac 上就会被拦住。
+// ⚠️ 这个文件的存在是有代价换来的：DROPFILES 的字段布局是对外协议，写错了
+// **本进程内完全不报错**——只会和资源管理器及其它 Windows 程序互相读不懂。
+// 2026-10-31 的 Windows 真机验收抓到的正是这一类缺陷：当时的结构体只有三个
+// 字段（少写了 fNC），于是 sizeof=16、fWide 从偏移 12 读；真实 Explorer 写的
+// CF_HDROP 是 20 字节头、fWide 在 16，结果 UTF-16 路径被当成 ANSI 逐字节切，
+// 一个文件被拆成一串单字符"文件"（见 docs/ACCEPTANCE-WINDOWS.md §3.1）。
+//
+// 教训：单测必须用**独立于被测结构体**的字节 fixture 来钉布局，否则测试会
+// 跟着错误实现一起自洽（那一版的 TestDROPFILES_LayoutMatchesWin32 就是如此）。
 
 // DROPFILESHeaderSize 是 Win32 DROPFILES 结构体的大小（字节）。
 //
-//	typedef struct _DROPFILES {
-//	  DWORD  pFiles;   // offset 0
-//	  POINT  pt;       // offset 4  (两个 LONG，共 8 字节)
-//	  BOOL   fWide;    // offset 12
-//	} DROPFILES;       // sizeof = 16
+// 权威定义见 Windows SDK 的 ShlObj_core.h：
 //
-// 字段顺序与偏移是对外契约的一部分：写错了不会在本进程内报错，只会和其它
-// 程序（以及资源管理器）互相读不懂。normalize_dropfiles_test.go 会把它钉死。
-const DROPFILESHeaderSize = 16
+//	typedef struct _DROPFILES {
+//	  DWORD pFiles;   // offset 0
+//	  POINT pt;       // offset 4  (两个 LONG，共 8 字节)
+//	  BOOL  fNC;      // offset 12
+//	  BOOL  fWide;    // offset 16
+//	} DROPFILES;       // sizeof = 20
+//
+// fNC 不是"可选的占位字段"：少了它，fWide 就会滑到 12，读到的其实是 fNC。
+// 字段顺序与偏移是对外契约的一部分，normalize_dropfiles_test.go 用显式偏移
+// 写出的字节（而不是复用结构体）把它钉死。
+const DROPFILESHeaderSize = 20
 
 // winPoint 是 Win32 的 POINT（两个 int32）。
 //
@@ -46,6 +51,7 @@ type winPoint struct {
 type dropFiles struct {
 	PFiles uint32   // pFiles：载荷相对本结构体起点的字节偏移
 	Pt     winPoint // pt：拖放发生时的鼠标位置（我们不用，但必须占位）
+	FNC    int32    // fNC：是否落在非客户区；我们不用，但**不能省**（见上）
 	FWide  int32    // fWide：非 0 表示路径是 UTF-16LE，否则是 ANSI
 }
 
@@ -63,7 +69,7 @@ func encodeUTF16LE(s string) []byte {
 
 // buildDROPFILES 组装一份 CF_HDROP 载荷。
 //
-// 布局：16 字节头部 + 每个路径一段 NUL 结尾的 UTF-16LE + 一个额外的 NUL
+// 布局：20 字节头部 + 每个路径一段 NUL 结尾的 UTF-16LE + 一个额外的 NUL
 // 作为列表结束符（即整体以"双 NUL"收尾）。
 func buildDROPFILES(paths []string) []byte {
 	header := make([]byte, DROPFILESHeaderSize)

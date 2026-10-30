@@ -240,6 +240,13 @@ export type DraftImage = {
   height: number
 }
 
+/** 系统文件选择器选中的图片；DataURL 交给 ImportDraftImage 落盘。 */
+export type DraftImagePick = {
+  name: string
+  mime: string
+  dataUrl: string
+}
+
 // ── 统计 ────────────────────────────────────────────────────────
 
 export type KindStat = { kind: string; count: number; bytes: number }
@@ -566,6 +573,7 @@ export type Bindings = {
    * 前端从剪贴板或文件框拿到的就是这个形式，没有别的东西可传。
    */
   ImportDraftImage(mime: string, dataBase64: string): Promise<DraftImage>
+  PickDraftImage(): Promise<DraftImagePick | null>
 
   Paste(id: number, autoPaste: boolean): Promise<PasteResult>
   CopyOnly(id: number): Promise<PasteResult>

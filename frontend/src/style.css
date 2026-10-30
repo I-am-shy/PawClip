@@ -1965,11 +1965,6 @@ select.input {
   border-color: var(--accent);
 }
 
-/* 隐藏的原生文件选择器：按钮外观自己控制，不想要系统的那个。 */
-.draft-file {
-  display: none;
-}
-
 /* 编辑区的包裹层。存在的唯一理由是给图片缩放把手一个绝对定位的落点：
    把手不能塞进 contenteditable（那片子树会被 htmlToMd 读一遍，而且是
    React 不管、我们手改 innerHTML 的地方）。 */

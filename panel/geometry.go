@@ -102,7 +102,7 @@ const (
 // 还没显示出来的时候），于是即便尺寸已经对了也走一次 PanelSizeNudge。
 //
 // wantW/wantH 必须 > 1：nudge 要退一个点，1 个点或更小的目标值本身就不是
-// 一个可用的面板尺寸（真机上是 380×480 起，见 panel.go 的 ClampPanelSize）。
+// 一个可用的面板尺寸（真机上是 640×487 起，见 panel.go 的 ClampPanelSize）。
 func PlanPanelSize(curW, curH, wantW, wantH int, force bool) PanelSizePlan {
 	if wantW <= 1 || wantH <= 1 {
 		return PanelSizeInvalid

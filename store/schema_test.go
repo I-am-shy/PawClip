@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -119,6 +120,9 @@ func TestOpen_MigratesFromZero(t *testing.T) {
 }
 
 func TestOpen_CreatesDataDirWith0700(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不保留 POSIX 0700 权限位；这条只对 macOS/Linux 有意义")
+	}
 	dir := t.TempDir()
 	nested := filepath.Join(dir, "a", "b", "c")
 	db, err := Open(Options{Path: filepath.Join(nested, "pawclip.db"), Logger: testLogger()})

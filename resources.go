@@ -133,7 +133,7 @@ func (a *App) draftSettings() store.DraftSettings {
 type panelHandler struct{ app *App }
 
 func (h *panelHandler) OnAction(act panel.Action) { h.app.handlePanelAction(act) }
-func (h *panelHandler) OnHotkey()                 { h.app.togglePanel() }
+func (h *panelHandler) OnHotkey()                 { h.app.onHotkey() }
 func (h *panelHandler) OnPanelBlur()              { h.app.onPanelBlur() }
 
 // PanelEvent 是给前端的原生侧事件。
@@ -219,36 +219,35 @@ func (a *App) handlePanelAction(act panel.Action) {
 		} else {
 			os.Exit(0)
 		}
+	// ⚠️ 顺序必须是"先 show、再推视图事件"。
+	//
+	// showPanel 自己会推一条 EventShow，前端收到 show 会把视图重置到
+	// stickyView（通常就是历史页）。如果先推 settings、再 show，事件批里
+	// 是 [settings, show]，show 最后覆盖 nextView —— 用户点"设置"看到的
+	// 就是历史首页（2026-10-31 真机反馈）。反过来 [show, settings] 才是
+	// "先重置、再跳到目标页"。
 	case panel.ActionSettings:
+		a.showPanel()
 		pushEvent(EventSettings, "")
-		a.showPanel()
 	case panel.ActionStats:
+		a.showPanel()
 		pushEvent(EventStats, "")
-		a.showPanel()
 	case panel.ActionBackup:
+		a.showPanel()
 		pushEvent(EventBackup, "")
-		a.showPanel()
 	case panel.ActionAbout:
-		pushEvent(EventAbout, "")
 		a.showPanel()
+		pushEvent(EventAbout, "")
 	}
 }
 
-// togglePanel 是热键的语义：可见就收起，不可见就呼出。
+// onHotkey 是热键的语义：**只负责呼出**。
 //
-// 不做"总是呼出"：热键最常见的误按场景是"面板已经开着、我又按了一次"，
-// 那时用户的意图是收起。
-func (a *App) togglePanel() {
+// 2026-10-31 按用户反馈改掉了"再按一次收起"：误按时会把正在用的面板关掉，
+// 而收起已经有三条明确的路（Esc、点面板以外、标题栏关闭按钮）。
+// 面板已经可见时再按热键，只是把它重新拿到前台。
+func (a *App) onHotkey() {
 	a.touchActivity()
-	ctrl := a.panelController()
-	if ctrl == nil {
-		return
-	}
-	if ctrl.Visible() {
-		a.HidePanel() // 唯一出口：顺带把面板尺寸落盘
-		pushEvent(EventHide, "")
-		return
-	}
 	a.showPanel()
 }
 
@@ -261,7 +260,7 @@ func (a *App) showPanel() {
 		// 面板已经显示了，只是可能收不到键盘。把这个事实告诉前端，
 		// 让它在自己身上放一个可见的提示，而不是静默地"能看不能敲"。
 		a.log.Warn("面板显示时未能取得键盘焦点", "err", err)
-		pushEvent(EventShow, err.Error())
+		pushEvent(EventShow, a.T(msgPanelNoFocus))
 		return
 	}
 	pushEvent(EventShow, "")
@@ -288,6 +287,13 @@ func (a *App) onPanelBlur() {
 		return
 	}
 	if !a.uiSettings().CloseOnBlur {
+		return
+	}
+	// 系统文件选择器打开时前台会切到 explorer/dllhost，这不是"用户离开
+	// 面板"，而是面板自己发起的模态动作。此时收起会让对话框失去 owner，
+	// 选择文件功能直接失效。
+	if a.dialogActive() {
+		a.log.Debug("系统对话框打开中，忽略面板失焦")
 		return
 	}
 	a.log.Debug("面板失去焦点，自动收起", "note", "ui.closeOnBlur")
@@ -531,7 +537,7 @@ func (a *App) installTray() {
 	if ctrl == nil {
 		return
 	}
-	icon := trayTemplatePNG()
+	icon := trayIcon()
 	if err := ctrl.SetTray(icon, a.trayItems()); err != nil {
 		// 托盘失败不影响主链路：用户还有热键。
 		a.log.Warn("托盘安装失败", "err", err)

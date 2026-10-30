@@ -132,5 +132,10 @@ go test -tags sqlite_fts5 -p 1 -count=1 ./...
 - 所有脚本都在仓库内的临时目录里跑（`.workbuddy/tmp/pawclip-accept`），
   **不碰** `~/Library/Application Support/PawClip` 里的真实数据。
 - `test/` 不参与构建，也不进发布产物。
-- Windows / Linux 目前只有编译烟测，**没有真机测试**——原因见 `docs/ACCEPTANCE.md`
-  的「已知遗留」。
+- **Windows 已做首轮真机验收（v0.1.4，2026-10-31；本地 0.1.17 修复并复测）**，
+  结论与修复记录见 [`docs/ACCEPTANCE-WINDOWS.md`](../docs/ACCEPTANCE-WINDOWS.md)。
+  Linux 仍只有接口骨架。
+- **Windows 上不要把被测 exe 放在 `%TEMP%` / `.workbuddy/tmp` 这类目录**：同一份
+  v0.1.4 从仓库临时目录启动会在 WebView2 创建 controller 时稳定报 `8000FFFF`，
+  复制到 `%LOCALAPPDATA%\Programs` 即正常（归因未定，见报告 §1.3）。否则会把
+  "环境挡路"误读成"产物坏了"。

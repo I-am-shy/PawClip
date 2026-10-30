@@ -50,7 +50,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { T as TFn } from '../i18n'
-import { call, type DraftList, type DraftRow } from '../api'
+import { call, type DraftImage, type DraftList, type DraftRow } from '../api'
 import { IMG_MIN_W, externalHref, findAutoLinks, htmlToMd, mdToHtml, safeHref } from '../md'
 import { formatDateTime, formatRelative, formatTime } from '../format'
 import { useInterval } from '../hooks'
@@ -186,7 +186,7 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
   const saveTimerRef = useRef<number | null>(null)
   const titleTimerRef = useRef<number | null>(null)
   const pendingTitleRef = useRef<string | null>(null)
-  const fileRef = useRef<HTMLInputElement | null>(null)
+
   // savedRange 是点工具栏时"用户最后一次在正文里的选区"。
   // 点按钮会让编辑区失焦，不记下来的话链接/图片只能插到末尾。
   const savedRangeRef = useRef<Range | null>(null)
@@ -793,6 +793,21 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
     afterInsert(range, a)
   }
 
+  /** insertImageAt 把已经落盘的图片插到保存的选区。 */
+  const insertImageAt = (img: DraftImage) => {
+    const range = currentRange()
+    if (!range) return
+    const el = document.createElement('img')
+    el.setAttribute('src', img.url)
+    el.setAttribute('alt', '')
+    range.deleteContents()
+    range.insertNode(el)
+    // 图片后面补一个换行：不然光标会贴在图片上，接着打字是"在图片里"。
+    const br = document.createElement('br')
+    el.after(br)
+    afterInsert(range, br)
+  }
+
   const insertImage = async (file: File) => {
     const lim = list?.maxImageBytes ?? 0
     if (lim > 0 && file.size > lim) {
@@ -802,17 +817,25 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
     try {
       const dataUrl = await readAsDataURL(file)
       const img = await call('ImportDraftImage', file.type, dataUrl)
-      const range = currentRange()
-      if (!range) return
-      const el = document.createElement('img')
-      el.setAttribute('src', img.url)
-      el.setAttribute('alt', '')
-      range.deleteContents()
-      range.insertNode(el)
-      // 图片后面补一个换行：不然光标会贴在图片上，接着打字是"在图片里"。
-      const br = document.createElement('br')
-      el.after(br)
-      afterInsert(range, br)
+      insertImageAt(img)
+    } catch (e: unknown) {
+      onToast(t('draft.imageFailed', { err: e instanceof Error ? e.message : String(e) }))
+    }
+  }
+
+  /**
+   * pickImage 走 Go 的系统文件选择器，而不是 HTML `<input type=file>`。
+   *
+   * WebView2 自带的文件框会抢前台，closeOnBlur 会在框还开着时把面板收起，
+   * 用户看到的就是"点图片按钮，界面直接关了"。Go 侧对话框走 dialogDepth
+   * 屏蔽失焦，选择期间面板保持可见。
+   */
+  const pickImage = async () => {
+    try {
+      const picked = await call('PickDraftImage')
+      if (!picked) return // 用户取消
+      const img = await call('ImportDraftImage', picked.mime, picked.dataUrl)
+      insertImageAt(img)
     } catch (e: unknown) {
       onToast(t('draft.imageFailed', { err: e instanceof Error ? e.message : String(e) }))
     }
@@ -1225,21 +1248,10 @@ export function Drafts({ t, onToast, onBack }: DraftsProps) {
                     e.preventDefault()
                     rememberSelection()
                   }}
-                  onClick={() => fileRef.current?.click()}
+                  onClick={() => void pickImage()}
                 >
                   <IconImage size={14} />
                 </button>
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept="image/*"
-                  className="draft-file"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0]
-                    e.target.value = ''
-                    if (f) void insertImage(f)
-                  }}
-                />
                 {maxImageLabel && (
                   <span className="dim draft-note draft-limit">
                     {t('draft.imageLimit', { limit: maxImageLabel })}

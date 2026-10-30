@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	wailsrt "github.com/wailsapp/wails/v2/pkg/runtime"
 	"github.com/zego/pawclip/panel"
@@ -28,6 +29,18 @@ import (
 // "···"后弹访达、界面变透明，2026-09-18 真机截图定位）。原生实现把
 // sheet 挂到面板窗口自己身上，压暗的是有内容的面板。
 var openNativeDialog = panel.RunOpenDialog
+
+// beginDialog / endDialog 在**整个**文件选择器生命周期内外包一层。
+//
+// 系统对话框（尤其是 Windows 的 Common Item Dialog）会把前台切到
+// explorer/dllhost，我们的 EVENT_SYSTEM_FOREGROUND 钩子会当成"面板失焦"，
+// 于是 closeOnBlur 把面板收起——对话框的 owner 没了，选择文件就失效。
+// 这里用计数而不是布尔量：嵌套对话框/回退路径也不会提前解除屏蔽。
+func (a *App) beginDialog() { atomic.AddInt32(&a.dialogDepth, 1) }
+func (a *App) endDialog()   { atomic.AddInt32(&a.dialogDepth, -1) }
+func (a *App) dialogActive() bool {
+	return atomic.LoadInt32(&a.dialogDepth) > 0
+}
 
 // openWailsDialog 同样留成变量：回退路径也要能被单测钉住。
 // 真实现要求 a.ctx 就绪（Wails 运行时没起来时对话框无处安放）。
@@ -57,6 +70,8 @@ func (a *App) PickExportDir() (string, error) {
 	if a.ctx == nil {
 		return "", msgf(msgErrUINotReady, nil)
 	}
+	a.beginDialog()
+	defer a.endDialog()
 	// 默认落在数据目录下的 exports（与 Export 的空 OutputDir 行为一致），
 	// 这样"不选目录直接导出"和"选了默认目录"落到同一个地方。
 	// 目录可能还不存在（首次导出），对话框会做存在性检查，所以先确保它在。
@@ -85,6 +100,8 @@ func (a *App) PickBackupFile() (string, error) {
 	if a.ctx == nil {
 		return "", msgf(msgErrUINotReady, nil)
 	}
+	a.beginDialog()
+	defer a.endDialog()
 	def := a.lastBackupDir()
 	opts := panel.DialogOptions{
 		Title:    a.T(msgPickBackupFile),

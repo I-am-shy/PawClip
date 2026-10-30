@@ -109,10 +109,10 @@ func (c *darwinController) Attach(cfg Config) error {
 
 	w, h := cfg.Width, cfg.Height
 	if w <= 0 {
-		w = 420
+		w = MinPanelWidth
 	}
 	if h <= 0 {
-		h = 560
+		h = MinPanelHeight
 	}
 
 	// Wails 在 OnStartup 返回之后才创建窗口，所以这里必须等。
@@ -166,7 +166,7 @@ func (c *darwinController) attachOnce(w, h int) error {
 	var errBuf [512]C.char
 	rc := C.paw_attach(C.int(w), C.int(h),
 		C.int(MinPanelWidth), C.int(MinPanelHeight),
-		C.int(MaxPanelWidth), C.int(MaxPanelHeight),
+		0, 0, // maxw/maxh = 0：不设上限（2026-10-31 取消面板尺寸上限）
 		&errBuf[0], C.int(len(errBuf)))
 	if rc != 0 {
 		return fmt.Errorf("panel: paw_attach 失败(rc=%d)：%s", int(rc), C.GoString(&errBuf[0]))

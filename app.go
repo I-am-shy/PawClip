@@ -59,6 +59,10 @@ type App struct {
 	// initMu 保护下面这组"startup 之后才存在"的资源。
 	initMu  sync.Mutex
 	initErr error
+	// dialogDepth 是"原生系统对话框打开中"的计数（原子访问）。
+	// 系统文件选择器一弹出来，前台就从面板切走了；如果不屏蔽失焦收起，
+	// 面板会在对话框还开着的时候被隐藏，选择文件直接失效（2026-10-31 真机反馈）。
+	dialogDepth int32
 	// bootWarn 是启动期"不足以让程序退出、但用户该知道"的一件事
 	// （目前只有一种：config.toml 读不了，已改用默认设置）。
 	// 见 main.go 里关于"为什么不再直接退出"的说明。
@@ -430,8 +434,8 @@ func (a *App) persistPanelSize() {
 // 这里只是"设置了面板尺寸的那些键都读不到"时的兜底，正常情况下走不到。
 // 改默认尺寸请改 store.DefaultSettings，两处同步也没有意义：库里的值优先。
 const (
-	panelDefaultWidth  = 560
-	panelDefaultHeight = 760
+	panelDefaultWidth  = 640
+	panelDefaultHeight = 487
 )
 
 // filterConfigFrom 把 settings 视图翻译成过滤器的输入。

@@ -269,10 +269,13 @@ static int PawClip_AttachOnMain(int width, int height,
     [(NSWindow *)panel setBackgroundColor:[NSColor clearColor]];
     [(NSWindow *)panel setHasShadow:YES];
 
-    // 缩放边界：太小布局会挤碎，太大就失去了"轻量面板"的形态。
+    // 缩放边界：只有下限（太小布局会挤碎），没有上限。
     // 数值由 Go 侧传入（panel.go 是唯一定义处），避免两处常量各自漂移。
     [(NSWindow *)panel setContentMinSize:NSMakeSize(minw, minh)];
-    [(NSWindow *)panel setContentMaxSize:NSMakeSize(maxw, maxh)];
+    // maxw/maxh <= 0 表示不设上限（2026-10-31 取消面板尺寸上限）。
+    if (maxw > 0 && maxh > 0) {
+        [(NSWindow *)panel setContentMaxSize:NSMakeSize(maxw, maxh)];
+    }
 
     [(NSWindow *)panel setContentView:host];
     [host release];

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -270,9 +271,16 @@ func TestTrayItems_HasQuitAndSeparators(t *testing.T) {
 //
 // 空图标在 macOS 上表现为"菜单栏里有一块看不见但能点的区域"——
 // 用户找不到托盘，而代码不报任何错。所以这里断言真的取到了字节。
+//
+// Windows 侧取的是 tray.ico（不是模板 PNG）：LoadImage(IMAGE_ICON) 对 PNG
+// 返回 0，会静默落回系统默认图标。
 func TestInstallTray_ShipsNonEmptyIcon(t *testing.T) {
-	if b := trayTemplatePNG(); len(b) == 0 {
-		t.Fatal("取不到托盘模板图（assets/icon/dist/tray/trayTemplate@2x.png 是否还在？）")
+	b := trayIcon()
+	if len(b) == 0 {
+		t.Fatal("取不到托盘图标（assets/icon/dist/tray/ 是否还在？）")
+	}
+	if runtime.GOOS == "windows" && (len(b) < 4 || b[0] != 0 || b[1] != 0 || b[2] != 1 || b[3] != 0) {
+		t.Fatal("Windows 上托盘图标不是 ICO（LoadImage(IMAGE_ICON) 会失败并落回默认图标）")
 	}
 	a, fp := newTrayApp(t, true, "zh-CN")
 	a.installTray()
@@ -339,49 +347,68 @@ func TestHandlePanelAction_QuitAndShow(t *testing.T) {
 		if !hasEvent(evs, tc.want) {
 			t.Errorf("动作 %v 的事件 = %+v，想要含 %q", tc.act, evs, tc.want)
 		}
+		// 顺序必须是 [show, 目标视图]：show 会让前端回到历史页，若它排在
+		// 目标视图之后，用户点"设置"会被最后一条 show 覆盖回首页。
+		if len(evs) == 0 || evs[len(evs)-1].Type != tc.want {
+			t.Errorf("动作 %v 的事件 = %+v，最后一条必须是 %q（show 不能覆盖它）", tc.act, evs, tc.want)
+		}
 		if !fp.Visible() {
 			t.Errorf("动作 %v 应当顺带呼出面板", tc.act)
 		}
 	}
 }
 
-// TestTogglePanel_HidesWhenVisible 钉住热键语义。
+// TestHotkey_ShowsAndStaysVisible 钉住热键语义：**只呼出，不收起**。
 //
-// 热键最常见的误按是"面板已经开着、我又按了一次"——那时用户想要的是收起。
-// 做成"总是呼出"会让面板永远关不掉（只能等空闲超时）。
-func TestTogglePanel_HidesWhenVisible(t *testing.T) {
+// 2026-10-31 按用户反馈改：再按一次热键不该把正在用的面板关掉。收起由
+// Esc / 点面板以外 / 标题栏关闭按钮负责；这里同时确认第二次按不会产生
+// hide 事件——否则前端会跟着把面板收起来。
+func TestHotkey_ShowsAndStaysVisible(t *testing.T) {
 	a, fp := newTrayApp(t, true, "zh-CN")
 
-	a.togglePanel()
+	a.onHotkey()
 	if !fp.Visible() {
 		t.Fatal("第一次按热键应当呼出面板")
 	}
 	a.TakeEvents()
 
-	a.togglePanel()
-	if fp.Visible() {
-		t.Fatal("面板已可见时再按热键应当收起")
+	a.onHotkey()
+	if !fp.Visible() {
+		t.Fatal("面板已可见时再按热键应当保持可见")
 	}
-	if !hasEvent(a.TakeEvents(), EventHide) {
-		t.Error("收起时应当留下 hide 事件")
+	if hasEvent(a.TakeEvents(), EventHide) {
+		t.Error("热键第二次按下不该产生 hide 事件")
 	}
 }
 
-// TestTogglePanel_ReportsKeyboardFailure 验证"显示成功但拿不到键盘"要被上报。
+// TestHotkey_ReportsKeyboardFailure 验证"显示成功但拿不到键盘"要被上报。
 //
 // 这是 M0 实测里那个坑的形态：面板看得见、但按键打到前台 App 去了。
 // 静默吞掉它会让用户以为"PawClip 的搜索框坏了"。
-func TestTogglePanel_ReportsKeyboardFailure(t *testing.T) {
+//
+// 文案走 i18n 的 msgPanelNoFocus，而不是把原生 err 原文塞给用户——
+// "activation policy is not accessory" 对用户没有意义；前端只需要知道
+// "没拿到键盘，再按一次"。
+func TestHotkey_ReportsKeyboardFailure(t *testing.T) {
 	a, fp := newTrayApp(t, true, "zh-CN")
 	fp.showErr = errors.New("activation policy is not accessory")
 
-	a.togglePanel()
+	// 清掉 newTrayApp 初始化期间可能留下的事件，只看这次热键产生的。
+	a.TakeEvents()
+	a.onHotkey()
 	evs := a.TakeEvents()
-	if len(evs) != 1 || evs[0].Type != EventShow {
-		t.Fatalf("事件 = %+v，想要一条 show", evs)
+
+	var show *PanelEvent
+	for i := range evs {
+		if evs[i].Type == EventShow {
+			show = &evs[i]
+		}
 	}
-	if !strings.Contains(evs[0].Note, "accessory") {
-		t.Errorf("show 事件的 note = %q，应当带上失败原因（前端要展示它）", evs[0].Note)
+	if show == nil {
+		t.Fatalf("事件 = %+v，想要含一条 show", evs)
+	}
+	if want := a.T(msgPanelNoFocus); show.Note != want {
+		t.Errorf("show 事件的 note = %q，想要 %q", show.Note, want)
 	}
 }
 
@@ -603,6 +630,11 @@ func TestPanelLifecycle_IsHonestAboutDestroy(t *testing.T) {
 // 是不可用的（本项目开发沙箱就是，实测 "operation not permitted: ps"）。
 // 所以"读不到别的进程返回 0"也是契约的一部分，两个方向都要测。
 func TestProcessRSSBytes_ReadsOwnProcess(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		// processRSSBytes 的可靠实现只在 macOS（Mach task_info，见
+		// rss_darwin_cgo.go）；Windows/Linux 上它是尽力而为，读到 0 不代表坏。
+		t.Skip("仅 macOS 有 Mach task_info 实现")
+	}
 	rss := processRSSBytes(os.Getpid())
 	if rss <= 0 {
 		t.Fatalf("processRSSBytes(自己) = %d，读不到就说明这条链路是坏的"+

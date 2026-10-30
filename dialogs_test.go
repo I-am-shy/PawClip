@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -56,6 +57,95 @@ func TestNativeExts_FoldsFilterPatterns(t *testing.T) {
 				t.Errorf("%s: nativeExts[%d]=%q want=%q", c.name, i, got[i], c.want[i])
 			}
 		}
+	}
+}
+
+// TestPickBackupFile_DoesNotHidePanelWhileDialogOpen 钉住"系统对话框
+// 打开期间忽略失焦收起"。
+//
+// 真机上系统文件选择器会把前台切到 explorer/dllhost，触发
+// EVENT_SYSTEM_FOREGROUND；如果 closeOnBlur 照常执行，面板会在对话框
+// 还开着的时候被隐藏，选择文件功能直接失效（2026-10-31 反馈）。
+// 这里用假对话框在"打开期间"主动调用 onPanelBlur，模拟那一刻。
+func TestPickBackupFile_DoesNotHidePanelWhileDialogOpen(t *testing.T) {
+	a, fp := newTrayApp(t, true, "zh-CN")
+	a.ctx = context.Background()
+	a.showPanel()
+	if !fp.Visible() {
+		t.Fatal("测试前置：面板应当可见")
+	}
+
+	withDialogFakes(t,
+		func(panel.DialogOptions) (string, error) {
+			a.onPanelBlur() // 对话框抢走前台
+			return "", nil
+		},
+		func(*App, panel.DialogOptions) (string, error) {
+			t.Fatal("不应回退到 Wails 对话框")
+			return "", nil
+		})
+
+	if _, err := a.PickBackupFile(); err != nil {
+		t.Fatalf("PickBackupFile: %v", err)
+	}
+	if !fp.Visible() {
+		t.Fatal("对话框打开期间面板被失焦收起了")
+	}
+
+	// 对话框结束后屏蔽必须解除：再失焦就正常收起。
+	a.onPanelBlur()
+	if fp.Visible() {
+		t.Fatal("对话框结束后 onPanelBlur 仍被屏蔽")
+	}
+}
+
+// TestPickDraftImage_UsesDialogAndKeepsPanel 钉住草稿本"插入图片"这条路：
+// 必须走 Go 侧系统对话框（不能回 HTML file input），对话框打开期间面板
+// 不能被失焦收起。
+func TestPickDraftImage_UsesDialogAndKeepsPanel(t *testing.T) {
+	a, fp := newTrayApp(t, true, "zh-CN")
+	a.ctx = context.Background()
+	a.showPanel()
+	if !fp.Visible() {
+		t.Fatal("测试前置：面板应当可见")
+	}
+
+	pic := filepath.Join(t.TempDir(), "pic.png")
+	if err := os.WriteFile(pic, []byte("fake-png-bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	withDialogFakes(t,
+		func(panel.DialogOptions) (string, error) {
+			a.onPanelBlur() // 文件选择器抢前台
+			return pic, nil
+		},
+		func(*App, panel.DialogOptions) (string, error) {
+			t.Fatal("不应回退到 Wails 对话框")
+			return "", nil
+		})
+
+	got, err := a.PickDraftImage()
+	if err != nil {
+		t.Fatalf("PickDraftImage: %v", err)
+	}
+	if got == nil {
+		t.Fatal("PickDraftImage 返回 nil，期望一张图")
+	}
+	if got.Mime != "image/png" {
+		t.Errorf("mime = %q，想要 image/png", got.Mime)
+	}
+	if !strings.HasPrefix(got.DataURL, "data:image/png;base64,") {
+		t.Errorf("dataUrl 前缀不对: %q", got.DataURL)
+	}
+	if !fp.Visible() {
+		t.Fatal("选图期间面板被失焦收起了")
+	}
+
+	// 对话框结束后屏蔽解除。
+	a.onPanelBlur()
+	if fp.Visible() {
+		t.Fatal("对话框结束后 onPanelBlur 仍被屏蔽")
 	}
 }
 

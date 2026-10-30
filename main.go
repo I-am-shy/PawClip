@@ -51,12 +51,15 @@ const (
 	//
 	// 这里跟默认值保持一致，纯粹是为了避免创建瞬间出现一个尺寸不对的窗口。
 	//
+	// 2026-10-31 起初始尺寸 = 最小值（640×487，与用户截图同比例）：面板
+	// 从最小尺寸打开，用户只能往上拉，不会先闪一个更大的窗口再被 Attach 缩回去。
+	//
 	// ⚠️ Windows 上这两个值只是"Attach 之前的临时尺寸"：那边的面板就是这个
 	// 窗口，真正的尺寸由 panel/windows.go 在 Attach 里从 settings 读出来设上去
 	// （macOS 上则由 paw_attach 直接把 settings 的尺寸交给 NSPanel）。
-	// 改默认尺寸请改 store.DefaultSettings，不要改这里。
-	panelWidth  = 560
-	panelHeight = 760
+	// 改默认尺寸请改 store.DefaultSettings 与 panel.MinPanelWidth/Height，不要只改这里。
+	panelWidth  = 640
+	panelHeight = 487
 )
 
 func main() {
@@ -108,6 +111,23 @@ func main() {
 		return
 	}
 
+	// 单实例守卫：同一个数据库只允许一个进程。
+	//
+	// 必须赶在 store.Open、热键注册、Wails 建窗之前——否则第二份实例已经
+	// 抢过全局热键、开过同一个 SQLite 文件，守卫就晚了。放在 -paths 之后：
+	// 诊断命令不需要占用实例。
+	//
+	// 守卫失败（拿不到互斥量/锁文件）不阻止启动：这是保护措施，不是业务
+	// 前置条件；但会打 stderr 让看日志的人知道。
+	if release, already, guardErr := acquireSingleInstance(instanceKey(boot)); guardErr != nil {
+		fmt.Fprintln(os.Stderr, "单实例守卫失败，本次仍会启动：", guardErr)
+	} else if already {
+		notifyAlreadyRunning()
+		return
+	} else {
+		defer release()
+	}
+
 	log := newLogger(boot.Log.Level)
 
 	// §12 的空闲内存要能和"Wails/WebKit 占了多少"分开，否则 55MB 这样的
@@ -147,7 +167,7 @@ func main() {
 		//
 		//	macOS：只作用于这个永远隐藏的宿主窗口。用户真正看到的面板是
 		//	       panel/ 在 startup 之后自建的 NSPanel，那边可拖动、可缩放
-		//	       （panel_darwin.m：Resizable styleMask + 380×480~760×1100
+		//	       （panel_darwin.m：Resizable styleMask + 最小 640×487、无上限
 		//	       的边界），与这里的取值无关。true 是 M0 PoC 验过的组合，
 		//	       不要动。
 		//	Windows：这个窗口**就是**面板（没有 NSPanel 这种东西），
@@ -211,11 +231,12 @@ func main() {
 	//	  消息、Go 侧再送 WM_NCLBUTTONDOWN 进系统的 SC_SIZE 循环。
 	//	  保持 true 就等于把面板钉死在一个尺寸上。
 	//
-	//	Min/MaxWidth/Height
-	//	  拖动时的尺寸边界。它由 Wails 的 winc.Form 在 WM_GETMINMAXINFO 里
-	//	  落实成 ptMinTrackSize/ptMaxTrackSize（并按窗口 DPI 换算），
-	//	  所以**不需要**我们自己子类化窗口过程。值的唯一真源是 panel 包那组
-	//	  常量（panel.go 里写明"三处都从它取"），这里只做转发。
+	//	MinWidth/MinHeight
+	//	  拖动时的尺寸下限。它由 Wails 的 winc.Form 在 WM_GETMINMAXINFO 里
+	//	  落实成 ptMinTrackSize（并按窗口 DPI 换算），所以**不需要**我们自己
+	//	  子类化窗口过程。值的唯一真源是 panel 包那组常量（panel.go）。
+	//	  **不设 MaxWidth/MaxHeight**：2026-10-31 按用户反馈取消上限，面板
+	//	  可以像普通窗口一样拉到任意大。
 	//
 	// macOS 一律不动：DisableResize: true 是 M0 验过的组合，而且那边面板的
 	// 缩放能力由 NSPanel 的 styleMask 自己决定（panel_darwin.m），
@@ -223,7 +244,8 @@ func main() {
 	if runtime.GOOS == "windows" {
 		appOptions.DisableResize = false
 		appOptions.MinWidth, appOptions.MinHeight = panel.MinPanelWidth, panel.MinPanelHeight
-		appOptions.MaxWidth, appOptions.MaxHeight = panel.MaxPanelWidth, panel.MaxPanelHeight
+		// MaxWidth/MaxHeight 保持 0（不设上限）：2026-10-31 按用户反馈
+		// 取消面板尺寸上限，允许像普通窗口一样拉到任意大。
 	}
 
 	err = wails.Run(appOptions)

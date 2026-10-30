@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -338,6 +339,9 @@ func TestBlobStore_RejectsEmpty(t *testing.T) {
 }
 
 func TestBlobStore_FileModeAndPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不保留 POSIX 0600 权限位；这条只对 macOS/Linux 有意义")
+	}
 	bs := newTestBlobs(t)
 	rel, _, err := bs.Put([]byte("x"), "rtf")
 	if err != nil {

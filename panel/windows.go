@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -17,31 +18,32 @@ import (
 
 // Windows 面板实现。docs/DESIGN.md §8 规定：
 //
-//	#5 面板抢焦点  → 窗口样式加 WS_EX_NOACTIVATE，不要调用 SetForegroundWindow
+//	#5 面板抢焦点  → 没有 macOS 的 nonactivating panel：Show 时明确抢一次前台；
+//	                 不要加 WS_EX_NOACTIVATE（加上就点不回来、草稿也没法输入）
 //	托盘           → 通知区图标 + 右键菜单（Shell_NotifyIcon）
 //	全局热键       → RegisterHotKey
 //	自动粘贴       → SendInput 模拟 Ctrl+V，无需授权，但受 UIPI 限制（§8 #4）
 //
-// ⚠️ 本平台实现**未经真机验证**：开发机是 macOS，仓库里也没有 Windows CI。
-// 它只保证 `GOOS=windows go build/vet ./panel/` 通过。首次在 Windows 上跑
-// 之前，请把下面这些假设逐条验掉：
+// ⚠️ 2026-10-31 起已在 Windows 11 24H2 / 150% DPI 真机上跑过一轮：启动、热键、
+// 文本/图片/文件捕获、搜索、回贴、失焦收起、窗口拖动、草稿输入均有实测记录
+// （docs/ACCEPTANCE-WINDOWS.md）。仍未覆盖：多显示器、托盘菜单、开机自启、
+// 边缘缩放的交互。下面几条是当初写的假设，其中 ② 的旧结论已被真机推翻。
 //
 //	① RegisterHotKey 是**线程相关**的，WM_HOTKEY 只投到注册它的那个线程。
 //	   所以热键跑在 runtime.LockOSThread 钉住的专属线程上（专属消息泵）。
-//	② WS_EX_NOACTIVATE 的窗口不会被点击激活，但也**收不到键盘输入**——
-//	   这与 macOS 的 NSPanel 能"拿键盘但不抢前台"是本质差异。所以 Show
-//	   时明确抢一次前台，粘贴完成后把前台还给原窗口（见 writer.go）。
+//	② Windows 没有"拿键盘但不抢前台"的能力（WS_EX_NOACTIVATE 的窗口收不到
+//	   键盘输入）。所以 Show 时明确抢一次前台，**不能**给窗口加该样式：加了
+//	   之后面板失焦就点不回来、草稿编辑器也进不去（2026-10-31 真机验收推翻
+//	   了旧结论；粘贴后归还前台仍见 writer.go）。
 //	③ NOTIFYICONDATAW 的布局按 Vista+ 写（uVersion 段）。XP 不考虑。
 //	④ 面板的**几何**（尺寸 / 出现在哪块屏的哪个位置 / 缩放边界）与 mac
 //	   对齐的方式：尺寸与定位在下面"面板几何"一节，缩放交给 Wails
-//	   （main.go 在 Windows 上设 DisableResize=false + Min/MaxWidth/Height，
-//	   见 docs/DESIGN.md §8 第 11 条）。其中**计算**部分（12% 留白、水平居中、
-//	   多显示器负原点、上下边界夹取）已被 panel/geometry_test.go 覆盖并在
-//	   开发机上跑过；**系统调用**部分（MonitorFromPoint / GetMonitorInfoW /
-//	   SetWindowPos / WM_GETMINMAXINFO）仍然只能在真机上验。
-//	⑤ 抢前台之后键盘是否真的落进 WebView2 —— Show() 现在会把结果报出来
-//	   （拿不到前台就返回错误，上层会推一条前端提示），所以真机上第一次
-//	   按热键就能看到答案。若报错，问题在这一层而不在"面板没显示"。
+//	   （main.go 在 Windows 上设 DisableResize=false + MinWidth/MinHeight；
+//	   见 docs/DESIGN.md §8 第 11 条）。12% 留白、水平居中、150% DPI 已在
+//	   真机上验过；多显示器负原点只有纯计算部分有单测。
+//	⑤ Show() 会等 SetForegroundWindow 真正生效（最多 150ms），确认失败才
+//	   返回错误；上层用本地化文案提示。不要用"调完立刻读"的写法——那个
+//	   竞态在 v0.1.4 上表现为每次呼出都误报"没拿到键盘"。
 
 const (
 	// wailsDefaultWindowClass 与 main.go 里 windows.Options.WindowClassName
@@ -59,7 +61,6 @@ const (
 	// 而 SetWindowLongPtr 对错误的索引**不报错**，只是改了别的东西。
 	gwlStyle = ^uintptr(15)
 
-	wsExNoActivate = 0x08000000
 	wsExToolWindow = 0x00000080
 	wsExAppWindow  = 0x00040000
 
@@ -67,8 +68,7 @@ const (
 	// DisableResize 设成 false（否则面板不可缩放），而 Wails 会顺手把
 	// WS_MAXIMIZEBOX 一起加回来（NewWindow 里的 EnableMaxButton）。
 	// 一个无边框 + 可最大化的窗口，双击"标题栏"区域会被系统直接最大化，
-	// 而我们的拖动正是往 HTCAPTION 上送 WM_NCLBUTTONDOWN —— 等于给
-	// 面板装了一个"双击就铺满整屏"的机关。面板是浮层，不该能最大化。
+	// 等于给面板装了一个"双击就铺满整屏"的机关。面板是浮层，不该能最大化。
 	wsMaximizeBox = 0x00010000
 
 	// ⚠️ ShowWindow 的 nCmdShow 一律从 x/sys 取，**不要再手写数字**。
@@ -100,13 +100,22 @@ const (
 
 	wmHotkey = 0x0312
 	wmApp    = 0x8000
-
-	// Drag 用：让无边框窗口进入系统的移动循环。
-	wmNclButtonDown = 0x00A1 // WM_NCLBUTTONDOWN
-	htCaption       = 2      // HTCAPTION
+	wmQuit   = 0x0012
 
 	// hotkeyID 是 RegisterHotKey 的 id，同一线程内唯一。
 	hotkeyID = 1
+
+	// vkLButton 是物理左键的虚拟键码，用在手动拖动循环里判断"还按着没有"。
+	vkLButton = 0x01
+
+	// SetWinEventHook：EVENT_SYSTEM_FOREGROUND 是"前台窗口变了"。
+	//
+	// 为什么用 WinEvent 而不是 WM_ACTIVATE / WM_KILLFOCUS：Wails 占着窗口过程，
+	// 我们不想再子类化它；out-of-context 的钩子挂在热键线程的消息泵上，
+	// 只读一下"现在的前台是不是我们"，不碰 Wails 的任何回调。
+	eventSystemForeground  = 0x0003
+	wineventOutOfContext   = 0x0000
+	wineventSkipOwnProcess = 0x0002
 )
 
 // 修饰键位（MOD_*）。
@@ -128,40 +137,44 @@ var (
 	shell32  = windows.NewLazySystemDLL("shell32.dll")
 	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
 
-	procFindWindowW      = user32.NewProc("FindWindowW")
-	procGetWindowLongPtr = user32.NewProc("GetWindowLongPtrW")
-	procSetWindowLongPtr = user32.NewProc("SetWindowLongPtrW")
-	procShowWindow       = user32.NewProc("ShowWindow")
-	procSetWindowPos     = user32.NewProc("SetWindowPos")
-	procIsWindowVisible  = user32.NewProc("IsWindowVisible")
-	procLoadIconW        = user32.NewProc("LoadIconW")
-	procSetForeground    = user32.NewProc("SetForegroundWindow")
-	procGetForeground    = user32.NewProc("GetForegroundWindow")
-	procRegisterHotKey   = user32.NewProc("RegisterHotKey")
-	procUnregisterHotKey = user32.NewProc("UnregisterHotKey")
-	procGetMessage       = user32.NewProc("GetMessageW")
-	procTranslateMessage = user32.NewProc("TranslateMessage")
-	procDispatchMessage  = user32.NewProc("DispatchMessageW")
-	procDefWindowProc    = user32.NewProc("DefWindowProcW")
-	procCreateWindowEx   = user32.NewProc("CreateWindowExW")
-	procRegisterClassEx  = user32.NewProc("RegisterClassExW")
-	procDestroyWindow    = user32.NewProc("DestroyWindow")
-	procCreatePopupMenu  = user32.NewProc("CreatePopupMenu")
-	procDestroyMenu      = user32.NewProc("DestroyMenu")
-	procAppendMenuW      = user32.NewProc("AppendMenuW")
-	procTrackPopupMenu   = user32.NewProc("TrackPopupMenu")
-	procGetCursorPos     = user32.NewProc("GetCursorPos")
-	procPostMessage      = user32.NewProc("PostMessageW")
-	procSendInput        = user32.NewProc("SendInput")
-	procReleaseCapture   = user32.NewProc("ReleaseCapture")
-	procSendMessage      = user32.NewProc("SendMessageW")
-	procGetClientRect    = user32.NewProc("GetClientRect")
-	procGetWindowRect    = user32.NewProc("GetWindowRect")
-	procMonitorFromPoint = user32.NewProc("MonitorFromPoint")
-	procGetMonitorInfoW  = user32.NewProc("GetMonitorInfoW")
-	procGetDpiForWindow  = user32.NewProc("GetDpiForWindow")
-	procLoadImageW       = user32.NewProc("LoadImageW")
-	procGetLastError     = kernel32.NewProc("GetLastError")
+	procFindWindowW       = user32.NewProc("FindWindowW")
+	procGetWindowLongPtr  = user32.NewProc("GetWindowLongPtrW")
+	procSetWindowLongPtr  = user32.NewProc("SetWindowLongPtrW")
+	procShowWindow        = user32.NewProc("ShowWindow")
+	procSetWindowPos      = user32.NewProc("SetWindowPos")
+	procIsWindowVisible   = user32.NewProc("IsWindowVisible")
+	procLoadIconW         = user32.NewProc("LoadIconW")
+	procSetForeground     = user32.NewProc("SetForegroundWindow")
+	procGetForeground     = user32.NewProc("GetForegroundWindow")
+	procSetWinEventHook   = user32.NewProc("SetWinEventHook")
+	procUnhookWinEvent    = user32.NewProc("UnhookWinEvent")
+	procGetAsyncKeyState  = user32.NewProc("GetAsyncKeyState")
+	procPostThreadMessage = user32.NewProc("PostThreadMessageW")
+	procRegisterHotKey    = user32.NewProc("RegisterHotKey")
+	procUnregisterHotKey  = user32.NewProc("UnregisterHotKey")
+	procGetMessage        = user32.NewProc("GetMessageW")
+	procTranslateMessage  = user32.NewProc("TranslateMessage")
+	procDispatchMessage   = user32.NewProc("DispatchMessageW")
+	procDefWindowProc     = user32.NewProc("DefWindowProcW")
+	procCreateWindowEx    = user32.NewProc("CreateWindowExW")
+	procRegisterClassEx   = user32.NewProc("RegisterClassExW")
+	procDestroyWindow     = user32.NewProc("DestroyWindow")
+	procCreatePopupMenu   = user32.NewProc("CreatePopupMenu")
+	procDestroyMenu       = user32.NewProc("DestroyMenu")
+	procAppendMenuW       = user32.NewProc("AppendMenuW")
+	procTrackPopupMenu    = user32.NewProc("TrackPopupMenu")
+	procGetCursorPos      = user32.NewProc("GetCursorPos")
+	procPostMessage       = user32.NewProc("PostMessageW")
+	procSendInput         = user32.NewProc("SendInput")
+
+	procGetClientRect      = user32.NewProc("GetClientRect")
+	procGetWindowRect      = user32.NewProc("GetWindowRect")
+	procMonitorFromPoint   = user32.NewProc("MonitorFromPoint")
+	procGetMonitorInfoW    = user32.NewProc("GetMonitorInfoW")
+	procGetDpiForWindow    = user32.NewProc("GetDpiForWindow")
+	procLoadImageW         = user32.NewProc("LoadImageW")
+	procGetLastError       = kernel32.NewProc("GetLastError")
+	procGetCurrentThreadID = kernel32.NewProc("GetCurrentThreadId")
 
 	procShellNotifyIcon = shell32.NewProc("Shell_NotifyIconW")
 
@@ -324,6 +337,13 @@ type winController struct {
 
 	hotkeyCombo string
 	hotkeyErr   error
+	// hotkeyTID / hotkeyDone 用来**叫醒**阻塞在 GetMessage 里的热键线程。
+	//
+	// RegisterHotKey 是线程相关的，注销必须在注册它的那个线程上做；而那个
+	// 线程平时正卡在 GetMessage。只 close(stop) 是叫不醒它的——旧热键会
+	// 一直注册着，表现就是"设置里清空了，按快捷键照样能呼出"。
+	hotkeyTID  uint32
+	hotkeyDone chan struct{}
 
 	trayIcon  []byte
 	trayItems []TrayItem
@@ -339,6 +359,41 @@ func newController(h Handler) Controller {
 // New 构造本平台的面板控制器。
 func New(h Handler) Controller { return newController(h) }
 
+// activeWinController 是当前安装前台监听的控制器。
+//
+// 进程内只会有一个面板控制器（与 clipboard 的 activeBackend 同理）；
+// 用原子指针是为了让 WinEvent 回调（热键线程）读到最新值而不加锁。
+var activeWinController atomic.Pointer[winController]
+
+// winEventProc 是 SetWinEventHook 的回调：任何窗口拿到前台时都会进来。
+//
+// 只做两件事：确认前台不是我们的面板，然后 emitPanelBlur()（是否收起由
+// App.onPanelBlur 按 ui.closeOnBlur 决定）。这里**不做**隐藏，避免把策略
+// 塞进原生层。
+//
+// 用 WINEVENT_SKIPOWNPROCESS 安装，所以面板自己拿到前台、托盘菜单、
+// 我们自己的系统对话框都不会触发它；真正需要处理的是"别家窗口抢走了前台"。
+var winEventProc = syscall.NewCallback(func(
+	_ uintptr, event uintptr, hwnd uintptr,
+	idObject, idChild, idEventThread, dwmsEventTime uintptr,
+) uintptr {
+	if event != eventSystemForeground || idObject != 0 || hwnd == 0 {
+		return 0
+	}
+	c := activeWinController.Load()
+	if c == nil || !c.Visible() {
+		return 0
+	}
+	c.mu.Lock()
+	panel := c.hwnd
+	c.mu.Unlock()
+	if panel == 0 || windows.Handle(hwnd) == panel {
+		return 0
+	}
+	emitPanelBlur()
+	return 0
+})
+
 // ── 全局热键 ────────────────────────────────────────────────────
 //
 // RegisterHotKey 是线程相关的：WM_HOTKEY 只投到注册它的那个线程。
@@ -350,7 +405,26 @@ func (c *winController) runHotkeyThread() {
 
 	c.mu.Lock()
 	combo := c.hotkeyCombo
+	stop := c.stop
+	tidRet, _, _ := procGetCurrentThreadID.Call()
+	tid := uint32(tidRet)
+	done := make(chan struct{})
+	c.hotkeyTID = tid
+	c.hotkeyDone = done
 	c.mu.Unlock()
+
+	// 顺序：先注销热键，再清 tid/done，最后 close(done)。close 放在最外层
+	// （defer 是 LIFO），stopHotkeyThread 收到 done 时热键已经真的注销了。
+	defer close(done)
+	defer func() {
+		c.mu.Lock()
+		if c.hotkeyDone == done {
+			c.hotkeyDone = nil
+			c.hotkeyTID = 0
+		}
+		c.mu.Unlock()
+	}()
+	defer unregisterHotkeyOnThisThread()
 
 	if combo != "" {
 		if err := registerHotkeyOnThisThread(combo); err != nil {
@@ -363,14 +437,12 @@ func (c *winController) runHotkeyThread() {
 	var m msgT
 	for {
 		select {
-		case <-c.stop:
-			unregisterHotkeyOnThisThread()
+		case <-stop:
 			return
 		default:
 		}
 		ret, _, _ := procGetMessage.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
 		if int32(ret) <= 0 { // 0 = WM_QUIT，-1 = 错误
-			unregisterHotkeyOnThisThread()
 			return
 		}
 		if m.Message == wmHotkey && m.WParam == hotkeyID {
@@ -449,7 +521,7 @@ var winVirtualKeys = func() map[string]uint32 {
 	return m
 }()
 
-// ── 窗口样式（免抢焦点）─────────────────────────────────────────
+// ── 窗口样式（任务栏 / 激活）─────────────────────────────────────
 func findWailsWindow() windows.Handle {
 	name, err := windows.UTF16PtrFromString(wailsDefaultWindowClass)
 	if err != nil {
@@ -461,9 +533,12 @@ func findWailsWindow() windows.Handle {
 
 func applyPanelWindowStyle(hwnd windows.Handle) error {
 	exStyle, _, _ := procGetWindowLongPtr.Call(uintptr(hwnd), gwlExStyle)
-	// WS_EX_TOOLWINDOW：不在任务栏与 Alt+Tab 出现（等价于 macOS 的 Accessory）
-	// WS_EX_NOACTIVATE：点击不激活（docs/DESIGN.md §8 #5）
-	want := exStyle | wsExNoActivate | wsExToolWindow
+	// WS_EX_TOOLWINDOW：不在任务栏与 Alt+Tab 出现（等价于 macOS 的 Accessory）。
+	//
+	// ⚠️ **不要**加 WS_EX_NOACTIVATE：它确实能"点击不激活"，但也让窗口收不到
+	// 键盘（Win32 没有 macOS NSPanel 那种两全能力）。一旦失焦，点面板不会把
+	// 前台拿回来，草稿编辑器也打不进字——2026-10-31 的真机症状。
+	want := exStyle | wsExToolWindow
 	if want&wsExAppWindow != 0 {
 		want &^= wsExAppWindow
 	}
@@ -476,9 +551,8 @@ func applyPanelWindowStyle(hwnd windows.Handle) error {
 	// 摘掉 WS_MAXIMIZEBOX。为什么要在这里补一刀、而不是靠 main.go 的选项：
 	// Windows 上为了拿到缩放能力把 DisableResize 设成了 false，而 Wails 的
 	// NewWindow 会顺手 `EnableMaxButton(!DisableResize)` —— 也就是把这个位置
-	// 加回来。可我们的拖动是往 HTCAPTION 上送 WM_NCLBUTTONDOWN，而无边框 +
-	// 可最大化的窗口"双击标题栏"就是最大化：用户在标题栏上快点两下，
-	// 面板会直接铺满整屏。面板是浮层，不该有最大化这个形态。
+	// 加回来。而无边框 + 可最大化的窗口"双击标题栏"就是最大化：用户在
+	// 标题栏上快点两下，面板会直接铺满整屏。面板是浮层，不该有最大化这个形态。
 	if style, _, _ := procGetWindowLongPtr.Call(uintptr(hwnd), gwlStyle); style != 0 && style&wsMaximizeBox != 0 {
 		if err := setWindowLongPtrVerified(hwnd, gwlStyle, style&^wsMaximizeBox, "GWL_STYLE"); err != nil {
 			return err
@@ -511,7 +585,8 @@ func setWindowLongPtrVerified(hwnd windows.Handle, index, value uintptr, what st
 // ⚠️ 缩放能力**不在**本节：它由 main.go 在 Windows 上把 DisableResize 设成
 // false 交给 Wails（后者的运行时 JS 负责边缘光标与 resize:<edge> 消息，
 // 再进系统的 SC_SIZE 循环），拖动时的尺寸边界由 Wails 从
-// options.App 的 Min/MaxWidth/Height 拿去做 WM_GETMINMAXINFO。
+// options.App 的 MinWidth/MinHeight 拿去做 WM_GETMINMAXINFO（Max 保持 0，
+// 也就是不设上限；2026-10-31 起面板可以像普通窗口一样拉到任意大）。
 
 // applyPanelSize 把窗口客户区设成 w×h **逻辑点**（入参已经夹取过）。
 //
@@ -728,7 +803,7 @@ func (c *winController) Attach(cfg Config) error {
 		}
 		// 尺寸在拿锁之前先算好：ClampPanelSize 是纯函数，不必在临界区里跑。
 		// (0,0) 的含义见 panel.ClampPanelSize —— "设置里没有可用的值"，
-		// 那就不要动窗口（Wails 建窗时给的是 main.go 的 560×760）。
+		// 那就不要动窗口（Wails 建窗时给的是 main.go 的 640×487）。
 		w, h := ClampPanelSize(cfg.Width, cfg.Height)
 
 		c.mu.Lock()
@@ -766,6 +841,9 @@ func (c *winController) Attach(cfg Config) error {
 
 		// 托盘需要自己的消息窗口。失败不挡启动：面板与捕获都还能用。
 		_ = c.startTrayMessageWindow()
+
+		// 失焦监听与热键解耦：不管有没有热键，点面板以外都该能收起。
+		go c.runBlurThread()
 
 		if cfg.Hotkey != "" {
 			go c.runHotkeyThread()
@@ -863,13 +941,30 @@ func (c *winController) Show() error {
 	// 与 mac 的 Show() 契约对齐：那边 paw_show() 拿不到键盘就返回错误，
 	// 上层（resources.go 的 showPanel）会把它推成一条前端可见的提示。
 	//
-	// 这里同样只报**事实**：Win32 上抢前台本身就是有意的（见函数注释），
-	// 抢不到就意味着键盘不会进面板——而那正是用户需要知道的事，
-	// 否则表现是"面板看得见、敲字没反应"，界面上一个字都不说。
-	if fg, _, _ := procGetForeground.Call(); windows.Handle(fg) != hwnd {
+	// ⚠️ 不能调完 SetForegroundWindow 立刻 GetForegroundWindow：Win32 的前台
+	// 切换是异步的，成功路径上也会读到旧值，于是 v0.1.4 每次呼出都误报
+	// "没拿到键盘"并弹 toast。这里等它真正生效（正常情况第一次读就命中）。
+	if !waitForPanelForeground(hwnd, 150*time.Millisecond) {
 		return fmt.Errorf("panel: 面板已显示但没能取得前台（键盘可能不会进入面板）")
 	}
 	return nil
+}
+
+// waitForPanelForeground 等 SetForegroundWindow 真正生效。
+//
+// 最多等 150ms；正常情况第一次读就命中，不额外阻塞。如果最终仍拿不到，
+// 说明被前台锁/别的窗口挡住了，由上层如实提示。
+func waitForPanelForeground(hwnd windows.Handle, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if fg, _, _ := procGetForeground.Call(); windows.Handle(fg) == hwnd {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // Hide 隐藏面板。
@@ -894,25 +989,51 @@ func (c *winController) Visible() bool {
 	return ret != 0
 }
 
-// Drag 开始一次原生窗口拖动。
+// Drag 开始一次窗口拖动。
 //
-// Win32 惯用法：ReleaseCapture + WM_NCLBUTTONDOWN(HTCAPTION)，让 DefWindowProc
-// 进入 SC_MOVE 循环，窗口就跟着鼠标走了——与给非客户区加标题栏是同一回事。
-// ⚠️ 本平台实现未经真机验证（见文件头说明）。
+// 不用 WM_NCLBUTTONDOWN(HTCAPTION)：在这个 Wails 窗口上实测收不到移动循环
+// ——消息发出去了，窗口不动（lParam 带不带光标坐标都一样）。改成自己跟踪：
+// 按住期间每 8ms 把窗口挪到"起始窗口位置 + 光标位移"，松开即结束。
+//
+// 为什么不会卡 UI：DragPanel 是 Wails 绑定，跑在独立的 goroutine 上；循环
+// 里只有 GetCursorPos / SetWindowPos / Sleep。
 func (c *winController) Drag() {
 	c.mu.Lock()
 	hwnd := c.hwnd
 	// 位置从此归用户：呼出时不再把面板传送回"鼠标屏顶部居中"。
-	// 与 mac 的 paw_panel_drag（先置 g_userPlaced 再进拖动循环）同一顺序：
-	// 拖动循环会阻塞到鼠标松开，放在后面会让这次拖动之后的那次呼出
-	// 仍然把面板拉走。
+	// 与 mac 的 paw_panel_drag（先置 g_userPlaced 再进拖动循环）同一顺序。
 	c.placed = true
 	c.mu.Unlock()
 	if hwnd == 0 {
 		return
 	}
-	procReleaseCapture.Call(uintptr(hwnd))
-	procSendMessage.Call(uintptr(hwnd), wmNclButtonDown, htCaption, 0)
+
+	var start point
+	if ret, _, _ := procGetCursorPos.Call(uintptr(unsafe.Pointer(&start))); ret == 0 {
+		return
+	}
+	var wr rect
+	if ret, _, _ := procGetWindowRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&wr))); ret == 0 {
+		return
+	}
+
+	for leftButtonDown() {
+		var cur point
+		if ret, _, _ := procGetCursorPos.Call(uintptr(unsafe.Pointer(&cur))); ret == 0 {
+			return
+		}
+		x := int(wr.Left) + int(cur.X-start.X)
+		y := int(wr.Top) + int(cur.Y-start.Y)
+		procSetWindowPos.Call(uintptr(hwnd), 0, uintptr(x), uintptr(y), 0, 0,
+			swpNoZorder|swpNoSize|swpNoActivate)
+		time.Sleep(8 * time.Millisecond)
+	}
+}
+
+// leftButtonDown 报告物理左键是否仍按着。
+func leftButtonDown() bool {
+	ret, _, _ := procGetAsyncKeyState.Call(vkLButton)
+	return ret&0x8000 != 0
 }
 
 // Size 报告面板的逻辑尺寸。
@@ -920,7 +1041,7 @@ func (c *winController) Drag() {
 // ⚠️ 两条"不要落库"的路径都在这里（Controller.Size 的契约）：
 //
 //   - **面板还没被显示过**：此刻窗口里是 Wails 的建窗占位值
-//     （main.go 的 560×760），不是用户的选择。把它当尺寸写回去会覆盖掉
+//     （main.go 的 640×487），不是用户的选择。把它当尺寸写回去会覆盖掉
 //     用户在 macOS 上拖出来的尺寸 —— settings 是两个平台共用的，
 //     这种污染完全静默，而且用户只会觉得"mac 上的面板尺寸老是变回去"。
 //   - 拿不到或非正的窗口矩形（窗口还没建出来 / 已经销毁）。
@@ -941,22 +1062,54 @@ func (c *winController) Size() (int, int) {
 	return windowPoints(hwnd)
 }
 
-// RegisterHotkey 换绑热键（重启热键线程以切到新组合）。
+// runBlurThread 是**独立于热键**的前台监听线程。
+//
+// 为什么不挂在热键线程上：热键可以被用户清空/换绑，而"点面板以外就收起"
+// 是窗口本身的行为，不该跟着热键一起停。这里只跑一个消息泵，不注册任何热键。
+func (c *winController) runBlurThread() {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	activeWinController.Store(c)
+	defer activeWinController.Store(nil)
+
+	// out-of-context 钩子由安装它的线程的消息泵派发。
+	hook, _, _ := procSetWinEventHook.Call(
+		eventSystemForeground, eventSystemForeground, 0, winEventProc, 0, 0,
+		wineventOutOfContext|wineventSkipOwnProcess,
+	)
+	if hook == 0 {
+		return
+	}
+	defer procUnhookWinEvent.Call(hook)
+
+	var m msgT
+	for {
+		ret, _, _ := procGetMessage.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
+		if int32(ret) <= 0 { // 0 = WM_QUIT，-1 = 错误
+			return
+		}
+		procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
+		procDispatchMessage.Call(uintptr(unsafe.Pointer(&m)))
+	}
+}
+
+// RegisterHotkey 换绑热键（先停旧线程，再起新线程）。
 func (c *winController) RegisterHotkey(combo string) error {
 	if _, err := ParseHotkey(combo); err != nil {
 		return err
 	}
+
+	// 必须等旧线程真的注销完再起新的：两个线程同时 RegisterHotKey 同一组合
+	// 会有一个失败，而旧的如果没注销，系统里就一直留着它。
+	c.stopHotkeyThread()
+
 	c.mu.Lock()
-	old := c.stop
 	c.stop = make(chan struct{})
 	c.hotkeyCombo = combo
 	c.hotkeyErr = nil
 	c.mu.Unlock()
 
-	if old != nil {
-		close(old)
-		time.Sleep(80 * time.Millisecond) // 等旧线程退出并注销
-	}
 	go c.runHotkeyThread()
 	time.Sleep(150 * time.Millisecond)
 
@@ -965,14 +1118,36 @@ func (c *winController) RegisterHotkey(combo string) error {
 	return c.hotkeyErr
 }
 
-// UnregisterHotkey 注销热键并停掉热键线程。
+// UnregisterHotkey 注销热键并停掉热键线程。幂等。
 func (c *winController) UnregisterHotkey() {
+	c.stopHotkeyThread()
+}
+
+// stopHotkeyThread 让热键线程退出，并**等它把系统里的热键注销掉**。
+//
+// ⚠️ 只 close(stop) 不够：线程平时卡在 GetMessage 里，channel 关闭不会叫醒它。
+// 必须向那个线程投 WM_QUIT（PostThreadMessage），GetMessage 返回 0 之后
+// defer 里的 UnregisterHotKey 才会执行。这就是"设置里清空了快捷键、按原组合
+// 仍然能呼出"的根因。
+func (c *winController) stopHotkeyThread() {
 	c.mu.Lock()
 	stop := c.stop
 	c.stop = nil
+	tid := c.hotkeyTID
+	done := c.hotkeyDone
 	c.mu.Unlock()
+
 	if stop != nil {
 		close(stop)
+	}
+	if tid != 0 {
+		procPostThreadMessage.Call(uintptr(tid), wmQuit, 0, 0)
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(300 * time.Millisecond):
+		}
 	}
 }
 
@@ -1066,7 +1241,8 @@ func (c *winController) updateIcon() error {
 	copy(nid.SzTip[:], windows.StringToUTF16(tip))
 
 	// LoadImage 只认文件路径或资源 ID，不认内存里的字节 → 先落盘。
-	// Vista 起 LoadImage 支持 PNG，不必先转 ICO。
+	// ⚠️ 这里必须是 **ICO**：实测 LoadImage(IMAGE_ICON) 对 PNG 返回 0，
+	// 结果就是托盘显示系统默认图标（"只有默认 exe 图标"）。
 	if len(icon) > 0 {
 		if path, err := writeTempIcon(icon); err == nil {
 			if p, err := windows.UTF16PtrFromString(path); err == nil {
@@ -1077,6 +1253,7 @@ func (c *winController) updateIcon() error {
 		}
 	}
 	if nid.HIcon == 0 {
+		fmt.Fprintln(os.Stderr, "[panel] 托盘图标加载失败，退回系统默认图标")
 		h, _, _ := procLoadIconW.Call(0, idiApplication)
 		nid.HIcon = windows.Handle(h)
 	}
@@ -1160,8 +1337,11 @@ func (c *winController) popupMenu() {
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 	// TrackPopupMenu 要求先置前台，否则点击菜单外面菜单不会消失。
 	procSetForeground.Call(uintptr(hwnd))
+	// 不要加 tpmRightButton：那会让菜单只认右键选择，左键点菜单项只会关掉
+	// 菜单（用户看到的就是"点了没反应"）。托盘左键/右键都通过上面的
+	// wmLButtonUp / wmRButtonUp 打开菜单；菜单项统一用左键选。
 	cmd, _, _ := procTrackPopupMenu.Call(menu,
-		tpmRightButton|tpmReturnCmd|tpmNonotify,
+		tpmReturnCmd|tpmNonotify,
 		uintptr(pt.X), uintptr(pt.Y), 0, uintptr(hwnd), 0)
 	// 约定：菜单关闭后给窗口发一条空消息，避免菜单"粘"在屏幕上。
 	procPostMessage.Call(uintptr(hwnd), 0, 0, 0)
@@ -1256,17 +1436,24 @@ func (c *winController) Close() {
 	}
 }
 
-// writeTempIcon 把 PNG 落到临时文件供 LoadImage 使用。
-func writeTempIcon(png []byte) (string, error) {
+// writeTempIcon 把图标字节落到临时文件供 LoadImage 使用。
+//
+// Windows 现在收到的是 **.ico**（tray.go 按平台挑的），但仍按文件头识别：
+// 老缓存或其它调用方塞 PNG 进来时写 .png，行为不变。
+func writeTempIcon(icon []byte) (string, error) {
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
 	}
-	p := filepath.Join(dir, "PawClip", "tray.png")
+	ext := ".png"
+	if len(icon) >= 4 && icon[0] == 0 && icon[1] == 0 && icon[2] == 1 && icon[3] == 0 {
+		ext = ".ico"
+	}
+	p := filepath.Join(dir, "PawClip", "tray"+ext)
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(p, png, 0o600); err != nil {
+	if err := os.WriteFile(p, icon, 0o600); err != nil {
 		return "", err
 	}
 	return p, nil

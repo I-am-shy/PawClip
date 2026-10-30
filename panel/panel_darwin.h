@@ -20,9 +20,9 @@ int paw_set_accessory(void);
 int paw_has_window(void);
 
 // 等到 Wails 窗口出现并把它接管进免抢焦点面板。
-// width/height 是面板的逻辑尺寸；minw/minh/maxw/maxh 是缩放边界
-// （来自 panel.go 的 MinPanelWidth 等常量——边界的唯一定义在 Go 侧，
-// 这里只负责把系统窗口的约束设成同样的数）。
+// width/height 是面板的逻辑尺寸；minw/minh 是缩放下限，
+// maxw/maxh <= 0 表示不设上限（来自 panel.go 的 MinPanelWidth 等常量——
+// 边界的唯一定义在 Go 侧，这里只负责把系统窗口的约束设成同样的数）。
 // 返回 0 成功。
 int paw_attach(int width, int height, int minw, int minh, int maxw, int maxh,
                char *err, int errlen);

@@ -2,6 +2,7 @@
 
 > 这份报告回答一个问题：**§12 列的指标，到底达标没有。**
 > 达不到的如实标 ⚠️ 并给出归因，不粉饰；有东西坏了才标 ❌。
+> Windows 侧的首轮真机口径另见 [`ACCEPTANCE-WINDOWS.md`](ACCEPTANCE-WINDOWS.md)（v0.1.4，2026-10-31）。
 
 实测环境：macOS / Apple Silicon，2026-09-16（首轮）· 2026-09-21（M5 草稿本补测）。
 单测口径 `test/run.sh`（= `go test -tags sqlite_fts5 -p 1 -count=1 ./...`）；
